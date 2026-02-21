@@ -1,0 +1,33 @@
+providers:
+  openai:
+    type: openai
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY:}"
+    max_concurrent: 200
+    timeout: "30s"
+    headers:
+      Organization: "${OPENAI_ORG_ID:}"
+
+  anthropic:
+    type: anthropic
+    base_url: "https://api.anthropic.com/v1"
+    api_key: "${ANTHROPIC_API_KEY:}"
+    max_concurrent: 200
+    timeout: "30s"
+    headers:
+      anthropic-version: "2023-06-01"
+
+  azure_openai:
+    type: azure_openai
+    base_url: "https://${AZURE_OPENAI_ENDPOINT:}.openai.azure.com"
+    api_key: "${AZURE_OPENAI_KEY:}"
+    api_version: "2024-10-21"
+    max_concurrent: 200
+    timeout: "30s"
+
+  internal_vllm:
+    type: openai
+    base_url: "http://vllm.internal:8000/v1"
+    api_key: "not-needed"
+    max_concurrent: 50
+    timeout: "60s"

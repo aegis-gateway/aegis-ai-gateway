@@ -1,0 +1,81 @@
+models:
+  aegis-gpt4:
+    display_name: "AEGIS GPT-4 (Latest)"
+    primary:
+      provider: openai
+      model: gpt-4o
+      classification_ceiling: CONFIDENTIAL
+    fallback:
+      - provider: azure_openai
+        model: gpt-4o
+        deployment: prod-eastus
+        classification_ceiling: CONFIDENTIAL
+      - provider: anthropic
+        model: claude-sonnet-4-5-20250929
+        classification_ceiling: CONFIDENTIAL
+
+  aegis-fast:
+    display_name: "AEGIS Fast (Low Latency)"
+    primary:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      classification_ceiling: INTERNAL
+    fallback:
+      - provider: openai
+        model: gpt-4o-mini
+        classification_ceiling: INTERNAL
+
+  aegis-reasoning:
+    display_name: "AEGIS Reasoning (Complex Tasks)"
+    primary:
+      provider: anthropic
+      model: claude-opus-4-5-20250929
+      classification_ceiling: CONFIDENTIAL
+    fallback:
+      - provider: openai
+        model: o3
+        classification_ceiling: CONFIDENTIAL
+
+  aegis-internal:
+    display_name: "AEGIS Internal (Air-Gapped)"
+    primary:
+      provider: internal_vllm
+      model: llama-3.1-70b
+      endpoint: "http://vllm.internal:8000/v1"
+      classification_ceiling: RESTRICTED
+    fallback: []
+
+  gpt-4o:
+    primary:
+      provider: openai
+      model: gpt-4o
+      classification_ceiling: CONFIDENTIAL
+
+  claude-sonnet-4-5-20250929:
+    primary:
+      provider: anthropic
+      model: claude-sonnet-4-5-20250929
+      classification_ceiling: CONFIDENTIAL
+
+pricing:
+  openai:
+    gpt-4o:
+      input: 0.0025
+      output: 0.01
+    gpt-4o-mini:
+      input: 0.00015
+      output: 0.0006
+  anthropic:
+    claude-sonnet-4-5-20250929:
+      input: 0.003
+      output: 0.015
+    claude-haiku-4-5-20251001:
+      input: 0.0008
+      output: 0.004
+    claude-opus-4-5-20250929:
+      input: 0.015
+      output: 0.075
+  azure_openai:
+    gpt-4o:
+      input: 0.0025
+      output: 0.01

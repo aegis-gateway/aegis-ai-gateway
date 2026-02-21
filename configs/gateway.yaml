@@ -1,0 +1,59 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: "30s"
+  write_timeout: "120s"
+  idle_timeout: "120s"
+  graceful_shutdown: "30s"
+
+database:
+  host: "${DB_HOST:localhost}"
+  port: ${DB_PORT:5432}
+  name: "aegis"
+  user: "${DB_USER:aegis}"
+  password: "${DB_PASSWORD:aegis-dev}"
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: "5m"
+
+redis:
+  addresses:
+    - "${REDIS_HOST:localhost}:${REDIS_PORT:6379}"
+  password: "${REDIS_PASSWORD:}"
+  db: 0
+  pool_size: 50
+
+telemetry:
+  log_level: "info"
+  log_format: "json"
+  metrics_port: 9090
+  otlp_endpoint: "${OTLP_ENDPOINT:}"
+  trace_sample_rate: 0.1
+
+filter:
+  pii_service:
+    address: "aegis-filter-nlp:50051"
+    timeout: "5s"
+    max_retries: 1
+  secrets:
+    enabled: true
+  injection:
+    enabled: true
+    block_threshold: 0.9
+    flag_threshold: 0.7
+  policy:
+    enabled: true
+    bundle_path: "/etc/aegis/policies"
+    evaluation_timeout: "100ms"
+
+routing:
+  default_timeout: "30s"
+  stream_first_chunk_timeout: "60s"
+  stream_chunk_timeout: "10s"
+  max_retries: 2
+  circuit_breaker:
+    failure_threshold: 5
+    error_rate_threshold: 0.5
+    error_rate_window: "30s"
+    recovery_probe_interval: "15s"
+  health_check_interval: "10s"
