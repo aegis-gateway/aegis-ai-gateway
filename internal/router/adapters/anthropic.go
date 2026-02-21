@@ -127,9 +127,88 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 	}, nil
 }
 
+// TransformStreamChunk converts an Anthropic SSE data payload to OpenAI streaming format.
+// Anthropic events: message_start, content_block_start, content_block_delta, message_delta, message_stop
+// We convert content_block_delta (text) → OpenAI delta chunk, and message_stop → [DONE].
 func (a *AnthropicAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
-	// Anthropic streaming format conversion will be implemented in the streaming step
-	return chunk, nil
+	var event struct {
+		Type  string `json:"type"`
+		Index int    `json:"index"`
+		Delta struct {
+			Type       string `json:"type"`
+			Text       string `json:"text"`
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+	}
+	if err := json.Unmarshal(chunk, &event); err != nil {
+		return nil, nil // skip unparseable chunks
+	}
+
+	switch event.Type {
+	case "content_block_delta":
+		if event.Delta.Type == "text_delta" {
+			oaiChunk := openAIStreamChunk{
+				Choices: []openAIStreamChoice{
+					{
+						Index: event.Index,
+						Delta: openAIDelta{Content: event.Delta.Text},
+					},
+				},
+			}
+			data, err := json.Marshal(oaiChunk)
+			if err != nil {
+				return nil, fmt.Errorf("marshal openai chunk: %w", err)
+			}
+			return data, nil
+		}
+		return nil, nil
+
+	case "message_delta":
+		// Final chunk with stop reason and usage
+		finishReason := mapStopReason(event.Delta.StopReason)
+		oaiChunk := openAIStreamChunk{
+			Choices: []openAIStreamChoice{
+				{
+					Index:        0,
+					Delta:        openAIDelta{},
+					FinishReason: &finishReason,
+				},
+			},
+		}
+		data, err := json.Marshal(oaiChunk)
+		if err != nil {
+			return nil, fmt.Errorf("marshal openai finish chunk: %w", err)
+		}
+		return data, nil
+
+	case "message_stop":
+		// Signal end of stream — caller should send [DONE]
+		return []byte("[DONE]"), nil
+
+	default:
+		// message_start, content_block_start, content_block_stop, ping — skip
+		return nil, nil
+	}
+}
+
+func (a *AnthropicAdapter) SendRequest(req *http.Request) (*http.Response, error) {
+	return a.client.Do(req)
+}
+
+// OpenAI streaming format types
+type openAIStreamChunk struct {
+	Choices []openAIStreamChoice `json:"choices"`
+}
+
+type openAIStreamChoice struct {
+	Index        int        `json:"index"`
+	Delta        openAIDelta `json:"delta"`
+	FinishReason *string    `json:"finish_reason"`
+}
+
+type openAIDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
 }
 
 func mapStopReason(reason string) string {

@@ -106,6 +106,10 @@ func (a *OpenAIAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
 	return chunk, nil
 }
 
+func (a *OpenAIAdapter) SendRequest(req *http.Request) (*http.Response, error) {
+	return a.client.Do(req)
+}
+
 type openAIRequestBody struct {
 	Model       string          `json:"model"`
 	Messages    []types.Message `json:"messages"`

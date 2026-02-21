@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,21 +10,30 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/af-corp/aegis-gateway/internal/filter/secrets"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/router"
+	"github.com/af-corp/aegis-gateway/internal/router/adapters"
+	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry  *router.Registry
-	modelsCfg func() *config.ModelsConfig
+	registry       *router.Registry
+	modelsCfg      func() *config.ModelsConfig
+	cfg            func() *config.Config
+	secretsScanner *secrets.Scanner
+	metrics        *telemetry.Metrics
 }
 
-func NewHandler(registry *router.Registry, modelsCfg func() *config.ModelsConfig) *Handler {
+func NewHandler(registry *router.Registry, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, metrics *telemetry.Metrics) *Handler {
 	return &Handler{
-		registry:  registry,
-		modelsCfg: modelsCfg,
+		registry:       registry,
+		modelsCfg:      modelsCfg,
+		cfg:            cfg,
+		secretsScanner: secrets.NewScanner(),
+		metrics:        metrics,
 	}
 }
 
@@ -75,6 +85,37 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Secrets scanning (before routing — block early)
+	if h.cfg().Filter.Secrets.Enabled {
+		detections := h.secretsScanner.ScanMessages(aegisReq.Messages)
+		if len(detections) > 0 {
+			// Collect unique secret types for the error message (never include the secret itself)
+			seen := map[string]bool{}
+			for _, d := range detections {
+				seen[d.PatternName] = true
+			}
+			secretTypes := ""
+			for name := range seen {
+				if secretTypes != "" {
+					secretTypes += ", "
+				}
+				secretTypes += name
+			}
+			slog.Warn("secrets detected in request",
+				"request_id", reqID,
+				"detection_count", len(detections),
+				"secret_types", secretTypes,
+				"org_id", authInfo.OrganizationID,
+			)
+			if h.metrics != nil {
+				h.metrics.RecordFilterAction("secrets", "block")
+			}
+			httputil.WriteContentBlockedError(w, reqID,
+				fmt.Sprintf("Request blocked: detected %d secret(s) of type: %s", len(detections), secretTypes))
+			return
+		}
+	}
+
 	// Route to provider
 	modelsCfg := h.modelsCfg()
 	adapter, providerModel, err := router.ResolveRoute(modelsCfg, h.registry, aegisReq.Model, string(aegisReq.Classification))
@@ -95,14 +136,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: streaming support will be added in step 8
+	// Streaming: forward SSE events from provider to client
 	if aegisReq.Stream {
-		h.handleStream(w, r, reqID, providerReq, adapter, originalModel)
+		h.handleStream(w, reqID, providerReq, adapter, originalModel, authInfo)
 		return
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	providerResp, err := client.Do(providerReq)
+	providerResp, err := adapter.SendRequest(providerReq)
 	if err != nil {
 		slog.Error("provider request failed", "error", err, "provider", adapter.Name())
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
@@ -117,7 +157,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aegisResp.RequestID = reqID
-	gatewayOverhead := time.Since(receivedAt)
+	totalDuration := time.Since(receivedAt)
 
 	slog.Info("request completed",
 		"request_id", reqID,
@@ -126,18 +166,67 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"provider", aegisResp.Provider,
 		"prompt_tokens", aegisResp.Usage.PromptTokens,
 		"completion_tokens", aegisResp.Usage.CompletionTokens,
-		"gateway_overhead_ms", gatewayOverhead.Milliseconds(),
+		"total_tokens", aegisResp.Usage.TotalTokens,
+		"estimated_cost_usd", aegisResp.EstimatedCostUSD,
+		"duration_ms", totalDuration.Milliseconds(),
+		"status_code", http.StatusOK,
+		"stream", false,
+		"classification", string(authInfo.MaxClassification),
 		"org_id", authInfo.OrganizationID,
+		"team_id", authInfo.TeamID,
 	)
+
+	if h.metrics != nil {
+		h.metrics.RecordRequest(telemetry.RequestLabels{
+			Org:              authInfo.OrganizationID,
+			Team:             authInfo.TeamID,
+			Model:            originalModel,
+			Provider:         aegisResp.Provider,
+			Status:           "200",
+			Classification:   string(authInfo.MaxClassification),
+			DurationMs:       float64(totalDuration.Milliseconds()),
+			OverheadMs:       float64(totalDuration.Milliseconds()), // approximation; provider latency subtracted in future
+			PromptTokens:     aegisResp.Usage.PromptTokens,
+			CompletionTokens: aegisResp.Usage.CompletionTokens,
+			CostUSD:          aegisResp.EstimatedCostUSD,
+		})
+	}
 
 	// Return OpenAI-compatible response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(aegisResp)
 }
 
-// handleStream forwards SSE streaming responses (stub for now, full impl in step 8)
-func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, reqID string, providerReq *http.Request, adapter interface{}, originalModel string) {
-	httputil.WriteBadRequestError(w, reqID, "Streaming not yet implemented")
+// handleStream sends the request to the provider and forwards SSE chunks to the client.
+func (h *Handler) handleStream(w http.ResponseWriter, reqID string, providerReq *http.Request, adapter adapters.ProviderAdapter, originalModel string, authInfo *auth.AuthInfo) {
+	providerResp, err := adapter.SendRequest(providerReq)
+	if err != nil {
+		slog.Error("streaming provider request failed", "error", err, "provider", adapter.Name())
+		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
+		return
+	}
+
+	if providerResp.StatusCode != http.StatusOK {
+		// Forward provider error as JSON
+		body, _ := io.ReadAll(providerResp.Body)
+		providerResp.Body.Close()
+		slog.Error("streaming provider returned error",
+			"status", providerResp.StatusCode,
+			"provider", adapter.Name(),
+			"body", string(body),
+		)
+		httputil.WriteInternalError(w, reqID, "Provider returned error")
+		return
+	}
+
+	slog.Info("streaming started",
+		"request_id", reqID,
+		"model_requested", originalModel,
+		"provider", adapter.Name(),
+		"org_id", authInfo.OrganizationID,
+	)
+
+	streamSSE(w, reqID, providerResp, adapter)
 }
 
 // ListModels handles GET /v1/models

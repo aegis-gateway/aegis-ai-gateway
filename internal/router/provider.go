@@ -8,6 +8,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
+	"github.com/af-corp/aegis-gateway/internal/types"
 )
 
 // Registry manages provider adapters.
@@ -64,24 +65,47 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 	return registry
 }
 
+// routeEligible checks whether a provider route's classification ceiling
+// permits the request's classification level.
+func routeEligible(route config.ProviderRoute, classification string) bool {
+	if route.ClassificationCeiling == "" {
+		return true // no ceiling configured = allow all
+	}
+	ceiling, ok := types.ParseClassification(route.ClassificationCeiling)
+	if !ok {
+		return false // unparseable ceiling = deny
+	}
+	reqClass, ok := types.ParseClassification(classification)
+	if !ok {
+		return true // unparseable request classification = allow (fail open for routing)
+	}
+	return ceiling.Allows(reqClass)
+}
+
 // ResolveRoute finds the right provider for a model request.
+// It checks classification ceilings to ensure the request's data classification
+// does not exceed what the provider route is allowed to handle.
 func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, classification string) (adapters.ProviderAdapter, string, error) {
 	mapping, ok := modelsCfg.Models[modelName]
 	if !ok {
 		return nil, "", fmt.Errorf("unknown model: %s", modelName)
 	}
 
-	// Try primary provider
-	if adapter, ok := registry.Get(mapping.Primary.Provider); ok {
-		return adapter, mapping.Primary.Model, nil
-	}
-
-	// Try fallbacks
-	for _, fb := range mapping.Fallback {
-		if adapter, ok := registry.Get(fb.Provider); ok {
-			return adapter, fb.Model, nil
+	// Try primary provider (must be registered and classification-eligible)
+	if routeEligible(mapping.Primary, classification) {
+		if adapter, ok := registry.Get(mapping.Primary.Provider); ok {
+			return adapter, mapping.Primary.Model, nil
 		}
 	}
 
-	return nil, "", fmt.Errorf("no available provider for model: %s", modelName)
+	// Try fallbacks in order
+	for _, fb := range mapping.Fallback {
+		if routeEligible(fb, classification) {
+			if adapter, ok := registry.Get(fb.Provider); ok {
+				return adapter, fb.Model, nil
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("no eligible provider for model %s at classification %s", modelName, classification)
 }

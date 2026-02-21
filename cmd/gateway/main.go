@@ -18,9 +18,11 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/gateway"
 	"github.com/af-corp/aegis-gateway/internal/router"
+	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -87,11 +89,28 @@ func main() {
 		logger.Info("provider registry reloaded")
 	})
 
+	// Initialize metrics
+	metrics := telemetry.NewMetrics()
+
+	// Start metrics server
+	metricsAddr := fmt.Sprintf(":%d", cfg.Telemetry.MetricsPort)
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{Addr: metricsAddr, Handler: metricsMux}
+	go func() {
+		logger.Info("metrics server starting", "addr", metricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("metrics server error", "error", err)
+		}
+	}()
+
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
 	handler := gateway.NewHandler(providerRegistry, func() *config.ModelsConfig {
 		return loader.Models()
-	})
+	}, func() *config.Config {
+		return loader.Config()
+	}, metrics)
 
 	// Router setup
 	r := chi.NewRouter()

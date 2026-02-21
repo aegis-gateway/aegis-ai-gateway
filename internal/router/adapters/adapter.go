@@ -15,4 +15,6 @@ type ProviderAdapter interface {
 	TransformResponse(ctx context.Context, resp *http.Response) (*types.AegisResponse, error)
 	TransformStreamChunk(chunk []byte) ([]byte, error)
 	SupportsStreaming() bool
+	// SendRequest sends an HTTP request using the provider's configured client.
+	SendRequest(req *http.Request) (*http.Response, error)
 }
