@@ -43,7 +43,7 @@ func TestResolveRoute_UnknownModel(t *testing.T) {
 	registry := newTestRegistry("openai")
 	cfg := modelsCfgWith(map[string]config.ModelMapping{})
 
-	_, _, err := ResolveRoute(cfg, registry, "nonexistent", "INTERNAL")
+	_, _, err := ResolveRoute(cfg, registry, nil, "nonexistent", "INTERNAL")
 	if err == nil {
 		t.Fatal("expected error for unknown model")
 	}
@@ -61,7 +61,7 @@ func TestResolveRoute_PrimaryProvider(t *testing.T) {
 		},
 	})
 
-	adapter, model, err := ResolveRoute(cfg, registry, "gpt-4o", "INTERNAL")
+	adapter, model, err := ResolveRoute(cfg, registry, nil, "gpt-4o", "INTERNAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestResolveRoute_ClassificationGating_BlocksPrimary(t *testing.T) {
 	})
 
 	// RESTRICTED data exceeds INTERNAL ceiling → should skip openai, use vllm
-	adapter, model, err := ResolveRoute(cfg, registry, "test-model", "RESTRICTED")
+	adapter, model, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestResolveRoute_ClassificationGating_BlocksAll(t *testing.T) {
 	})
 
 	// RESTRICTED data exceeds all ceilings → should fail
-	_, _, err := ResolveRoute(cfg, registry, "test-model", "RESTRICTED")
+	_, _, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err == nil {
 		t.Fatal("expected error when all providers are below classification ceiling")
 	}
@@ -144,7 +144,7 @@ func TestResolveRoute_ClassificationGating_AllowsEqualLevel(t *testing.T) {
 	})
 
 	// CONFIDENTIAL data with CONFIDENTIAL ceiling → should be allowed
-	adapter, _, err := ResolveRoute(cfg, registry, "test-model", "CONFIDENTIAL")
+	adapter, _, err := ResolveRoute(cfg, registry, nil, "test-model", "CONFIDENTIAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestResolveRoute_NoCeiling_AllowsAll(t *testing.T) {
 	})
 
 	// RESTRICTED data with no ceiling → should be allowed
-	_, _, err := ResolveRoute(cfg, registry, "test-model", "RESTRICTED")
+	_, _, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestResolveRoute_FallbackOrder(t *testing.T) {
 		},
 	})
 
-	adapter, model, err := ResolveRoute(cfg, registry, "test-model", "INTERNAL")
+	adapter, model, err := ResolveRoute(cfg, registry, nil, "test-model", "INTERNAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

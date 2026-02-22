@@ -16,7 +16,13 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/af-corp/aegis-gateway/internal/filter"
+	"github.com/af-corp/aegis-gateway/internal/filter/injection"
+	"github.com/af-corp/aegis-gateway/internal/filter/pii"
+	"github.com/af-corp/aegis-gateway/internal/filter/policy"
+	"github.com/af-corp/aegis-gateway/internal/filter/secrets"
 	"github.com/af-corp/aegis-gateway/internal/gateway"
+	"github.com/af-corp/aegis-gateway/internal/ratelimit"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/go-chi/chi/v5"
@@ -104,13 +110,40 @@ func main() {
 		}
 	}()
 
+	// Build filter chain
+	secretsFilter := secrets.NewFilter(func() bool { return loader.Config().Filter.Secrets.Enabled })
+	injectionScanner := injection.NewScanner(func() config.InjectionFilterConfig { return loader.Config().Filter.Injection })
+	piiClient := pii.NewClient(func() config.PIIServiceConfig { return loader.Config().Filter.PIIService })
+	if cfg.Filter.PIIService.Enabled {
+		if err := piiClient.Connect(); err != nil {
+			logger.Warn("failed to connect to PII service", "error", err)
+		}
+	}
+	policyEvaluator := policy.NewEvaluator(func() config.PolicyFilterConfig { return loader.Config().Filter.Policy })
+	if cfg.Filter.Policy.Enabled {
+		if err := policyEvaluator.Load(); err != nil {
+			logger.Warn("failed to load OPA policies (policy filter disabled)", "error", err)
+		}
+	}
+	filterChain := filter.NewChain(secretsFilter, injectionScanner, piiClient, policyEvaluator)
+
+	// Rate limiting
+	rateLimiter := ratelimit.NewLimiter(rdb)
+	budgetTracker := ratelimit.NewBudgetTracker(rdb)
+
+	// Health tracking (circuit breaker)
+	healthTracker := router.NewHealthTracker(
+		cfg.Routing.CircuitBreaker.FailureThreshold,
+		cfg.Routing.CircuitBreaker.RecoveryProbeInterval,
+	)
+
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
-	handler := gateway.NewHandler(providerRegistry, func() *config.ModelsConfig {
+	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, metrics)
+	}, filterChain, metrics)
 
 	// Router setup
 	r := chi.NewRouter()
@@ -124,6 +157,7 @@ func main() {
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(keyStore))
+		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics))
 		r.Post("/v1/chat/completions", handler.ChatCompletions)
 		r.Get("/v1/models", handler.ListModels)
 	})

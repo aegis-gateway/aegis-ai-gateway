@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,7 +9,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/filter/secrets"
+	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
@@ -20,20 +19,22 @@ import (
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry       *router.Registry
-	modelsCfg      func() *config.ModelsConfig
-	cfg            func() *config.Config
-	secretsScanner *secrets.Scanner
-	metrics        *telemetry.Metrics
+	registry      *router.Registry
+	healthTracker *router.HealthTracker
+	modelsCfg     func() *config.ModelsConfig
+	cfg           func() *config.Config
+	filterChain   *filter.Chain
+	metrics       *telemetry.Metrics
 }
 
-func NewHandler(registry *router.Registry, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, metrics *telemetry.Metrics) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics) *Handler {
 	return &Handler{
-		registry:       registry,
-		modelsCfg:      modelsCfg,
-		cfg:            cfg,
-		secretsScanner: secrets.NewScanner(),
-		metrics:        metrics,
+		registry:      registry,
+		healthTracker: healthTracker,
+		modelsCfg:     modelsCfg,
+		cfg:           cfg,
+		filterChain:   filterChain,
+		metrics:       metrics,
 	}
 }
 
@@ -85,40 +86,34 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Secrets scanning (before routing — block early)
-	if h.cfg().Filter.Secrets.Enabled {
-		detections := h.secretsScanner.ScanMessages(aegisReq.Messages)
-		if len(detections) > 0 {
-			// Collect unique secret types for the error message (never include the secret itself)
-			seen := map[string]bool{}
-			for _, d := range detections {
-				seen[d.PatternName] = true
-			}
-			secretTypes := ""
-			for name := range seen {
-				if secretTypes != "" {
-					secretTypes += ", "
-				}
-				secretTypes += name
-			}
-			slog.Warn("secrets detected in request",
+	// Run content filter chain (secrets, injection, PII, policy)
+	if h.filterChain != nil {
+		results, blocked := h.filterChain.Run(r.Context(), &aegisReq)
+		if blocked != nil {
+			slog.Warn("request blocked by filter",
 				"request_id", reqID,
-				"detection_count", len(detections),
-				"secret_types", secretTypes,
+				"filter", blocked.FilterName,
+				"detections", blocked.Detections,
+				"score", blocked.Score,
 				"org_id", authInfo.OrganizationID,
 			)
 			if h.metrics != nil {
-				h.metrics.RecordFilterAction("secrets", "block")
+				h.metrics.RecordFilterAction(blocked.FilterName, string(blocked.Action))
 			}
-			httputil.WriteContentBlockedError(w, reqID,
-				fmt.Sprintf("Request blocked: detected %d secret(s) of type: %s", len(detections), secretTypes))
+			httputil.WriteContentBlockedError(w, reqID, blocked.Message)
 			return
+		}
+		// Record flagged filters
+		for _, fr := range results {
+			if fr.Action == filter.ActionFlag && h.metrics != nil {
+				h.metrics.RecordFilterAction(fr.FilterName, "flag")
+			}
 		}
 	}
 
 	// Route to provider
 	modelsCfg := h.modelsCfg()
-	adapter, providerModel, err := router.ResolveRoute(modelsCfg, h.registry, aegisReq.Model, string(aegisReq.Classification))
+	adapter, providerModel, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
 		return
@@ -145,6 +140,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	providerResp, err := adapter.SendRequest(providerReq)
 	if err != nil {
 		slog.Error("provider request failed", "error", err, "provider", adapter.Name())
+		if h.healthTracker != nil {
+			h.healthTracker.RecordFailure(adapter.Name())
+		}
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
@@ -154,6 +152,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to transform response", "error", err, "provider", adapter.Name())
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
+	}
+
+	if h.healthTracker != nil {
+		h.healthTracker.RecordSuccess(adapter.Name())
 	}
 
 	aegisResp.RequestID = reqID

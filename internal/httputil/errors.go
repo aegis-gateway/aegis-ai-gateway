@@ -54,3 +54,7 @@ func WriteServiceUnavailableError(w http.ResponseWriter, requestID, message stri
 func WriteContentBlockedError(w http.ResponseWriter, requestID, message string) {
 	WriteError(w, requestID, 451, "content_filter_error", "content_blocked", message)
 }
+
+func WriteBudgetExceededError(w http.ResponseWriter, requestID, message string) {
+	WriteError(w, requestID, http.StatusPaymentRequired, "budget_error", "budget_exceeded", message)
+}

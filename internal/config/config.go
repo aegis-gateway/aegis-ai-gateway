@@ -70,9 +70,11 @@ type FilterConfig struct {
 }
 
 type PIIServiceConfig struct {
+	Enabled    bool          `yaml:"enabled"`
 	Address    string        `yaml:"address"`
 	Timeout    time.Duration `yaml:"timeout"`
 	MaxRetries int           `yaml:"max_retries"`
+	FailOpen   bool          `yaml:"fail_open"`
 }
 
 type SecretsFilterConfig struct {

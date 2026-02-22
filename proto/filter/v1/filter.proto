@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package aegis.filter.v1;
+
+option go_package = "github.com/af-corp/aegis-gateway/gen/filter/v1;filterv1";
+
+service FilterService {
+  // ScanPII scans text for personally identifiable information.
+  rpc ScanPII(ScanPIIRequest) returns (ScanPIIResponse);
+}
+
+message ScanPIIRequest {
+  // The text to scan for PII.
+  string text = 1;
+  // Classification level of the request (PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED).
+  string classification = 2;
+}
+
+message ScanPIIResponse {
+  // Whether PII was detected.
+  bool detected = 1;
+  // List of PII detections found.
+  repeated PIIDetection detections = 2;
+  // The redacted text (if redaction was applied).
+  string redacted_text = 3;
+}
+
+message PIIDetection {
+  // Type of PII (e.g., "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD").
+  string entity_type = 1;
+  // Start byte offset in the original text.
+  int32 start = 2;
+  // End byte offset in the original text.
+  int32 end = 3;
+  // Confidence score (0.0 to 1.0).
+  float score = 4;
+}

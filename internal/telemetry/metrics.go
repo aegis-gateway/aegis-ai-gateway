@@ -13,6 +13,7 @@ type Metrics struct {
 	TokensTotal       *prometheus.CounterVec
 	CostUSDTotal      *prometheus.CounterVec
 	FilterActionTotal *prometheus.CounterVec
+	RateLimitHitTotal *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -49,6 +50,11 @@ func NewMetrics() *Metrics {
 			Name: "aegis_filter_action_total",
 			Help: "Total filter actions taken.",
 		}, []string{"filter", "action"}),
+
+		RateLimitHitTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_rate_limit_hit_total",
+			Help: "Total rate limit hits.",
+		}, []string{"dimension", "id"}),
 	}
 }
 
@@ -84,6 +90,11 @@ func (m *Metrics) RecordRequest(labels RequestLabels) {
 			labels.Org, labels.Team, labels.Model, labels.Provider,
 		).Add(labels.CostUSD)
 	}
+}
+
+// RecordRateLimitHit records a rate limit hit.
+func (m *Metrics) RecordRateLimitHit(dimension, id string) {
+	m.RateLimitHitTotal.WithLabelValues(dimension, id).Inc()
 }
 
 // RecordFilterAction records a filter action metric.

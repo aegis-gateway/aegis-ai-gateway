@@ -32,6 +32,23 @@ services:
       retries: 5
       start_period: 5s
 
+  aegis-filter-nlp:
+    build:
+      context: ../filter-service
+      dockerfile: Dockerfile
+    container_name: aegis-filter-nlp
+    ports:
+      - "50051:50051"
+    environment:
+      GRPC_PORT: "50051"
+      GRPC_WORKERS: "4"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; ch = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   aegis-pgdata:
   aegis-redis-data:

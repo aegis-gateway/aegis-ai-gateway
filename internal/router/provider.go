@@ -85,14 +85,15 @@ func routeEligible(route config.ProviderRoute, classification string) bool {
 // ResolveRoute finds the right provider for a model request.
 // It checks classification ceilings to ensure the request's data classification
 // does not exceed what the provider route is allowed to handle.
-func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, classification string) (adapters.ProviderAdapter, string, error) {
+// If healthTracker is non-nil, providers with open circuit breakers are skipped.
+func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, healthTracker *HealthTracker, modelName string, classification string) (adapters.ProviderAdapter, string, error) {
 	mapping, ok := modelsCfg.Models[modelName]
 	if !ok {
 		return nil, "", fmt.Errorf("unknown model: %s", modelName)
 	}
 
-	// Try primary provider (must be registered and classification-eligible)
-	if routeEligible(mapping.Primary, classification) {
+	// Try primary provider (must be registered, classification-eligible, and healthy)
+	if routeEligible(mapping.Primary, classification) && providerHealthy(healthTracker, mapping.Primary.Provider) {
 		if adapter, ok := registry.Get(mapping.Primary.Provider); ok {
 			return adapter, mapping.Primary.Model, nil
 		}
@@ -100,7 +101,7 @@ func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, modelName 
 
 	// Try fallbacks in order
 	for _, fb := range mapping.Fallback {
-		if routeEligible(fb, classification) {
+		if routeEligible(fb, classification) && providerHealthy(healthTracker, fb.Provider) {
 			if adapter, ok := registry.Get(fb.Provider); ok {
 				return adapter, fb.Model, nil
 			}
@@ -108,4 +109,12 @@ func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, modelName 
 	}
 
 	return nil, "", fmt.Errorf("no eligible provider for model %s at classification %s", modelName, classification)
+}
+
+// providerHealthy returns true if the provider is healthy or if no health tracker is configured.
+func providerHealthy(ht *HealthTracker, provider string) bool {
+	if ht == nil {
+		return true
+	}
+	return ht.IsAvailable(provider)
 }
