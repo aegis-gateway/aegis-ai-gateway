@@ -1,0 +1,131 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+# AEGIS AI Gateway — mise-en-place configuration
+# Usage: mise run <task>     (e.g. mise run dev)
+#        mise run --list     (show all tasks)
+
+[tools]
+go = "1.25"
+"golangci-lint" = "latest"
+
+[env]
+DB_HOST = "localhost"
+DB_PORT = "5432"
+DB_USER = "aegis"
+DB_PASSWORD = "aegis-dev"
+DB_NAME = "aegis"
+REDIS_HOST = "localhost"
+REDIS_PORT = "6379"
+REDIS_PASSWORD = ""
+DATABASE_URL = "postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable"
+_.file = ".env"
+
+# ── Setup ─────────────────────────────────────────────────────────
+
+[tasks.setup]
+description = "Install Go dependencies and verify modules"
+run = [
+  "go mod download",
+  "go mod verify",
+  "echo '✓ Dependencies installed'",
+]
+
+# ── Docker services ───────────────────────────────────────────────
+
+[tasks."services:up"]
+description = "Start PostgreSQL and Redis in Docker"
+run = "docker compose -f deploy/docker-compose.yaml up -d --wait"
+
+[tasks."services:down"]
+description = "Stop Docker services (preserves data)"
+run = "docker compose -f deploy/docker-compose.yaml down"
+
+[tasks."services:destroy"]
+description = "Stop Docker services and delete volumes"
+run = "docker compose -f deploy/docker-compose.yaml down -v"
+
+[tasks."services:logs"]
+description = "Tail Docker service logs"
+run = "docker compose -f deploy/docker-compose.yaml logs -f"
+
+# ── Database ──────────────────────────────────────────────────────
+
+[tasks."db:migrate"]
+description = "Run database migrations up"
+run = "go run ./cmd/migrate -direction up"
+
+[tasks."db:migrate:down"]
+description = "Run database migrations down"
+run = "go run ./cmd/migrate -direction down"
+
+[tasks."db:reset"]
+description = "Drop and recreate database, then migrate"
+depends = ["services:up"]
+run = """
+echo 'Resetting database...'
+docker exec aegis-postgres psql -U aegis -c 'DROP DATABASE IF EXISTS aegis;'
+docker exec aegis-postgres psql -U aegis -c 'CREATE DATABASE aegis;'
+go run ./cmd/migrate -direction up
+echo '✓ Database reset complete'
+"""
+
+# ── Build ─────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Compile gateway, keygen, and migrate binaries"
+run = """
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS="-s -w -X main.version=${VERSION}"
+go build -ldflags="${LDFLAGS}" -o bin/gateway  ./cmd/gateway
+go build -ldflags="${LDFLAGS}" -o bin/keygen   ./cmd/keygen
+go build -ldflags="${LDFLAGS}" -o bin/migrate  ./cmd/migrate
+echo "✓ Binaries built in ./bin/"
+"""
+sources = ["cmd/**/*.go", "internal/**/*.go", "go.mod", "go.sum"]
+outputs = ["bin/gateway", "bin/keygen", "bin/migrate"]
+
+# ── Test ──────────────────────────────────────────────────────────
+
+[tasks.test]
+description = "Run unit tests with race detection and coverage"
+run = "go test ./... -v -race -cover"
+
+[tasks."test:integration"]
+description = "Run integration tests (starts services and migrates first)"
+depends = ["services:up", "db:migrate"]
+run = "go test ./test/integration/... -v -tags=integration -count=1"
+
+# ── Lint / Format ─────────────────────────────────────────────────
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format Go source files"
+run = "go fmt ./..."
+
+# ── Run / Dev ─────────────────────────────────────────────────────
+
+[tasks.dev]
+description = "Start gateway with services and migrations"
+depends = ["services:up", "db:migrate"]
+run = "go run ./cmd/gateway"
+
+[tasks.run]
+description = "Start gateway (assumes services already running)"
+run = "go run ./cmd/gateway"
+
+# ── Keygen ────────────────────────────────────────────────────────
+
+[tasks.keygen]
+description = "Generate a dev API key"
+depends = ["services:up", "db:migrate"]
+run = """
+go run ./cmd/keygen \
+  -org dev-org \
+  -team dev-team \
+  -name dev-key \
+  -classification INTERNAL \
+  -expires 365d
+"""
