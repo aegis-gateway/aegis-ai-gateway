@@ -9,6 +9,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/af-corp/aegis-gateway/internal/cost"
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/router"
@@ -25,9 +26,10 @@ type Handler struct {
 	cfg           func() *config.Config
 	filterChain   *filter.Chain
 	metrics       *telemetry.Metrics
+	costCalc      *cost.Calculator
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator) *Handler {
 	return &Handler{
 		registry:      registry,
 		healthTracker: healthTracker,
@@ -35,6 +37,7 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		cfg:           cfg,
 		filterChain:   filterChain,
 		metrics:       metrics,
+		costCalc:      costCalc,
 	}
 }
 
@@ -159,6 +162,25 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aegisResp.RequestID = reqID
+	
+	// Calculate cost using actual provider and model served
+	if h.costCalc != nil {
+		if cost, found := h.costCalc.Calculate(
+			aegisResp.Provider,
+			aegisResp.Model,
+			aegisResp.Usage.PromptTokens,
+			aegisResp.Usage.CompletionTokens,
+		); found {
+			aegisResp.EstimatedCostUSD = cost
+		} else {
+			slog.Warn("cost calculation failed - no pricing data",
+				"provider", aegisResp.Provider,
+				"model", aegisResp.Model,
+				"request_id", reqID,
+			)
+		}
+	}
+	
 	totalDuration := time.Since(receivedAt)
 
 	slog.Info("request completed",

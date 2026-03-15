@@ -16,6 +16,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/af-corp/aegis-gateway/internal/cost"
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/filter/injection"
 	"github.com/af-corp/aegis-gateway/internal/filter/pii"
@@ -139,11 +140,14 @@ func main() {
 
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
+	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
+		return loader.Models()
+	})
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, filterChain, metrics)
+	}, filterChain, metrics, costCalc)
 
 	// Router setup
 	r := chi.NewRouter()
