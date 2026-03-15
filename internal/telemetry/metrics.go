@@ -14,6 +14,8 @@ type Metrics struct {
 	CostUSDTotal      *prometheus.CounterVec
 	FilterActionTotal *prometheus.CounterVec
 	RateLimitHitTotal *prometheus.CounterVec
+	DBPoolConns       *prometheus.GaugeVec
+	DBPoolWaitDuration *prometheus.HistogramVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -55,6 +57,17 @@ func NewMetrics() *Metrics {
 			Name: "aegis_rate_limit_hit_total",
 			Help: "Total rate limit hits.",
 		}, []string{"dimension", "id"}),
+
+		DBPoolConns: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "aegis_db_pool_conns",
+			Help: "Database connection pool statistics.",
+		}, []string{"state"}),
+
+		DBPoolWaitDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aegis_db_pool_wait_duration_ms",
+			Help:    "Time spent waiting for a database connection in milliseconds.",
+			Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000},
+		}, []string{}),
 	}
 }
 
@@ -100,6 +113,14 @@ func (m *Metrics) RecordRateLimitHit(dimension, id string) {
 // RecordFilterAction records a filter action metric.
 func (m *Metrics) RecordFilterAction(filter, action string) {
 	m.FilterActionTotal.WithLabelValues(filter, action).Inc()
+}
+
+// RecordDBPoolStats records database pool statistics.
+func (m *Metrics) RecordDBPoolStats(acquiredConns, idleConns, maxConns, totalConns int32) {
+	m.DBPoolConns.WithLabelValues("acquired").Set(float64(acquiredConns))
+	m.DBPoolConns.WithLabelValues("idle").Set(float64(idleConns))
+	m.DBPoolConns.WithLabelValues("max").Set(float64(maxConns))
+	m.DBPoolConns.WithLabelValues("total").Set(float64(totalConns))
 }
 
 // RequestLabels holds the label values for recording a request.

@@ -58,8 +58,29 @@ func main() {
 
 	cfg := loader.Config()
 
-	// Connect to PostgreSQL
-	dbPool, err := pgxpool.New(context.Background(), cfg.Database.DSN())
+	// Connect to PostgreSQL with pool configuration
+	poolConfig, err := pgxpool.ParseConfig(cfg.Database.DSN())
+	if err != nil {
+		logger.Error("failed to parse database DSN", "error", err)
+		os.Exit(1)
+	}
+
+	// Apply pool settings from config
+	poolConfig.MaxConns = int32(cfg.Database.MaxOpenConns)
+	poolConfig.MinConns = int32(cfg.Database.MaxIdleConns)
+	poolConfig.MaxConnLifetime = cfg.Database.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = 30 * time.Minute
+	poolConfig.HealthCheckPeriod = 1 * time.Minute
+
+	logger.Info("database pool configuration",
+		"max_conns", poolConfig.MaxConns,
+		"min_conns", poolConfig.MinConns,
+		"max_conn_lifetime", poolConfig.MaxConnLifetime,
+		"max_conn_idle_time", poolConfig.MaxConnIdleTime,
+		"health_check_period", poolConfig.HealthCheckPeriod,
+	)
+
+	dbPool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -69,7 +90,12 @@ func main() {
 	if err := dbPool.Ping(context.Background()); err != nil {
 		logger.Warn("database not reachable (gateway will start but auth will fail)", "error", err)
 	} else {
-		logger.Info("database connected")
+		stats := dbPool.Stat()
+		logger.Info("database connected",
+			"acquired_conns", stats.AcquiredConns(),
+			"idle_conns", stats.IdleConns(),
+			"max_conns", stats.MaxConns(),
+		)
 	}
 
 	// Connect to Redis
@@ -109,6 +135,21 @@ func main() {
 		logger.Info("metrics server starting", "addr", metricsAddr)
 		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("metrics server error", "error", err)
+		}
+	}()
+
+	// Start DB pool metrics collector
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			stats := dbPool.Stat()
+			metrics.RecordDBPoolStats(
+				stats.AcquiredConns(),
+				stats.IdleConns(),
+				stats.MaxConns(),
+				stats.TotalConns(),
+			)
 		}
 	}()
 
@@ -158,7 +199,7 @@ func main() {
 	r.Use(requestIDMiddleware)
 
 	// Unauthenticated routes
-	r.Get("/aegis/v1/health", healthHandler)
+	r.Get("/aegis/v1/health", makeHealthHandler(dbPool))
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
@@ -207,12 +248,54 @@ func main() {
 	logger.Info("gateway stopped")
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":  "healthy",
-		"version": version,
-	})
+// Health check response structure
+type healthResponse struct {
+	Status   string                 `json:"status"`
+	Version  string                 `json:"version"`
+	Database *databaseHealth        `json:"database,omitempty"`
+}
+
+type databaseHealth struct {
+	Connected     bool  `json:"connected"`
+	AcquiredConns int32 `json:"acquired_conns"`
+	IdleConns     int32 `json:"idle_conns"`
+	MaxConns      int32 `json:"max_conns"`
+	TotalConns    int32 `json:"total_conns"`
+}
+
+func makeHealthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		resp := healthResponse{
+			Status:  "healthy",
+			Version: version,
+		}
+
+		// Check database connectivity
+		if pool != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+
+			dbHealth := &databaseHealth{}
+			if err := pool.Ping(ctx); err != nil {
+				dbHealth.Connected = false
+				resp.Status = "degraded"
+			} else {
+				dbHealth.Connected = true
+				stats := pool.Stat()
+				dbHealth.AcquiredConns = stats.AcquiredConns()
+				dbHealth.IdleConns = stats.IdleConns()
+				dbHealth.MaxConns = stats.MaxConns()
+				dbHealth.TotalConns = stats.TotalConns()
+			}
+			resp.Database = dbHealth
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if resp.Status != "healthy" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func requestIDMiddleware(next http.Handler) http.Handler {
