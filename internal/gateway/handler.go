@@ -14,6 +14,7 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
+	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
@@ -27,9 +28,10 @@ type Handler struct {
 	filterChain   *filter.Chain
 	metrics       *telemetry.Metrics
 	costCalc      *cost.Calculator
+	usageRecorder *storage.UsageRecorder
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder) *Handler {
 	return &Handler{
 		registry:      registry,
 		healthTracker: healthTracker,
@@ -38,6 +40,7 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		filterChain:   filterChain,
 		metrics:       metrics,
 		costCalc:      costCalc,
+		usageRecorder: usageRecorder,
 	}
 }
 
@@ -213,6 +216,29 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			PromptTokens:     aegisResp.Usage.PromptTokens,
 			CompletionTokens: aegisResp.Usage.CompletionTokens,
 			CostUSD:          aegisResp.EstimatedCostUSD,
+		})
+	}
+
+	// Record usage asynchronously (non-blocking)
+	if h.usageRecorder != nil {
+		h.usageRecorder.RecordUsage(storage.UsageRecord{
+			RequestID:        reqID,
+			OrganizationID:   authInfo.OrganizationID,
+			TeamID:           authInfo.TeamID,
+			UserID:           authInfo.UserID,
+			APIKeyID:         authInfo.KeyID,
+			ModelRequested:   originalModel,
+			ModelServed:      aegisResp.Model,
+			Provider:         aegisResp.Provider,
+			Classification:   string(authInfo.MaxClassification),
+			PromptTokens:     aegisResp.Usage.PromptTokens,
+			CompletionTokens: aegisResp.Usage.CompletionTokens,
+			TotalTokens:      aegisResp.Usage.TotalTokens,
+			EstimatedCostUSD: aegisResp.EstimatedCostUSD,
+			DurationMs:       totalDuration.Milliseconds(),
+			StatusCode:       http.StatusOK,
+			Project:          aegisReq.Project,
+			Stream:           false,
 		})
 	}
 

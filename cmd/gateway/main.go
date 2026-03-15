@@ -25,6 +25,7 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/gateway"
 	"github.com/af-corp/aegis-gateway/internal/ratelimit"
 	"github.com/af-corp/aegis-gateway/internal/router"
+	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -143,11 +144,12 @@ func main() {
 	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
 		return loader.Models()
 	})
+	usageRecorder := storage.NewUsageRecorder(dbPool)
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, filterChain, metrics, costCalc)
+	}, filterChain, metrics, costCalc, usageRecorder)
 
 	// Router setup
 	r := chi.NewRouter()
