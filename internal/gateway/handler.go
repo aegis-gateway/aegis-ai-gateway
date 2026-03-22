@@ -29,22 +29,23 @@ type AuditLogger interface {
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry       *router.Registry
-	healthTracker  *router.HealthTracker
-	modelsCfg      func() *config.ModelsConfig
-	cfg            func() *config.Config
-	filterChain    *filter.Chain
-	metrics        *telemetry.Metrics
-	costCalc       *cost.Calculator
-	usageRecorder  *storage.UsageRecorder
-	auditLogger    AuditLogger
-	retryExecutor  *retry.Executor
-	contextMonitor *retry.ContextMonitor
-	validator      *validation.Validator
+	registry         *router.Registry
+	healthTracker    *router.HealthTracker
+	modelsCfg        func() *config.ModelsConfig
+	cfg              func() *config.Config
+	filterChain      *filter.Chain
+	metrics          *telemetry.Metrics
+	costCalc         *cost.Calculator
+	usageRecorder    *storage.UsageRecorder
+	auditLogger      AuditLogger
+	retryExecutor    *retry.Executor
+	contextMonitor   *retry.ContextMonitor
+	validator        *validation.Validator
+	streamingHandler *StreamingHandler
 }
 
 func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger, retryExecutor *retry.Executor, contextMonitor *retry.ContextMonitor, validator *validation.Validator) *Handler {
-	return &Handler{
+	h := &Handler{
 		registry:       registry,
 		healthTracker:  healthTracker,
 		modelsCfg:      modelsCfg,
@@ -58,6 +59,11 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		contextMonitor: contextMonitor,
 		validator:      validator,
 	}
+	
+	// Initialize streaming handler with configuration
+	h.streamingHandler = NewStreamingHandler(h, DefaultStreamingConfig())
+	
+	return h
 }
 
 // ChatCompletions handles POST /v1/chat/completions
@@ -177,9 +183,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Streaming: forward SSE events from provider to client
+	// Streaming: forward SSE events from provider to client with full monitoring
 	if aegisReq.Stream {
-		h.handleStream(w, reqID, providerReq, adapter, originalModel, authInfo)
+		h.streamingHandler.HandleStream(w, r, reqID, providerReq, adapter, originalModel, authInfo, &aegisReq)
 		return
 	}
 
