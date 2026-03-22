@@ -22,8 +22,15 @@ const (
 	headerRetryAfter                 = "Retry-After"
 )
 
+// AuditLogger defines the interface for audit logging (to avoid circular dependency).
+type AuditLogger interface {
+	LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, ip string)
+	LogBudgetViolation(requestID, orgID, teamID, keyID string, spentCents, limitCents int64, ip string)
+	LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, ip string)
+}
+
 // Middleware returns chi middleware that enforces per-key rate limits and budget.
-func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metrics) func(http.Handler) http.Handler {
+func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metrics, auditLogger AuditLogger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reqID := w.Header().Get("X-Request-ID")
@@ -43,7 +50,25 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 
 			// Check RPM
 			rpmKey := fmt.Sprintf("rpm:%s", authInfo.KeyID)
-			result, _ := limiter.Check(r.Context(), rpmKey, int64(rpm), time.Minute)
+			result, err := limiter.Check(r.Context(), rpmKey, int64(rpm), time.Minute)
+
+			// Handle Redis unavailability (fail closed for security)
+			if err == ErrRedisUnavailable {
+				slog.Error("redis unavailable - rate limiting failed closed",
+					"request_id", reqID,
+					"key_id", authInfo.KeyID,
+					"error", err,
+				)
+				if auditLogger != nil {
+					auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rate_limit_check", err, r.RemoteAddr)
+				}
+				if metrics != nil {
+					metrics.RecordRateLimitHit("redis_unavailable", authInfo.OrganizationID)
+				}
+				httputil.WriteServiceUnavailableError(w, reqID,
+					"Rate limiting service temporarily unavailable. Please try again in 30 seconds.")
+				return
+			}
 
 			// Always set rate limit headers
 			w.Header().Set(headerRateLimitRequests, strconv.Itoa(rpm))
@@ -58,6 +83,9 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 					"dimension", "rpm",
 					"limit", rpm,
 				)
+				if auditLogger != nil {
+					auditLogger.LogRateLimitViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rpm", int64(rpm), r.RemoteAddr)
+				}
 				if metrics != nil {
 					metrics.RecordRateLimitHit("rpm", authInfo.OrganizationID)
 				}
@@ -69,7 +97,27 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 
 			// Check daily budget
 			if authInfo.DailySpendLimitCents != nil {
-				budgetResult, _ := budget.CheckDailySpend(r.Context(), authInfo.TeamID, int64(*authInfo.DailySpendLimitCents))
+				budgetResult, budgetErr := budget.CheckDailySpend(r.Context(), authInfo.TeamID, int64(*authInfo.DailySpendLimitCents))
+
+				// Handle Redis unavailability (fail closed for security)
+				if budgetErr == ErrRedisUnavailable {
+					slog.Error("redis unavailable - budget tracking failed closed",
+						"request_id", reqID,
+						"key_id", authInfo.KeyID,
+						"team_id", authInfo.TeamID,
+						"error", budgetErr,
+					)
+					if auditLogger != nil {
+						auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "budget_check", budgetErr, r.RemoteAddr)
+					}
+					if metrics != nil {
+						metrics.RecordRateLimitHit("redis_unavailable", authInfo.TeamID)
+					}
+					httputil.WriteServiceUnavailableError(w, reqID,
+						"Budget tracking service temporarily unavailable. Please try again in 30 seconds.")
+					return
+				}
+
 				if !budgetResult.Allowed {
 					slog.Warn("daily budget exceeded",
 						"request_id", reqID,
@@ -78,6 +126,9 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 						"spent_cents", budgetResult.SpentCents,
 						"limit_cents", budgetResult.LimitCents,
 					)
+					if auditLogger != nil {
+						auditLogger.LogBudgetViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, budgetResult.SpentCents, budgetResult.LimitCents, r.RemoteAddr)
+					}
 					if metrics != nil {
 						metrics.RecordRateLimitHit("budget", authInfo.TeamID)
 					}

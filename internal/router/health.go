@@ -57,3 +57,25 @@ func (ht *HealthTracker) RecordSuccess(provider string) {
 func (ht *HealthTracker) RecordFailure(provider string) {
 	ht.GetBreaker(provider).RecordFailure()
 }
+
+// ListProviders returns all provider names with circuit breakers.
+func (ht *HealthTracker) ListProviders() []string {
+	ht.mu.RLock()
+	defer ht.mu.RUnlock()
+	names := make([]string, 0, len(ht.breakers))
+	for name := range ht.breakers {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetState returns the circuit breaker state for a provider.
+func (ht *HealthTracker) GetState(provider string) string {
+	ht.mu.RLock()
+	cb, ok := ht.breakers[provider]
+	ht.mu.RUnlock()
+	if !ok {
+		return "unknown"
+	}
+	return cb.State().String()
+}

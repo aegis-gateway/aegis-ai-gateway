@@ -19,6 +19,11 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
 
+// AuditLogger defines the interface for audit logging (to avoid circular dependency).
+type AuditLogger interface {
+	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
+}
+
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
 	registry      *router.Registry
@@ -29,9 +34,10 @@ type Handler struct {
 	metrics       *telemetry.Metrics
 	costCalc      *cost.Calculator
 	usageRecorder *storage.UsageRecorder
+	auditLogger   AuditLogger
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger) *Handler {
 	return &Handler{
 		registry:      registry,
 		healthTracker: healthTracker,
@@ -41,6 +47,7 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		metrics:       metrics,
 		costCalc:      costCalc,
 		usageRecorder: usageRecorder,
+		auditLogger:   auditLogger,
 	}
 }
 
@@ -103,6 +110,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"score", blocked.Score,
 				"org_id", authInfo.OrganizationID,
 			)
+			if h.auditLogger != nil {
+				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, blocked.FilterName, blocked.Message, r.RemoteAddr)
+			}
 			if h.metrics != nil {
 				h.metrics.RecordFilterAction(blocked.FilterName, string(blocked.Action))
 			}

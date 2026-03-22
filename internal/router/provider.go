@@ -36,6 +36,24 @@ func (r *Registry) Get(name string) (adapters.ProviderAdapter, bool) {
 	return a, ok
 }
 
+// ListProviders returns a list of all registered provider names.
+func (r *Registry) ListProviders() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.adapters))
+	for name := range r.adapters {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetProvider returns a provider adapter by name (for health checks).
+func (r *Registry) GetProvider(name string) adapters.ProviderAdapter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.adapters[name]
+}
+
 // BuildFromConfig builds provider adapters from the providers config.
 func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 	registry := NewRegistry()
