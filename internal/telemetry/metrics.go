@@ -16,6 +16,17 @@ type Metrics struct {
 	RateLimitHitTotal *prometheus.CounterVec
 	DBPoolConns       *prometheus.GaugeVec
 	DBPoolWaitDuration *prometheus.HistogramVec
+	
+	// Retry metrics
+	RetryAttemptTotal *prometheus.CounterVec
+	RetrySuccessTotal *prometheus.CounterVec
+	RetryFailureTotal *prometheus.CounterVec
+	
+	// Context cancellation metrics
+	CancellationTotal *prometheus.CounterVec
+	
+	// Validation metrics
+	ValidationFailureTotal *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -68,6 +79,31 @@ func NewMetrics() *Metrics {
 			Help:    "Time spent waiting for a database connection in milliseconds.",
 			Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000},
 		}, []string{}),
+		
+		RetryAttemptTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_retry_attempt_total",
+			Help: "Total number of retry attempts.",
+		}, []string{"provider", "attempt"}),
+		
+		RetrySuccessTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_retry_success_total",
+			Help: "Total number of successful retries.",
+		}, []string{"provider", "attempt"}),
+		
+		RetryFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_retry_failure_total",
+			Help: "Total number of failed retries.",
+		}, []string{"provider", "reason"}),
+		
+		CancellationTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_cancellation_total",
+			Help: "Total number of cancelled requests.",
+		}, []string{"provider", "stage"}),
+		
+		ValidationFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_validation_failure_total",
+			Help: "Total number of validation failures.",
+		}, []string{"field"}),
 	}
 }
 
@@ -121,6 +157,51 @@ func (m *Metrics) RecordDBPoolStats(acquiredConns, idleConns, maxConns, totalCon
 	m.DBPoolConns.WithLabelValues("idle").Set(float64(idleConns))
 	m.DBPoolConns.WithLabelValues("max").Set(float64(maxConns))
 	m.DBPoolConns.WithLabelValues("total").Set(float64(totalConns))
+}
+
+// RecordRetryAttempt records a retry attempt.
+func (m *Metrics) RecordRetryAttempt(provider string, attempt int) {
+	m.RetryAttemptTotal.WithLabelValues(provider, itoa(attempt)).Inc()
+}
+
+// RecordRetrySuccess records a successful retry.
+func (m *Metrics) RecordRetrySuccess(provider string, attempt int) {
+	m.RetrySuccessTotal.WithLabelValues(provider, itoa(attempt)).Inc()
+}
+
+// RecordRetryFailure records a failed retry.
+func (m *Metrics) RecordRetryFailure(provider string, attempt int, reason string) {
+	m.RetryFailureTotal.WithLabelValues(provider, reason).Inc()
+}
+
+// RecordCancellation records a cancelled request.
+func (m *Metrics) RecordCancellation(provider, stage string) {
+	m.CancellationTotal.WithLabelValues(provider, stage).Inc()
+}
+
+// RecordValidationFailure records a validation failure.
+func (m *Metrics) RecordValidationFailure(field string) {
+	m.ValidationFailureTotal.WithLabelValues(field).Inc()
+}
+
+// itoa converts an integer to a string (simple implementation for metrics).
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	s := ""
+	negative := i < 0
+	if negative {
+		i = -i
+	}
+	for i > 0 {
+		s = string(rune('0'+i%10)) + s
+		i /= 10
+	}
+	if negative {
+		s = "-" + s
+	}
+	return s
 }
 
 // RequestLabels holds the label values for recording a request.
