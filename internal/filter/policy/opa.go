@@ -10,7 +10,7 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/types"
-	"github.com/open-policy-agent/opa/rego"
+	"github.com/open-policy-agent/opa/v1/rego"
 )
 
 // PolicyInput is the data sent to OPA for evaluation.

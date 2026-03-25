@@ -103,7 +103,7 @@ func (sh *StreamingHandler) HandleStream(
 
 	if providerResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(providerResp.Body)
-		providerResp.Body.Close()
+		_ = providerResp.Body.Close()
 		slog.Error("streaming provider returned error",
 			"status", providerResp.StatusCode,
 			"provider", adapter.Name(),
@@ -224,7 +224,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	adapter adapters.ProviderAdapter,
 	authInfo *auth.AuthInfo,
 ) StreamMetrics {
-	defer providerResp.Body.Close()
+	defer func() { _ = providerResp.Body.Close() }()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -247,19 +247,12 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	scanner := bufio.NewScanner(providerResp.Body)
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
 
-	// Channel to detect client disconnect
-	var clientDisconnected <-chan bool
-	if cn, ok := w.(http.CloseNotifier); ok {
-		clientDisconnected = cn.CloseNotify()
-	} else {
-		// Fallback: use context cancellation for disconnect detection
-		ch := make(chan bool)
-		go func() {
-			<-ctx.Done()
-			ch <- true
-		}()
-		clientDisconnected = ch
-	}
+	// Channel to detect client disconnect via context cancellation
+	clientDisconnected := make(chan bool, 1)
+	go func() {
+		<-ctx.Done()
+		clientDisconnected <- true
+	}()
 	
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
@@ -293,7 +286,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			if sh.handler.metrics != nil {
 				sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
 			}
-			fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
 			flusher.Flush()
 			return metrics
 			
@@ -305,7 +298,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			if sh.handler.metrics != nil {
 				sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_timeout")
 			}
-			fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
+			_, _ = fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
 			flusher.Flush()
 			return metrics
 			
@@ -359,7 +352,7 @@ func (sh *StreamingHandler) processChunk(
 	if !strings.HasPrefix(line, "data: ") {
 		// Forward event lines or empty lines as-is for keep-alive
 		if strings.HasPrefix(line, "event: ") || line == "" {
-			fmt.Fprintf(w, "%s\n", line)
+			_, _ = fmt.Fprintf(w, "%s\n", line)
 			flusher.Flush()
 		}
 		return nil
@@ -369,7 +362,7 @@ func (sh *StreamingHandler) processChunk(
 
 	// End of stream
 	if data == "[DONE]" {
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return nil
 	}
@@ -387,7 +380,7 @@ func (sh *StreamingHandler) processChunk(
 
 	// Check if the adapter signaled end of stream
 	if string(transformed) == "[DONE]" {
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return nil
 	}
@@ -406,7 +399,7 @@ func (sh *StreamingHandler) processChunk(
 	}
 
 	// Forward to client
-	fmt.Fprintf(w, "data: %s\n\n", transformed)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", transformed)
 	flusher.Flush()
 
 	return nil

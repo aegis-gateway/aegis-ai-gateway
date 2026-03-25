@@ -35,7 +35,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create migrator: %v", err)
 	}
-	defer m.Close()
+	defer func() { _, _ = m.Close() }()
 
 	switch *direction {
 	case "up":

@@ -27,7 +27,7 @@ func TestRecordDBPoolStats(t *testing.T) {
 		t.Fatalf("failed to get acquired metric: %v", err)
 	}
 	var metric dto.Metric
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 5 {
 		t.Errorf("expected acquired conns 5, got %v", *metric.Gauge.Value)
 	}
@@ -37,7 +37,7 @@ func TestRecordDBPoolStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get idle metric: %v", err)
 	}
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 20 {
 		t.Errorf("expected idle conns 20, got %v", *metric.Gauge.Value)
 	}
@@ -47,7 +47,7 @@ func TestRecordDBPoolStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get max metric: %v", err)
 	}
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 25 {
 		t.Errorf("expected max conns 25, got %v", *metric.Gauge.Value)
 	}
@@ -57,7 +57,7 @@ func TestRecordDBPoolStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get total metric: %v", err)
 	}
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 25 {
 		t.Errorf("expected total conns 25, got %v", *metric.Gauge.Value)
 	}
@@ -80,14 +80,14 @@ func TestRecordDBPoolStats_ZeroValues(t *testing.T) {
 	// Verify acquired is 0
 	gauge, _ := dbPoolConns.GetMetricWithLabelValues("acquired")
 	var metric dto.Metric
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 0 {
 		t.Errorf("expected acquired conns 0, got %v", *metric.Gauge.Value)
 	}
 
 	// Verify max is still 25
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("max")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 25 {
 		t.Errorf("expected max conns 25, got %v", *metric.Gauge.Value)
 	}
@@ -109,7 +109,7 @@ func TestRecordDBPoolStats_Update(t *testing.T) {
 
 	gauge, _ := dbPoolConns.GetMetricWithLabelValues("acquired")
 	var metric dto.Metric
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 1 {
 		t.Errorf("expected acquired conns 1, got %v", *metric.Gauge.Value)
 	}
@@ -118,13 +118,13 @@ func TestRecordDBPoolStats_Update(t *testing.T) {
 	m.RecordDBPoolStats(15, 5, 25, 20)
 
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("acquired")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 15 {
 		t.Errorf("expected acquired conns 15 after update, got %v", *metric.Gauge.Value)
 	}
 
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("idle")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 5 {
 		t.Errorf("expected idle conns 5 after update, got %v", *metric.Gauge.Value)
 	}
@@ -133,7 +133,7 @@ func TestRecordDBPoolStats_Update(t *testing.T) {
 	m.RecordDBPoolStats(3, 17, 25, 20)
 
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("acquired")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 3 {
 		t.Errorf("expected acquired conns 3 after decrease, got %v", *metric.Gauge.Value)
 	}
@@ -156,19 +156,19 @@ func TestRecordDBPoolStats_PoolExhaustion(t *testing.T) {
 	var metric dto.Metric
 
 	gauge, _ := dbPoolConns.GetMetricWithLabelValues("acquired")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 25 {
 		t.Errorf("expected acquired conns 25 (exhausted), got %v", *metric.Gauge.Value)
 	}
 
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("idle")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 0 {
 		t.Errorf("expected idle conns 0 (exhausted), got %v", *metric.Gauge.Value)
 	}
 
 	gauge, _ = dbPoolConns.GetMetricWithLabelValues("max")
-	gauge.Write(&metric)
+	_ = gauge.Write(&metric)
 	if *metric.Gauge.Value != 25 {
 		t.Errorf("expected max conns 25, got %v", *metric.Gauge.Value)
 	}
@@ -268,13 +268,13 @@ func TestRecordDBPoolStats_DifferentPoolSizes(t *testing.T) {
 			var metric dto.Metric
 
 			gauge, _ := dbPoolConns.GetMetricWithLabelValues("acquired")
-			gauge.Write(&metric)
+			_ = gauge.Write(&metric)
 			if int32(*metric.Gauge.Value) != tt.acquired {
 				t.Errorf("expected acquired %d, got %v", tt.acquired, *metric.Gauge.Value)
 			}
 
 			gauge, _ = dbPoolConns.GetMetricWithLabelValues("max")
-			gauge.Write(&metric)
+			_ = gauge.Write(&metric)
 			if int32(*metric.Gauge.Value) != tt.max {
 				t.Errorf("expected max %d, got %v", tt.max, *metric.Gauge.Value)
 			}

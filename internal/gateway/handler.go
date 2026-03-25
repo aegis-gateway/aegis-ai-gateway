@@ -15,7 +15,6 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/retry"
 	"github.com/af-corp/aegis-gateway/internal/router"
-	"github.com/af-corp/aegis-gateway/internal/router/adapters"
 	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
@@ -83,7 +82,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteBadRequestError(w, reqID, "Failed to read request body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var aegisReq types.AegisRequest
 	if err := json.Unmarshal(body, &aegisReq); err != nil {
@@ -305,39 +304,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Return OpenAI-compatible response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(aegisResp)
-}
-
-// handleStream sends the request to the provider and forwards SSE chunks to the client.
-func (h *Handler) handleStream(w http.ResponseWriter, reqID string, providerReq *http.Request, adapter adapters.ProviderAdapter, originalModel string, authInfo *auth.AuthInfo) {
-	providerResp, err := adapter.SendRequest(providerReq)
-	if err != nil {
-		slog.Error("streaming provider request failed", "error", err, "provider", adapter.Name())
-		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
-		return
-	}
-
-	if providerResp.StatusCode != http.StatusOK {
-		// Forward provider error as JSON
-		body, _ := io.ReadAll(providerResp.Body)
-		providerResp.Body.Close()
-		slog.Error("streaming provider returned error",
-			"status", providerResp.StatusCode,
-			"provider", adapter.Name(),
-			"body", string(body),
-		)
-		httputil.WriteInternalError(w, reqID, "Provider returned error")
-		return
-	}
-
-	slog.Info("streaming started",
-		"request_id", reqID,
-		"model_requested", originalModel,
-		"provider", adapter.Name(),
-		"org_id", authInfo.OrganizationID,
-	)
-
-	streamSSE(w, reqID, providerResp, adapter)
+	_ = json.NewEncoder(w).Encode(aegisResp)
 }
 
 // ListModels handles GET /v1/models
@@ -377,7 +344,7 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(modelListResponse{
+	_ = json.NewEncoder(w).Encode(modelListResponse{
 		Object: "list",
 		Data:   models,
 	})

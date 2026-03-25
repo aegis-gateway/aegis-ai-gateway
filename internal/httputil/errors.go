@@ -41,7 +41,7 @@ func WriteError(w http.ResponseWriter, requestID string, statusCode int, errType
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", requestID)
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(APIError{
+	_ = json.NewEncoder(w).Encode(APIError{
 		Error: APIErrorBody{
 			Message:    message,
 			Type:       errType,

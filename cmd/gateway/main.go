@@ -122,7 +122,7 @@ func main() {
 	providerRegistry := router.BuildFromConfig(loader.Providers())
 	loader.OnReload(func() {
 		newRegistry := router.BuildFromConfig(loader.Providers())
-		*providerRegistry = *newRegistry
+		providerRegistry.ReplaceFrom(newRegistry)
 		logger.Info("provider registry reloaded")
 	})
 
@@ -392,12 +392,13 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if resp.Status == "unhealthy" {
+		switch resp.Status {
+		case "unhealthy":
 			w.WriteHeader(http.StatusServiceUnavailable)
-		} else if resp.Status == "degraded" {
-			w.WriteHeader(http.StatusOK) // Still return 200 for degraded but include status in body
+		case "degraded":
+			// Still return 200 for degraded but include status in body
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 
@@ -420,6 +421,6 @@ const requestIDKey contextKey = "request_id"
 func generateRequestID() string {
 	now := time.Now()
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("req_%d_%s", now.UnixMilli(), hex.EncodeToString(b))
 }

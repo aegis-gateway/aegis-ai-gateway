@@ -68,7 +68,7 @@ func (h *Handler) ChatCompletionsRefactored(w http.ResponseWriter, r *http.Reque
 
 	// Return OpenAI-compatible response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(aegisResp)
+	_ = json.NewEncoder(w).Encode(aegisResp)
 }
 
 // parseAndValidate handles request parsing and validation.

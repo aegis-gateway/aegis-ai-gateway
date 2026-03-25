@@ -14,7 +14,7 @@ func TestCircuitBreakerTransitions(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:9999", // Non-existent port
 	})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 
@@ -59,7 +59,7 @@ func TestCircuitBreakerCall(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:9999", // Non-existent port
 	})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	cb := NewRedisCircuitBreaker(rdb, 2, 2*time.Second)
 
@@ -99,7 +99,7 @@ func TestCircuitBreakerSuccess(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:9999",
 	})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 
@@ -125,7 +125,7 @@ func TestCircuitBreakerStats(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:9999",
 	})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 

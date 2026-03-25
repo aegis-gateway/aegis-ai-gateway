@@ -48,7 +48,7 @@ func TestWriteAuthError(t *testing.T) {
 	}
 
 	var resp APIError
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Error.Code != "invalid_api_key" {
 		t.Errorf("expected code 'invalid_api_key', got %q", resp.Error.Code)
 	}
