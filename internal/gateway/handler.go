@@ -9,10 +9,12 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/af-corp/aegis-gateway/internal/cost"
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
+	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
@@ -25,9 +27,11 @@ type Handler struct {
 	cfg           func() *config.Config
 	filterChain   *filter.Chain
 	metrics       *telemetry.Metrics
+	costCalc      *cost.Calculator
+	usageRecorder *storage.UsageRecorder
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder) *Handler {
 	return &Handler{
 		registry:      registry,
 		healthTracker: healthTracker,
@@ -35,6 +39,8 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		cfg:           cfg,
 		filterChain:   filterChain,
 		metrics:       metrics,
+		costCalc:      costCalc,
+		usageRecorder: usageRecorder,
 	}
 }
 
@@ -159,6 +165,25 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aegisResp.RequestID = reqID
+	
+	// Calculate cost using actual provider and model served
+	if h.costCalc != nil {
+		if cost, found := h.costCalc.Calculate(
+			aegisResp.Provider,
+			aegisResp.Model,
+			aegisResp.Usage.PromptTokens,
+			aegisResp.Usage.CompletionTokens,
+		); found {
+			aegisResp.EstimatedCostUSD = cost
+		} else {
+			slog.Warn("cost calculation failed - no pricing data",
+				"provider", aegisResp.Provider,
+				"model", aegisResp.Model,
+				"request_id", reqID,
+			)
+		}
+	}
+	
 	totalDuration := time.Since(receivedAt)
 
 	slog.Info("request completed",
@@ -191,6 +216,29 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			PromptTokens:     aegisResp.Usage.PromptTokens,
 			CompletionTokens: aegisResp.Usage.CompletionTokens,
 			CostUSD:          aegisResp.EstimatedCostUSD,
+		})
+	}
+
+	// Record usage asynchronously (non-blocking)
+	if h.usageRecorder != nil {
+		h.usageRecorder.RecordUsage(storage.UsageRecord{
+			RequestID:        reqID,
+			OrganizationID:   authInfo.OrganizationID,
+			TeamID:           authInfo.TeamID,
+			UserID:           authInfo.UserID,
+			APIKeyID:         authInfo.KeyID,
+			ModelRequested:   originalModel,
+			ModelServed:      aegisResp.Model,
+			Provider:         aegisResp.Provider,
+			Classification:   string(authInfo.MaxClassification),
+			PromptTokens:     aegisResp.Usage.PromptTokens,
+			CompletionTokens: aegisResp.Usage.CompletionTokens,
+			TotalTokens:      aegisResp.Usage.TotalTokens,
+			EstimatedCostUSD: aegisResp.EstimatedCostUSD,
+			DurationMs:       totalDuration.Milliseconds(),
+			StatusCode:       http.StatusOK,
+			Project:          aegisReq.Project,
+			Stream:           false,
 		})
 	}
 
