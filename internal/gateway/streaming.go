@@ -14,7 +14,7 @@ import (
 // streamSSE reads SSE events from the provider response and forwards them to the client,
 // transforming each chunk through the adapter's TransformStreamChunk.
 func streamSSE(w http.ResponseWriter, reqID string, providerResp *http.Response, adapter adapters.ProviderAdapter) {
-	defer providerResp.Body.Close()
+	defer func() { _ = providerResp.Body.Close() }()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -40,7 +40,7 @@ func streamSSE(w http.ResponseWriter, reqID string, providerResp *http.Response,
 		if !strings.HasPrefix(line, "data: ") {
 			// Forward event: lines or empty lines as-is for keep-alive
 			if strings.HasPrefix(line, "event: ") || line == "" {
-				fmt.Fprintf(w, "%s\n", line)
+				_, _ = fmt.Fprintf(w, "%s\n", line)
 				flusher.Flush()
 			}
 			continue
@@ -50,7 +50,7 @@ func streamSSE(w http.ResponseWriter, reqID string, providerResp *http.Response,
 
 		// End of stream
 		if data == "[DONE]" {
-			fmt.Fprintf(w, "data: [DONE]\n\n")
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			return
 		}
@@ -69,12 +69,12 @@ func streamSSE(w http.ResponseWriter, reqID string, providerResp *http.Response,
 
 		// Check if the adapter signaled end of stream (Anthropic message_stop → [DONE])
 		if string(transformed) == "[DONE]" {
-			fmt.Fprintf(w, "data: [DONE]\n\n")
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			return
 		}
 
-		fmt.Fprintf(w, "data: %s\n\n", transformed)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", transformed)
 		flusher.Flush()
 	}
 

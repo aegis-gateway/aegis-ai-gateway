@@ -48,10 +48,10 @@ func TestStreamSSE_OpenAIPassthrough(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		for _, chunk := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", chunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
 			flusher.Flush()
 		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
 	defer mockServer.Close()
@@ -107,7 +107,7 @@ func TestStreamSSE_AnthropicTransform(t *testing.T) {
 			`{"type":"message_stop"}`,
 		}
 		for _, event := range events {
-			fmt.Fprintf(w, "data: %s\n\n", event)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
 			flusher.Flush()
 		}
 	}))

@@ -41,7 +41,7 @@ func (rp *RequestProcessor) ParseAndValidateRequest(
 	if err != nil {
 		return nil, httputil.NewHTTPError(http.StatusBadRequest, "Failed to read request body")
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var aegisReq types.AegisRequest
 	if err := json.Unmarshal(body, &aegisReq); err != nil {
@@ -107,8 +107,8 @@ type FilterProcessor struct {
 
 // FilterResult contains the result of content filtering.
 type FilterResult struct {
-	Blocked    *filter.FilterResult
-	AllResults []filter.FilterResult
+	Blocked    *filter.Result
+	AllResults []filter.Result
 }
 
 // RunFilters executes the content filter chain.

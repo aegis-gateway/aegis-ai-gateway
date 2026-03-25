@@ -97,14 +97,14 @@ func TestRecordRequest(t *testing.T) {
 		t.Fatalf("failed to get metric: %v", err)
 	}
 	var metric dto.Metric
-	counter.Write(&metric)
+	_ = counter.Write(&metric)
 	if *metric.Counter.Value != 1 {
 		t.Errorf("expected request count 1, got %v", *metric.Counter.Value)
 	}
 
 	// Verify tokens recorded
 	promptCounter, _ := tokensTotal.GetMetricWithLabelValues("org-1", "team-1", "gpt-4o", "prompt")
-	promptCounter.Write(&metric)
+	_ = promptCounter.Write(&metric)
 	if *metric.Counter.Value != 100 {
 		t.Errorf("expected 100 prompt tokens, got %v", *metric.Counter.Value)
 	}
@@ -121,7 +121,7 @@ func TestRecordFilterAction(t *testing.T) {
 
 	counter, _ := filterTotal.GetMetricWithLabelValues("secrets", "block")
 	var metric dto.Metric
-	counter.Write(&metric)
+	_ = counter.Write(&metric)
 	if *metric.Counter.Value != 1 {
 		t.Errorf("expected filter action count 1, got %v", *metric.Counter.Value)
 	}

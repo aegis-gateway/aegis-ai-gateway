@@ -97,14 +97,14 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 	}
 
 	if len(allowedModelsJSON) > 0 {
-		json.Unmarshal(allowedModelsJSON, &meta.AllowedModels)
+		_ = json.Unmarshal(allowedModelsJSON, &meta.AllowedModels)
 	}
 
 	// Update last_used_at asynchronously (fire-and-forget)
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		s.db.Exec(bgCtx, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, meta.ID)
+		_, _ = s.db.Exec(bgCtx, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, meta.ID)
 	}()
 
 	return &meta, nil

@@ -81,7 +81,7 @@ func (a *AnthropicAdapter) TransformRequest(ctx context.Context, req *types.Aegi
 }
 
 func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Response) (*types.AegisResponse, error) {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

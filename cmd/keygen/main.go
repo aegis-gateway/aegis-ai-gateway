@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	// Serialize allowed_models as empty JSON array
 	allowedModels, _ := json.Marshal([]string{})

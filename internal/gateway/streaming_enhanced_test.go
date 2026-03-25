@@ -3,18 +3,29 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
-	"github.com/af-corp/aegis-gateway/internal/router/adapters"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
+
+var (
+	testMetricsOnce sync.Once
+	testMetrics     *telemetry.Metrics
+)
+
+func getTestMetrics() *telemetry.Metrics {
+	testMetricsOnce.Do(func() {
+		testMetrics = telemetry.NewMetrics()
+	})
+	return testMetrics
+}
 
 // mockAdapter implements ProviderAdapter for testing.
 type mockStreamAdapter struct {
@@ -56,6 +67,10 @@ func (m *mockStreamAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
 	return chunk, nil
 }
 
+func (m *mockStreamAdapter) SupportsStreaming() bool {
+	return true
+}
+
 func TestStreamMetricsTracking(t *testing.T) {
 	// Create mock streaming response
 	streamData := `data: {"model":"gpt-4","choices":[{"delta":{"content":"Hello"}}]}
@@ -89,9 +104,8 @@ data: [DONE]
 		MaxBufferSize:   1024 * 1024,
 	}
 	
-	metrics := telemetry.NewMetrics()
 	handler := &Handler{
-		metrics: metrics,
+		metrics: getTestMetrics(),
 	}
 	streamingHandler := NewStreamingHandler(handler, config)
 
@@ -188,7 +202,7 @@ func TestStreamTimeouts(t *testing.T) {
 			}
 
 			handler := &Handler{
-				metrics: telemetry.NewMetrics(),
+				metrics: getTestMetrics(),
 			}
 			streamingHandler := NewStreamingHandler(handler, config)
 

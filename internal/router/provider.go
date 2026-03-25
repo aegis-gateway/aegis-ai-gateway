@@ -47,6 +47,20 @@ func (r *Registry) ListProviders() []string {
 	return names
 }
 
+// ReplaceFrom replaces this registry's adapters with those from another registry.
+func (r *Registry) ReplaceFrom(other *Registry) {
+	other.mu.RLock()
+	newAdapters := make(map[string]adapters.ProviderAdapter, len(other.adapters))
+	for k, v := range other.adapters {
+		newAdapters[k] = v
+	}
+	other.mu.RUnlock()
+
+	r.mu.Lock()
+	r.adapters = newAdapters
+	r.mu.Unlock()
+}
+
 // GetProvider returns a provider adapter by name (for health checks).
 func (r *Registry) GetProvider(name string) adapters.ProviderAdapter {
 	r.mu.RLock()

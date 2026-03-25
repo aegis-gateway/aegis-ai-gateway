@@ -15,7 +15,7 @@ func intPtr(v int) *int { return &v }
 func TestMiddleware_AllowsRequest(t *testing.T) {
 	limiter := NewLimiter(nil)
 	budget := NewBudgetTracker(nil)
-	mw := Middleware(limiter, budget, nil)
+	mw := Middleware(limiter, budget, nil, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -53,7 +53,7 @@ func TestMiddleware_AllowsRequest(t *testing.T) {
 func TestMiddleware_DefaultRPM(t *testing.T) {
 	limiter := NewLimiter(nil)
 	budget := NewBudgetTracker(nil)
-	mw := Middleware(limiter, budget, nil)
+	mw := Middleware(limiter, budget, nil, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,7 +83,7 @@ func TestMiddleware_DefaultRPM(t *testing.T) {
 func TestMiddleware_NoAuth_PassThrough(t *testing.T) {
 	limiter := NewLimiter(nil)
 	budget := NewBudgetTracker(nil)
-	mw := Middleware(limiter, budget, nil)
+	mw := Middleware(limiter, budget, nil, nil)
 
 	called := false
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func TestMiddleware_BudgetExceeded(t *testing.T) {
 func TestMiddleware_RateLimitHeaders_Present(t *testing.T) {
 	limiter := NewLimiter(nil)
 	budget := NewBudgetTracker(nil)
-	mw := Middleware(limiter, budget, nil)
+	mw := Middleware(limiter, budget, nil, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

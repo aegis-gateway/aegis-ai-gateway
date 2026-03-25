@@ -7,6 +7,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
+	"github.com/af-corp/aegis-gateway/internal/types"
 )
 
 // ChatCompletionsRefactored handles POST /v1/chat/completions with refactored logic.
@@ -67,7 +68,7 @@ func (h *Handler) ChatCompletionsRefactored(w http.ResponseWriter, r *http.Reque
 
 	// Return OpenAI-compatible response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(aegisResp)
+	_ = json.NewEncoder(w).Encode(aegisResp)
 }
 
 // parseAndValidate handles request parsing and validation.

@@ -25,7 +25,7 @@ func (m *mockKeyStore) Lookup(ctx context.Context, keyHash string) (*KeyMetadata
 
 func TestMiddleware_MissingAuthHeader(t *testing.T) {
 	store := &mockKeyStore{keys: make(map[string]*KeyMetadata)}
-	mw := Middleware(store)
+	mw := Middleware(store, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
@@ -43,7 +43,7 @@ func TestMiddleware_MissingAuthHeader(t *testing.T) {
 
 func TestMiddleware_InvalidFormat(t *testing.T) {
 	store := &mockKeyStore{keys: make(map[string]*KeyMetadata)}
-	mw := Middleware(store)
+	mw := Middleware(store, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
@@ -62,7 +62,7 @@ func TestMiddleware_InvalidFormat(t *testing.T) {
 
 func TestMiddleware_InvalidKey(t *testing.T) {
 	store := &mockKeyStore{keys: make(map[string]*KeyMetadata)}
-	mw := Middleware(store)
+	mw := Middleware(store, nil)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
@@ -96,7 +96,7 @@ func TestMiddleware_ValidKey(t *testing.T) {
 		},
 	}
 
-	mw := Middleware(store)
+	mw := Middleware(store, nil)
 	var gotAuth *AuthInfo
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

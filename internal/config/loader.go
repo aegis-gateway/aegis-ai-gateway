@@ -119,12 +119,12 @@ func (l *Loader) Watch() error {
 		return fmt.Errorf("create fsnotify watcher: %w", err)
 	}
 	if err := watcher.Add(l.configDir); err != nil {
-		watcher.Close()
+		_ = watcher.Close()
 		return fmt.Errorf("watch config dir %s: %w", l.configDir, err)
 	}
 
 	go func() {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 		for {
 			select {
 			case event, ok := <-watcher.Events:
