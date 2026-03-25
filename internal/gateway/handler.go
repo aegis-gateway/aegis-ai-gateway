@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,11 +13,13 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/cost"
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
+	"github.com/af-corp/aegis-gateway/internal/retry"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
 	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
 	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/af-corp/aegis-gateway/internal/validation"
 )
 
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).
@@ -26,28 +29,34 @@ type AuditLogger interface {
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry      *router.Registry
-	healthTracker *router.HealthTracker
-	modelsCfg     func() *config.ModelsConfig
-	cfg           func() *config.Config
-	filterChain   *filter.Chain
-	metrics       *telemetry.Metrics
-	costCalc      *cost.Calculator
-	usageRecorder *storage.UsageRecorder
-	auditLogger   AuditLogger
+	registry       *router.Registry
+	healthTracker  *router.HealthTracker
+	modelsCfg      func() *config.ModelsConfig
+	cfg            func() *config.Config
+	filterChain    *filter.Chain
+	metrics        *telemetry.Metrics
+	costCalc       *cost.Calculator
+	usageRecorder  *storage.UsageRecorder
+	auditLogger    AuditLogger
+	retryExecutor  *retry.Executor
+	contextMonitor *retry.ContextMonitor
+	validator      *validation.Validator
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger, retryExecutor *retry.Executor, contextMonitor *retry.ContextMonitor, validator *validation.Validator) *Handler {
 	return &Handler{
-		registry:      registry,
-		healthTracker: healthTracker,
-		modelsCfg:     modelsCfg,
-		cfg:           cfg,
-		filterChain:   filterChain,
-		metrics:       metrics,
-		costCalc:      costCalc,
-		usageRecorder: usageRecorder,
-		auditLogger:   auditLogger,
+		registry:       registry,
+		healthTracker:  healthTracker,
+		modelsCfg:      modelsCfg,
+		cfg:            cfg,
+		filterChain:    filterChain,
+		metrics:        metrics,
+		costCalc:       costCalc,
+		usageRecorder:  usageRecorder,
+		auditLogger:    auditLogger,
+		retryExecutor:  retryExecutor,
+		contextMonitor: contextMonitor,
+		validator:      validator,
 	}
 }
 
@@ -90,13 +99,27 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	aegisReq.PreferProvider = r.Header.Get("X-Aegis-Prefer-Provider")
 	aegisReq.TraceContext = r.Header.Get("X-Aegis-Trace-Context")
 
-	if aegisReq.Model == "" {
-		httputil.WriteBadRequestError(w, reqID, "model is required")
-		return
-	}
-	if len(aegisReq.Messages) == 0 {
-		httputil.WriteBadRequestError(w, reqID, "messages is required")
-		return
+	// Validate request
+	if h.validator != nil {
+		if err := h.validator.Validate(&aegisReq); err != nil {
+			slog.Warn("request validation failed",
+				"request_id", reqID,
+				"org_id", authInfo.OrganizationID,
+				"error", err.Error(),
+			)
+			httputil.WriteBadRequestError(w, reqID, err.Error())
+			return
+		}
+	} else {
+		// Fallback to basic validation if validator not configured
+		if aegisReq.Model == "" {
+			httputil.WriteBadRequestError(w, reqID, "model is required")
+			return
+		}
+		if len(aegisReq.Messages) == 0 {
+			httputil.WriteBadRequestError(w, reqID, "messages is required")
+			return
+		}
 	}
 
 	// Run content filter chain (secrets, injection, PII, policy)
@@ -139,6 +162,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalModel := aegisReq.Model
 	aegisReq.Model = providerModel
 
+	// Start monitoring context for cancellation
+	var cleanupMonitor func()
+	if h.contextMonitor != nil {
+		cleanupMonitor = h.contextMonitor.Watch(r.Context(), reqID, adapter.Name())
+		defer cleanupMonitor()
+	}
+
 	// Transform and send to provider
 	providerReq, err := adapter.TransformRequest(r.Context(), &aegisReq)
 	if err != nil {
@@ -153,7 +183,22 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providerResp, err := adapter.SendRequest(providerReq)
+	// Send request with retry logic
+	var providerResp *http.Response
+	if h.retryExecutor != nil {
+		providerResp, err = h.retryExecutor.Execute(r.Context(), adapter.Name(), func(ctx context.Context, attempt int) (*http.Response, error) {
+			// Re-create request for each attempt with fresh context
+			retryReq, transformErr := adapter.TransformRequest(ctx, &aegisReq)
+			if transformErr != nil {
+				return nil, transformErr
+			}
+			return adapter.SendRequest(retryReq)
+		})
+	} else {
+		// Fallback to direct send if no retry executor
+		providerResp, err = adapter.SendRequest(providerReq)
+	}
+
 	if err != nil {
 		slog.Error("provider request failed", "error", err, "provider", adapter.Name())
 		if h.healthTracker != nil {

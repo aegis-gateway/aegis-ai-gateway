@@ -25,9 +25,11 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/filter/secrets"
 	"github.com/af-corp/aegis-gateway/internal/gateway"
 	"github.com/af-corp/aegis-gateway/internal/ratelimit"
+	"github.com/af-corp/aegis-gateway/internal/retry"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/storage"
 	"github.com/af-corp/aegis-gateway/internal/telemetry"
+	"github.com/af-corp/aegis-gateway/internal/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -184,6 +186,20 @@ func main() {
 	// Build audit logger
 	auditLogger := audit.NewLogger(dbPool)
 
+	// Build retry executor
+	retryConfig := retry.Config{
+		MaxRetries:        cfg.Routing.MaxRetries,
+		InitialBackoff:    100 * time.Millisecond,
+		MaxBackoff:        5 * time.Second,
+		BackoffMultiplier: 2.0,
+		JitterFraction:    0.1,
+	}
+	retryExecutor := retry.NewExecutor(retryConfig, metrics)
+	contextMonitor := retry.NewContextMonitor(metrics)
+
+	// Build input validator
+	validator := validation.NewValidator(validation.DefaultLimits(), metrics)
+
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
 	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
@@ -194,7 +210,7 @@ func main() {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, filterChain, metrics, costCalc, usageRecorder, auditLogger)
+	}, filterChain, metrics, costCalc, usageRecorder, auditLogger, retryExecutor, contextMonitor, validator)
 
 	// Router setup
 	r := chi.NewRouter()
