@@ -27,6 +27,13 @@ type Metrics struct {
 	
 	// Validation metrics
 	ValidationFailureTotal *prometheus.CounterVec
+	
+	// Streaming metrics
+	StreamingChunkTotal     *prometheus.CounterVec
+	StreamingTimeToFirstToken *prometheus.HistogramVec
+	StreamingTokensPerSecond  *prometheus.HistogramVec
+	StreamingDurationMs       *prometheus.HistogramVec
+	StreamingErrorTotal       *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -104,6 +111,34 @@ func NewMetrics() *Metrics {
 			Name: "aegis_validation_failure_total",
 			Help: "Total number of validation failures.",
 		}, []string{"field"}),
+		
+		StreamingChunkTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_streaming_chunk_total",
+			Help: "Total number of streaming chunks sent.",
+		}, []string{"provider", "model"}),
+		
+		StreamingTimeToFirstToken: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aegis_streaming_time_to_first_token_ms",
+			Help:    "Time to first token in milliseconds for streaming requests.",
+			Buckets: []float64{50, 100, 250, 500, 1000, 2000, 5000, 10000},
+		}, []string{"provider", "model"}),
+		
+		StreamingTokensPerSecond: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aegis_streaming_tokens_per_second",
+			Help:    "Tokens per second during streaming.",
+			Buckets: []float64{1, 5, 10, 20, 50, 100, 200, 500, 1000},
+		}, []string{"provider", "model"}),
+		
+		StreamingDurationMs: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "aegis_streaming_duration_ms",
+			Help:    "Total duration of streaming requests in milliseconds.",
+			Buckets: []float64{1000, 5000, 10000, 30000, 60000, 120000, 300000},
+		}, []string{"provider", "model"}),
+		
+		StreamingErrorTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_streaming_error_total",
+			Help: "Total number of streaming errors.",
+		}, []string{"provider", "error_type"}),
 	}
 }
 
@@ -217,4 +252,38 @@ type RequestLabels struct {
 	PromptTokens     int
 	CompletionTokens int
 	CostUSD          float64
+}
+
+// StreamingLabels holds the label values for recording streaming metrics.
+type StreamingLabels struct {
+	Provider           string
+	Model              string
+	ChunkCount         int
+	TimeToFirstTokenMs float64
+	TokensPerSecond    float64
+	StreamDurationMs   float64
+}
+
+// RecordStreamingMetrics records metrics for a completed streaming request.
+func (m *Metrics) RecordStreamingMetrics(labels StreamingLabels) {
+	m.StreamingChunkTotal.WithLabelValues(
+		labels.Provider, labels.Model,
+	).Add(float64(labels.ChunkCount))
+	
+	m.StreamingTimeToFirstToken.WithLabelValues(
+		labels.Provider, labels.Model,
+	).Observe(labels.TimeToFirstTokenMs)
+	
+	m.StreamingTokensPerSecond.WithLabelValues(
+		labels.Provider, labels.Model,
+	).Observe(labels.TokensPerSecond)
+	
+	m.StreamingDurationMs.WithLabelValues(
+		labels.Provider, labels.Model,
+	).Observe(labels.StreamDurationMs)
+}
+
+// RecordStreamingError records a streaming error.
+func (m *Metrics) RecordStreamingError(provider, errorType string) {
+	m.StreamingErrorTotal.WithLabelValues(provider, errorType).Inc()
 }
