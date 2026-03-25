@@ -107,8 +107,8 @@ type FilterProcessor struct {
 
 // FilterResult contains the result of content filtering.
 type FilterResult struct {
-	Blocked    *filter.FilterResult
-	AllResults []filter.FilterResult
+	Blocked    *filter.Result
+	AllResults []filter.Result
 }
 
 // RunFilters executes the content filter chain.

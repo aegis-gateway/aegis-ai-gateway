@@ -7,6 +7,7 @@ import (
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
+	"github.com/af-corp/aegis-gateway/internal/types"
 )
 
 // ChatCompletionsRefactored handles POST /v1/chat/completions with refactored logic.

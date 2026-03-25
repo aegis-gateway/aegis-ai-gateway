@@ -2,12 +2,12 @@ package gateway
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
+	"github.com/af-corp/aegis-gateway/internal/retry"
 	"github.com/af-corp/aegis-gateway/internal/router"
 	"github.com/af-corp/aegis-gateway/internal/router/adapters"
 	"github.com/af-corp/aegis-gateway/internal/types"
@@ -79,7 +79,7 @@ func (rp *RouterProcessor) RouteToProvider(
 type ProviderExecutor struct {
 	healthTracker *router.HealthTracker
 	retryExecutor interface {
-		Execute(ctx context.Context, provider string, fn func(context.Context, int) (*http.Response, error)) (*http.Response, error)
+		Execute(ctx context.Context, provider string, fn retry.RetryableFunc) (*http.Response, error)
 	}
 }
 

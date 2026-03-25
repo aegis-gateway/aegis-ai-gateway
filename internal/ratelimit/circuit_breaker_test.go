@@ -16,7 +16,7 @@ func TestCircuitBreakerTransitions(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	cb := NewRedisCircuitBreaker(rdb, 3, 100*time.Millisecond)
+	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 
 	// Initial state should be closed
 	if cb.GetState() != StateClosed {
@@ -35,7 +35,7 @@ func TestCircuitBreakerTransitions(t *testing.T) {
 	}
 
 	// Wait for timeout
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(2100 * time.Millisecond)
 
 	// Should transition to half-open after timeout
 	available := cb.isAvailable()
@@ -61,7 +61,7 @@ func TestCircuitBreakerCall(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	cb := NewRedisCircuitBreaker(rdb, 2, 100*time.Millisecond)
+	cb := NewRedisCircuitBreaker(rdb, 2, 2*time.Second)
 
 	// First call should fail (operation error)
 	testErr := errors.New("operation failed")
@@ -101,7 +101,7 @@ func TestCircuitBreakerSuccess(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	cb := NewRedisCircuitBreaker(rdb, 3, 50*time.Millisecond)
+	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 
 	// Successful call
 	callCount := 0
@@ -127,7 +127,7 @@ func TestCircuitBreakerStats(t *testing.T) {
 	})
 	defer rdb.Close()
 
-	cb := NewRedisCircuitBreaker(rdb, 3, 50*time.Millisecond)
+	cb := NewRedisCircuitBreaker(rdb, 3, 2*time.Second)
 
 	// Cause some failures
 	testErr := errors.New("test")

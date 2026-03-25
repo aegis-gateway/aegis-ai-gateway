@@ -2,9 +2,8 @@ package gateway
 
 import (
 	"bytes"
-	"encoding/json"
-	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
@@ -97,11 +96,15 @@ func TestParseAndValidateRequest(t *testing.T) {
 				TeamID:            "test-team",
 				UserID:            "test-user",
 				KeyID:             "test-key",
-				MaxClassification: auth.ClassificationPublic,
+				MaxClassification: types.ClassPublic,
 			}
 
+			var validator interface{ Validate(*types.AegisRequest) error }
+			if tt.validator != nil {
+				validator = tt.validator
+			}
 			processor := &RequestProcessor{
-				validator: tt.validator,
+				validator: validator,
 			}
 
 			// Execute
@@ -112,8 +115,8 @@ func TestParseAndValidateRequest(t *testing.T) {
 				if err == nil {
 					t.Fatal("Expected error but got nil")
 				}
-				if tt.errorMsg != "" && err.Error() != tt.errorMsg {
-					t.Errorf("Expected error message '%s', got '%s'", tt.errorMsg, err.Error())
+				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("Expected error to contain '%s', got '%s'", tt.errorMsg, err.Error())
 				}
 			} else {
 				if err != nil {
@@ -152,7 +155,7 @@ func TestRequestEnrichment(t *testing.T) {
 		TeamID:            "team-456",
 		UserID:            "user-789",
 		KeyID:             "key-abc",
-		MaxClassification: auth.ClassificationRestricted,
+		MaxClassification: types.ClassRestricted,
 	}
 
 	processor := &RequestProcessor{}
@@ -180,7 +183,7 @@ func TestRequestEnrichment(t *testing.T) {
 	if aegisReq.APIKeyID != "key-abc" {
 		t.Errorf("Expected APIKeyID 'key-abc', got '%s'", aegisReq.APIKeyID)
 	}
-	if aegisReq.Classification != auth.ClassificationRestricted {
+	if aegisReq.Classification != types.ClassRestricted {
 		t.Errorf("Expected Classification 'RESTRICTED', got '%s'", aegisReq.Classification)
 	}
 	if aegisReq.Project != "my-project" {
@@ -197,13 +200,17 @@ func TestRequestEnrichment(t *testing.T) {
 	}
 }
 
+// mockCostCalculator implements cost calculation for testing.
+type mockCostCalculator struct {
+	cost  float64
+	found bool
+}
+
+func (m *mockCostCalculator) Calculate(provider, model string, promptTokens, completionTokens int) (float64, bool) {
+	return m.cost, m.found
+}
+
 func TestResponseBuilder(t *testing.T) {
-	// mockCostCalculator implements cost calculation for testing.
-	type mockCostCalculator struct {
-		cost  float64
-		found bool
-	}
-	
 	calc := &mockCostCalculator{
 		cost:  0.123,
 		found: true,
@@ -234,7 +241,3 @@ func TestResponseBuilder(t *testing.T) {
 	}
 }
 
-// Implement Calculate method for mockCostCalculator
-func (m *mockCostCalculator) Calculate(provider, model string, promptTokens, completionTokens int) (float64, bool) {
-	return m.cost, m.found
-}

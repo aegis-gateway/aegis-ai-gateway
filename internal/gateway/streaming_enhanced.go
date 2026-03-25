@@ -248,7 +248,18 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
 
 	// Channel to detect client disconnect
-	clientDisconnected := w.(http.CloseNotifier).CloseNotify()
+	var clientDisconnected <-chan bool
+	if cn, ok := w.(http.CloseNotifier); ok {
+		clientDisconnected = cn.CloseNotify()
+	} else {
+		// Fallback: use context cancellation for disconnect detection
+		ch := make(chan bool)
+		go func() {
+			<-ctx.Done()
+			ch <- true
+		}()
+		clientDisconnected = ch
+	}
 	
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
