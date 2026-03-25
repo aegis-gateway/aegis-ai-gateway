@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/af-corp/aegis-gateway/internal/audit"
 	"github.com/af-corp/aegis-gateway/internal/auth"
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/cost"
@@ -180,6 +181,9 @@ func main() {
 		cfg.Routing.CircuitBreaker.RecoveryProbeInterval,
 	)
 
+	// Build audit logger
+	auditLogger := audit.NewLogger(dbPool)
+
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
 	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
@@ -190,7 +194,7 @@ func main() {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, filterChain, metrics, costCalc, usageRecorder)
+	}, filterChain, metrics, costCalc, usageRecorder, auditLogger)
 
 	// Router setup
 	r := chi.NewRouter()
@@ -199,12 +203,12 @@ func main() {
 	r.Use(requestIDMiddleware)
 
 	// Unauthenticated routes
-	r.Get("/aegis/v1/health", makeHealthHandler(dbPool))
+	r.Get("/aegis/v1/health", makeHealthHandler(dbPool, rdb, rateLimiter, providerRegistry, healthTracker))
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(keyStore))
-		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics))
+		r.Use(auth.Middleware(keyStore, auditLogger))
+		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics, auditLogger))
 		r.Post("/v1/chat/completions", handler.ChatCompletions)
 		r.Get("/v1/models", handler.ListModels)
 	})
@@ -250,9 +254,12 @@ func main() {
 
 // Health check response structure
 type healthResponse struct {
-	Status   string                 `json:"status"`
-	Version  string                 `json:"version"`
-	Database *databaseHealth        `json:"database,omitempty"`
+	Status    string           `json:"status"`
+	Version   string           `json:"version"`
+	Timestamp time.Time        `json:"timestamp"`
+	Database  *databaseHealth  `json:"database,omitempty"`
+	Redis     *redisHealth     `json:"redis,omitempty"`
+	Providers *providersHealth `json:"providers,omitempty"`
 }
 
 type databaseHealth struct {
@@ -261,13 +268,32 @@ type databaseHealth struct {
 	IdleConns     int32 `json:"idle_conns"`
 	MaxConns      int32 `json:"max_conns"`
 	TotalConns    int32 `json:"total_conns"`
+	Latency       int64 `json:"latency_ms,omitempty"`
 }
 
-func makeHealthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+type redisHealth struct {
+	Connected      bool   `json:"connected"`
+	CircuitBreaker string `json:"circuit_breaker,omitempty"`
+	Latency        int64  `json:"latency_ms,omitempty"`
+}
+
+type providersHealth struct {
+	Available int                       `json:"available"`
+	Total     int                       `json:"total"`
+	Details   map[string]providerStatus `json:"details,omitempty"`
+}
+
+type providerStatus struct {
+	Healthy bool   `json:"healthy"`
+	State   string `json:"state,omitempty"`
+}
+
+func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit.Limiter, registry *router.Registry, healthTracker *router.HealthTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		resp := healthResponse{
-			Status:  "healthy",
-			Version: version,
+			Status:    "healthy",
+			Version:   version,
+			Timestamp: time.Now(),
 		}
 
 		// Check database connectivity
@@ -276,11 +302,13 @@ func makeHealthHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			defer cancel()
 
 			dbHealth := &databaseHealth{}
+			start := time.Now()
 			if err := pool.Ping(ctx); err != nil {
 				dbHealth.Connected = false
 				resp.Status = "degraded"
 			} else {
 				dbHealth.Connected = true
+				dbHealth.Latency = time.Since(start).Milliseconds()
 				stats := pool.Stat()
 				dbHealth.AcquiredConns = stats.AcquiredConns()
 				dbHealth.IdleConns = stats.IdleConns()
@@ -290,9 +318,68 @@ func makeHealthHandler(pool *pgxpool.Pool) http.HandlerFunc {
 			resp.Database = dbHealth
 		}
 
+		// Check Redis connectivity and circuit breaker state
+		if rdb != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+
+			redisHealth := &redisHealth{}
+			start := time.Now()
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				redisHealth.Connected = false
+				resp.Status = "degraded"
+			} else {
+				redisHealth.Connected = true
+				redisHealth.Latency = time.Since(start).Milliseconds()
+			}
+
+			// Get circuit breaker state
+			if limiter != nil {
+				cbState := limiter.GetCircuitBreakerState()
+				redisHealth.CircuitBreaker = cbState
+				if cbState == "open" {
+					resp.Status = "degraded"
+				}
+			}
+			resp.Redis = redisHealth
+		}
+
+		// Check provider availability using health tracker
+		if registry != nil && healthTracker != nil {
+			provHealth := &providersHealth{
+				Details: make(map[string]providerStatus),
+			}
+
+			providers := registry.ListProviders()
+			provHealth.Total = len(providers)
+
+			for _, provName := range providers {
+				healthy := healthTracker.IsAvailable(provName)
+				state := healthTracker.GetState(provName)
+				
+				if healthy {
+					provHealth.Available++
+				}
+				
+				provHealth.Details[provName] = providerStatus{
+					Healthy: healthy,
+					State:   state,
+				}
+			}
+
+			// If no providers are available, mark as unhealthy
+			if provHealth.Available == 0 && provHealth.Total > 0 {
+				resp.Status = "unhealthy"
+			}
+
+			resp.Providers = provHealth
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		if resp.Status != "healthy" {
+		if resp.Status == "unhealthy" {
 			w.WriteHeader(http.StatusServiceUnavailable)
+		} else if resp.Status == "degraded" {
+			w.WriteHeader(http.StatusOK) // Still return 200 for degraded but include status in body
 		}
 		json.NewEncoder(w).Encode(resp)
 	}
