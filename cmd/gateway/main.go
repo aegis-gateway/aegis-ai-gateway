@@ -41,7 +41,13 @@ var version = "dev"
 
 func main() {
 	configDir := flag.String("config", "configs", "path to configuration directory")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

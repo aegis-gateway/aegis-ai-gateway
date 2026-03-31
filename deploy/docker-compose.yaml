@@ -34,8 +34,8 @@ services:
 
   aegis-filter-nlp:
     build:
-      context: ../filter-service
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: filter-service/Dockerfile
     container_name: aegis-filter-nlp
     ports:
       - "50051:50051"

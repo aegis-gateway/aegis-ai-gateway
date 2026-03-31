@@ -43,7 +43,7 @@ filter:
     flag_threshold: 0.7
   policy:
     enabled: true
-    bundle_path: "/etc/aegis/policies"
+    bundle_path: "configs/policies"
     evaluation_timeout: "100ms"
 
 routing:
