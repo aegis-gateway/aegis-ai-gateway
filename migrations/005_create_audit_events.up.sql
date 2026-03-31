@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     organization_id     VARCHAR(100),
     team_id             VARCHAR(100),
     user_id             VARCHAR(100),
-    api_key_id          VARCHAR(100),
+    api_key_id          UUID,
     
     -- Request context
     ip_address          VARCHAR(45),  -- IPv6 max length

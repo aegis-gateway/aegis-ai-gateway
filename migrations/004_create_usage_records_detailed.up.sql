@@ -7,7 +7,7 @@ CREATE TABLE usage_records (
     organization_id     VARCHAR(100) NOT NULL,
     team_id             VARCHAR(100) NOT NULL,
     user_id             VARCHAR(100),
-    api_key_id          VARCHAR(100) NOT NULL,
+    api_key_id          UUID NOT NULL,
     
     -- Request details
     model_requested     VARCHAR(100) NOT NULL,
