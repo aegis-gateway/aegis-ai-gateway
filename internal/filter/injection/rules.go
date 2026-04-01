@@ -27,7 +27,7 @@ func DefaultRules() []Rule {
 		},
 		{
 			Name:     "jailbreak",
-			Regex:    regexp.MustCompile(`(?i)(DAN|do\s+anything\s+now|jailbreak|unrestricted\s+mode)`),
+			Regex:    regexp.MustCompile(`(?i)(\bDAN\b\s+mode|do\s+anything\s+now|jailbreak|unrestricted\s+mode)`),
 			Severity: 0.9,
 			Category: "role_override",
 		},

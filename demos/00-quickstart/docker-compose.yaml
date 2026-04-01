@@ -1,25 +1,26 @@
-# AEGIS AI Gateway — Quickstart
+# demos/00-quickstart — Full stack: gateway + Open WebUI
+#
+# Starts PostgreSQL, Redis, the AEGIS gateway (auto-migrates, seeds a
+# demo key), and Open WebUI pre-wired to the gateway.
 #
 # Usage:
-#   cp .env.example .env   # add at least one provider API key
-#   ./quickstart.sh         # or: docker compose -f deploy/docker-compose.quickstart.yaml up
+#   cd demos/00-quickstart
+#   ./run.sh
 #
-# The gateway auto-runs migrations and seeds a demo API key.
-# Health:  curl http://localhost:8080/aegis/v1/health
-# Web UI:  http://localhost:3000  (Open WebUI — create an account on first visit)
+# Or manually:
+#   cp ../shared/.env.example .env   # add at least one provider key
+#   docker compose up --build
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: aegis-postgres
+    container_name: aegis-demo-postgres
     environment:
       POSTGRES_USER: aegis
       POSTGRES_PASSWORD: aegis-dev
       POSTGRES_DB: aegis
-    ports:
-      - "5432:5432"
     volumes:
-      - aegis-pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
       interval: 5s
@@ -29,12 +30,10 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: aegis-redis
+    container_name: aegis-demo-redis
     command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
     volumes:
-      - aegis-redis-data:/data
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -44,19 +43,19 @@ services:
 
   gateway:
     build:
-      context: ..
+      context: ../..
       dockerfile: Dockerfile
-    container_name: aegis-gateway
+    container_name: aegis-demo-gateway
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     ports:
-      - "${GATEWAY_HOST_PORT:-8080}:8080"
-      - "${METRICS_HOST_PORT:-9090}:9090"
+      - "${GATEWAY_PORT:-8080}:8080"
+      - "${METRICS_PORT:-9090}:9090"
     env_file:
-      - ../.env
+      - .env
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -77,12 +76,12 @@ services:
 
   webui:
     image: ghcr.io/open-webui/open-webui:main
-    container_name: aegis-webui
+    container_name: aegis-demo-webui
     depends_on:
       gateway:
         condition: service_healthy
     ports:
-      - "${WEBUI_HOST_PORT:-3000}:8080"
+      - "${WEBUI_PORT:-3000}:8080"
     environment:
       OPENAI_API_BASE_URL: http://gateway:8080/v1
       OPENAI_API_KEY: aegis-demo-quickstart
@@ -92,9 +91,9 @@ services:
       ENABLE_EVALUATION_ARENA_MODELS: "false"
       WEBUI_SECRET_KEY: aegis-quickstart-secret
     volumes:
-      - aegis-webui-data:/app/backend/data
+      - webuidata:/app/backend/data
 
 volumes:
-  aegis-pgdata:
-  aegis-redis-data:
-  aegis-webui-data:
+  pgdata:
+  redisdata:
+  webuidata:
