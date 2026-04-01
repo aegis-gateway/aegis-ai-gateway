@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /bin/g
 # ---- Runtime stage ----
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata bash
+RUN apk add --no-cache ca-certificates tzdata bash postgresql-client
 
 COPY --from=build /bin/gateway  /usr/local/bin/gateway
 COPY --from=build /bin/keygen   /usr/local/bin/keygen

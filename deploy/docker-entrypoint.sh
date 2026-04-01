@@ -26,17 +26,33 @@ run_migrations() {
 }
 
 # ── Seed demo key ────────────────────────────────────────────────
+#
+# Inserts a well-known demo key so README curl commands work verbatim.
+#
+#   Key:    aegis-demo-quickstart
+#   Hash:   sha256("aegis-demo-quickstart")
+#   Prefix: aegis-demo-quicksta
+#
+# ON CONFLICT makes it idempotent across container restarts.
 seed_demo_key() {
-  if [ "${AEGIS_SEED_DEMO_KEY:-}" = "true" ]; then
-    echo "seeding demo API key…"
-    keygen \
-      -org demo-org \
-      -team demo-team \
-      -name demo-key \
-      -classification INTERNAL \
-      -expires 365d \
-      -env demo
+  if [ "${AEGIS_SEED_DEMO_KEY:-}" != "true" ]; then
+    return
   fi
+
+  echo "seeding demo API key…"
+  psql "$DATABASE_URL" -q <<'SQL'
+    INSERT INTO api_keys (
+      key_hash, key_prefix, organization_id, team_id, name,
+      max_classification, allowed_models, expires_at
+    ) VALUES (
+      '0c8c82332e8aa010e44766a860fa6d7c6b7e9bb45ead65c11b0a13ab0c391e4e',
+      'aegis-demo-quicksta',
+      'demo-org', 'demo-team', 'quickstart-demo-key',
+      'INTERNAL', '[]'::jsonb,
+      NOW() + INTERVAL '1 year'
+    ) ON CONFLICT (key_hash) DO NOTHING;
+SQL
+  echo "demo key: aegis-demo-quickstart"
 }
 
 # ── Main ─────────────────────────────────────────────────────────
