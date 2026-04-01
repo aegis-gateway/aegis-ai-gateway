@@ -1,0 +1,8 @@
+.git
+.env
+bin/
+*.md
+docs/
+filter-service/
+deploy/docker-compose*.yaml
+.mise.toml
