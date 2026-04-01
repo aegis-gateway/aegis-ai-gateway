@@ -2,66 +2,37 @@
 
 AI Enablement, Governance & Innovation System — a unified gateway that proxies requests to multiple AI providers (OpenAI, Anthropic, Azure, vLLM) with authentication, content filtering, classification gating, and observability.
 
-## Quick Demo (Docker)
+## Quick Demo
 
-Run the full stack with a single command. Requires only **Docker Desktop** and at least one provider API key.
-
-**1. Configure API keys**
+Requires only **Docker Desktop** and one provider API key.
 
 ```bash
-cp .env.example .env
-# Edit .env → set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+cp .env.example .env              # add OPENAI_API_KEY or ANTHROPIC_API_KEY
+./quickstart.sh                   # builds, migrates, starts — prints when ready
 ```
 
-**2. Start everything**
+Then copy-paste:
 
 ```bash
-docker compose -f deploy/docker-compose.quickstart.yaml up --build
-```
-
-This starts PostgreSQL, Redis, runs migrations, seeds a demo API key, and launches the gateway. Wait for all three containers to show healthy (~60s on first build).
-
-**3. Copy the demo key** printed in the logs:
-
-```
-aegis-gateway   |   API Key (save this — it will NOT be shown again):
-aegis-gateway   |   aegis-demo-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-```bash
-export API_KEY="aegis-demo-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-```
-
-**4. Try it out**
-
-```bash
-# Health check (no auth)
+# Health check
 curl http://localhost:8080/aegis/v1/health | jq
-
-# List models
-curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer $API_KEY" | jq
 
 # Chat completion
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer aegis-demo-quickstart" \
   -H "Content-Type: application/json" \
   -d '{"model":"aegis-fast","messages":[{"role":"user","content":"Hello from AEGIS!"}]}' | jq
 
-# Secrets filter — blocked with HTTP 451
+# Secrets filter — blocked before reaching the provider
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer aegis-demo-quickstart" \
   -H "Content-Type: application/json" \
   -d '{"model":"aegis-fast","messages":[{"role":"user","content":"My AWS key is AKIAIOSFODNN7EXAMPLE"}]}' | jq
 ```
 
-**5. Cleanup**
+Stop with `docker compose -f deploy/docker-compose.quickstart.yaml down -v`.
 
-```bash
-docker compose -f deploy/docker-compose.quickstart.yaml down -v
-```
-
-> **Port conflicts?** Override with `GATEWAY_HOST_PORT=8088 METRICS_HOST_PORT=9099 docker compose -f deploy/docker-compose.quickstart.yaml up --build`
+> **Port conflicts?** `GATEWAY_HOST_PORT=8088 ./quickstart.sh`
 
 ### Available Models
 
