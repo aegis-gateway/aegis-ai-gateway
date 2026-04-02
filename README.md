@@ -4,19 +4,18 @@ AI Enablement, Governance & Innovation System — a unified gateway that proxies
 
 ## Quick Demo
 
-Requires only **Docker Desktop** and one provider API key.
+Requires only **Docker Desktop** and one provider API key. Includes [Open WebUI](https://github.com/open-webui/open-webui) for a full chat interface.
 
 ```bash
 cp .env.example .env              # add OPENAI_API_KEY or ANTHROPIC_API_KEY
 ./quickstart.sh                   # builds, migrates, starts — prints when ready
 ```
 
-Then copy-paste:
+Then open **http://localhost:3000** — create an account and start chatting. Every request flows through the AEGIS gateway with cost tracking, secrets filtering, and audit logging.
+
+Or use curl directly:
 
 ```bash
-# Health check
-curl http://localhost:8080/aegis/v1/health | jq
-
 # Chat completion
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer aegis-demo-quickstart" \
@@ -30,9 +29,17 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"aegis-fast","messages":[{"role":"user","content":"My AWS key is AKIAIOSFODNN7EXAMPLE"}]}' | jq
 ```
 
-Stop with `docker compose -f deploy/docker-compose.quickstart.yaml down -v`.
+**What to demo:**
+- Pick any model in the UI (aegis-fast, aegis-gpt4, aegis-reasoning) — each routes to a different provider
+- Try pasting an AWS key like `AKIAIOSFODNN7EXAMPLE` in a message — the gateway blocks it
+- Check cost tracking: `docker exec aegis-postgres psql -U aegis -d aegis -c "SELECT model_served, SUM(estimated_cost_usd) FROM usage_records GROUP BY model_served;"`
+- View Prometheus metrics: http://localhost:9090/metrics
 
-> **Port conflicts?** `GATEWAY_HOST_PORT=8088 ./quickstart.sh`
+Stop with `cd demos/00-quickstart && docker compose down -v`.
+
+> **Port conflicts?** `GATEWAY_PORT=8088 WEBUI_PORT=3001 ./quickstart.sh`
+
+See [demos/](demos/) for more examples (curl basics, streaming, cost tracking, secrets filter).
 
 ### Available Models
 
@@ -41,7 +48,6 @@ Stop with `docker compose -f deploy/docker-compose.quickstart.yaml down -v`.
 | `aegis-fast` | Claude Haiku → GPT-4o-mini | INTERNAL |
 | `aegis-gpt4` | GPT-4o → Azure GPT-4o → Claude Sonnet | CONFIDENTIAL |
 | `aegis-reasoning` | Claude Opus → o3 | CONFIDENTIAL |
-| `gpt-4o` | GPT-4o (direct) | CONFIDENTIAL |
 
 ## Development Setup
 

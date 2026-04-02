@@ -29,21 +29,22 @@ models:
     display_name: "AEGIS Reasoning (Complex Tasks)"
     primary:
       provider: anthropic
-      model: claude-opus-4-5-20250929
+      model: claude-opus-4-5-20251101
       classification_ceiling: CONFIDENTIAL
     fallback:
       - provider: openai
         model: o3
         classification_ceiling: CONFIDENTIAL
 
-  aegis-internal:
-    display_name: "AEGIS Internal (Air-Gapped)"
-    primary:
-      provider: internal_vllm
-      model: llama-3.1-70b
-      endpoint: "http://vllm.internal:8000/v1"
-      classification_ceiling: RESTRICTED
-    fallback: []
+  # aegis-internal requires a running vLLM server — uncomment when available.
+  # aegis-internal:
+  #   display_name: "AEGIS Internal (Air-Gapped)"
+  #   primary:
+  #     provider: internal_vllm
+  #     model: llama-3.1-70b
+  #     endpoint: "http://vllm.internal:8000/v1"
+  #     classification_ceiling: RESTRICTED
+  #   fallback: []
 
   gpt-4o:
     primary:
@@ -72,7 +73,7 @@ pricing:
     claude-haiku-4-5-20251001:
       input: 0.0008
       output: 0.004
-    claude-opus-4-5-20250929:
+    claude-opus-4-5-20251101:
       input: 0.015
       output: 0.075
   azure_openai:
