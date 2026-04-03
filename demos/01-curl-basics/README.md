@@ -7,6 +7,7 @@ Interactive walkthrough of every gateway endpoint using curl — health checks, 
 `demos/00-quickstart` must be running:
 
 ```bash
+export OPENAI_API_KEY=sk-proj-...   # or ANTHROPIC_API_KEY
 cd demos/00-quickstart && ./run.sh
 ```
 

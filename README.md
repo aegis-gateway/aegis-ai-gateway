@@ -7,9 +7,11 @@ AI Enablement, Governance & Innovation System — a unified gateway that proxies
 Requires only **Docker Desktop** and one provider API key. Includes [Open WebUI](https://github.com/open-webui/open-webui) for a full chat interface.
 
 ```bash
-cp .env.example .env              # add OPENAI_API_KEY or ANTHROPIC_API_KEY
-./quickstart.sh                   # builds, migrates, starts — prints when ready
+export OPENAI_API_KEY=sk-proj-...   # or export ANTHROPIC_API_KEY=sk-ant-...
+./quickstart.sh                     # builds, migrates, starts — prints when ready
 ```
+
+Or use a `.env` file: `cp .env.example .env` and fill in the keys.
 
 Then open **http://localhost:3000** — create an account and start chatting. Every request flows through the AEGIS gateway with cost tracking, secrets filtering, and audit logging.
 

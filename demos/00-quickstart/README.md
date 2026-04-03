@@ -12,10 +12,15 @@ Full-stack demo: AEGIS gateway + Open WebUI chat interface.
 
 ## Run
 
+If your provider keys are already exported in the shell, it just works:
+
 ```bash
+export OPENAI_API_KEY=sk-proj-...   # or ANTHROPIC_API_KEY
 cd demos/00-quickstart
 ./run.sh
 ```
+
+Otherwise the script creates a `.env` file for you to fill in.
 
 Open **http://localhost:3000**, create an account, and start chatting.
 

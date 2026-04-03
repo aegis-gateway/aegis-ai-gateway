@@ -9,19 +9,26 @@ METRICS_PORT="${METRICS_PORT:-9090}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 WEBUI_URL="http://localhost:${WEBUI_PORT}"
 
-# ── Ensure .env ──────────────────────────────────────────────────
+# ── Ensure provider keys ─────────────────────────────────────────
+# Keys can come from the environment or from a .env file.
 if [ ! -f .env ]; then
-  cp ../shared/.env.example .env
-  echo "Created .env — add at least one provider API key:"
-  echo "  OPENAI_API_KEY=sk-proj-..."
-  echo "  ANTHROPIC_API_KEY=sk-ant-..."
-  echo ""
-  echo "Then re-run: ./run.sh"
-  exit 1
+  if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    # Write env vars into .env so docker compose picks them up
+    ../shared/write-env.sh > .env
+  else
+    cp ../shared/.env.example .env
+    echo "Created .env — add at least one provider API key:"
+    echo "  OPENAI_API_KEY=sk-proj-..."
+    echo "  ANTHROPIC_API_KEY=sk-ant-..."
+    echo ""
+    echo "Or export them in your shell and re-run: ./run.sh"
+    exit 1
+  fi
 fi
 
-if ! grep -qE '^(OPENAI_API_KEY|ANTHROPIC_API_KEY)=.+' .env; then
-  echo "ERROR: set at least one provider API key in .env" >&2
+if ! grep -qE '^(OPENAI_API_KEY|ANTHROPIC_API_KEY)=.+' .env && \
+   [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "ERROR: set at least one provider API key in .env or environment" >&2
   exit 1
 fi
 
