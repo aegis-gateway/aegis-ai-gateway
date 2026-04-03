@@ -10,11 +10,3 @@ deny contains msg if {
 	contains(lower(m.content), name)
 	msg := sprintf("competitor mention detected: %s", [name])
 }
-
-allow := false if {
-	count(deny) > 0
-}
-
-reason := concat("; ", deny) if {
-	count(deny) > 0
-}

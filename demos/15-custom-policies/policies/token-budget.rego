@@ -9,11 +9,3 @@ deny contains msg if {
 	total_chars > 500
 	msg := "prompt too long for external team (limit: 500 chars)"
 }
-
-allow := false if {
-	count(deny) > 0
-}
-
-reason := concat("; ", deny) if {
-	count(deny) > 0
-}

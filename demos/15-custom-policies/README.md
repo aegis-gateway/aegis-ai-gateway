@@ -18,7 +18,9 @@ Three custom Rego policies — competitor mentions, token budgets, topic restric
 
 ## Writing your own policy
 
-Minimum valid `.rego` skeleton:
+When multiple `.rego` files share a bundle directory, the `default allow`, `default reason`, `allow`, and `reason` complete rules **must live in exactly one file** (the base). Individual policy files only contribute `deny contains msg if { ... }` partial-set rules. Duplicating complete rules across files causes OPA to reject the bundle with `rego_type_error: conflicting rules`.
+
+The base file (`base.rego`):
 
 ```rego
 package aegis.policy
@@ -28,11 +30,6 @@ import rego.v1
 default allow := true
 default reason := ""
 
-deny contains msg if {
-    # your condition here
-    msg := "reason for denial"
-}
-
 allow := false if {
     count(deny) > 0
 }
@@ -41,6 +38,21 @@ reason := concat("; ", deny) if {
     count(deny) > 0
 }
 ```
+
+A policy file (e.g. `my-rule.rego`) only adds deny rules:
+
+```rego
+package aegis.policy
+
+import rego.v1
+
+deny contains msg if {
+    # your condition here
+    msg := "reason for denial"
+}
+```
+
+If you only have a single `.rego` file, you can keep everything in one file (like `configs/policies/default.rego`).
 
 ### Available input fields
 

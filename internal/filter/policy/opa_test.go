@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,6 +247,149 @@ default reason := ""
 	// Metrics: at least one error recorded.
 	if fm.reloadError == 0 {
 		t.Error("expected reload error metric to be incremented")
+	}
+}
+
+func TestMissingDefaults_DeniesCleanRequest(t *testing.T) {
+	// When no module provides `default allow := true`, a clean request
+	// (no deny fires) leaves `allow` undefined. The evaluator treats
+	// undefined as "no policy result" and denies — fail-closed.
+	// This is the bug that base.rego prevents.
+	moduleNoDef := `
+package aegis.policy
+
+import rego.v1
+
+deny contains msg if {
+	input.request.model == "blocked"
+	msg := "blocked"
+}
+
+allow := false if { count(deny) > 0 }
+reason := concat("; ", deny) if { count(deny) > 0 }
+`
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(map[string]string{"nodef.rego": moduleNoDef}); err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// A clean request — no deny fires, but allow is undefined (no default).
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected denied when defaults are missing and no deny fires")
+	}
+	if reason != "no policy result" {
+		t.Errorf("expected 'no policy result', got: %s", reason)
+	}
+}
+
+func TestBaseWithDenyModules_AllowsCleanRequest(t *testing.T) {
+	// With a base module providing defaults, clean requests pass
+	// even when other modules only have conditional deny rules.
+	base := `
+package aegis.policy
+
+import rego.v1
+
+default allow := true
+default reason := ""
+
+allow := false if { count(deny) > 0 }
+reason := concat("; ", deny) if { count(deny) > 0 }
+`
+	denyModule := `
+package aegis.policy
+
+import rego.v1
+
+deny contains msg if {
+	input.request.model == "blocked"
+	msg := "blocked model"
+}
+`
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(map[string]string{
+		"base.rego": base,
+		"deny.rego": denyModule,
+	}); err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// Clean request — should be allowed.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed when base provides defaults and no deny fires")
+	}
+
+	// Blocked request — should be denied.
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "blocked", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected denied for blocked model")
+	}
+	if !strings.Contains(reason, "blocked model") {
+		t.Errorf("expected reason to contain 'blocked model', got: %s", reason)
+	}
+}
+
+func TestDemoPolicies_CompileTogether(t *testing.T) {
+	// Verify that all demo .rego files compile together without
+	// conflicting complete-rule errors.
+	demoDir := filepath.Join("..", "..", "..", "demos", "15-custom-policies", "policies")
+	modules, err := LoadRegoFiles(demoDir)
+	if err != nil {
+		t.Fatalf("failed to load demo policies: %v", err)
+	}
+	if len(modules) == 0 {
+		t.Fatal("no demo policy files found")
+	}
+
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(modules); err != nil {
+		t.Fatalf("demo policies failed to compile together: %v", err)
+	}
+
+	// A clean request should be allowed.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		User:     PolicyUser{ID: "u1", Org: "org1", Team: "engineering"},
+		Request:  PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+		Messages: []PolicyMessage{{Role: "user", Content: "Hello world"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected clean request to be allowed")
+	}
+
+	// A competitor mention should be denied.
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		User:     PolicyUser{ID: "u1", Org: "org1", Team: "engineering"},
+		Request:  PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+		Messages: []PolicyMessage{{Role: "user", Content: "How does Portkey compare?"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected competitor mention to be denied")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for competitor denial")
 	}
 }
 
