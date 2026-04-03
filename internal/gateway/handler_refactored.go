@@ -45,7 +45,7 @@ func (h *Handler) ChatCompletionsRefactored(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Run OPA policy evaluation after routing (needs provider type)
-	if err := h.runPolicyCheck(r, parsedReq, routeResult, authInfo); err != nil {
+	if err := h.runPolicyCheck(r, reqID, parsedReq, routeResult, authInfo); err != nil {
 		h.writeHTTPError(w, reqID, err)
 		return
 	}
@@ -110,15 +110,24 @@ func (h *Handler) runContentFilters(r *http.Request, parsedReq *ParsedRequestWit
 }
 
 // runPolicyCheck runs OPA policy evaluation after routing has resolved the provider type.
-func (h *Handler) runPolicyCheck(r *http.Request, parsedReq *ParsedRequestWithModel, routeResult *RouteResultWithModel, authInfo *auth.AuthInfo) error {
+// It temporarily restores the original model name so policies see the user-requested model,
+// not the provider-specific one set by RouteToProvider.
+func (h *Handler) runPolicyCheck(r *http.Request, reqID string, parsedReq *ParsedRequestWithModel, routeResult *RouteResultWithModel, authInfo *auth.AuthInfo) error {
 	if h.policyEvaluator == nil || !h.policyEvaluator.Enabled() {
 		return nil
 	}
 
+	// RouteToProvider already mutated AegisRequest.Model to the provider model.
+	// Restore the original for policy evaluation, then put the provider model back.
+	providerModel := parsedReq.AegisRequest.Model
+	parsedReq.AegisRequest.Model = parsedReq.OriginalModel
 	parsedReq.AegisRequest.ProviderType = routeResult.Adapter.Name()
+
 	result := h.policyEvaluator.ScanRequest(r.Context(), parsedReq.AegisRequest)
+
+	parsedReq.AegisRequest.Model = providerModel
+
 	if result.Action == filter.ActionBlock {
-		reqID := r.Header.Get("X-Request-ID")
 		if h.auditLogger != nil {
 			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
 		}
