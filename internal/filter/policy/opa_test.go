@@ -250,6 +250,42 @@ default reason := ""
 	}
 }
 
+func TestLoad_EmptyDir_ClearsPolicies(t *testing.T) {
+	// Start with a valid policy loaded.
+	e := loadTestEvaluator(t, defaultPolicy)
+
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Fatal("expected allowed before clearing")
+	}
+
+	// Point Load() at an empty directory — should clear the prepared query.
+	emptyDir := t.TempDir()
+	e.cfg = func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           true,
+			BundlePath:        emptyDir,
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	}
+	if err := e.Load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With no policies loaded, evaluator should fail-closed.
+	allowed, reason, _ := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if allowed {
+		t.Error("expected denied after all policies removed (fail-closed)")
+	}
+	if reason != "no policies loaded" {
+		t.Errorf("expected 'no policies loaded', got: %s", reason)
+	}
+}
+
 func TestMissingDefaults_DeniesCleanRequest(t *testing.T) {
 	// When no module provides `default allow := true`, a clean request
 	// (no deny fires) leaves `allow` undefined. The evaluator treats

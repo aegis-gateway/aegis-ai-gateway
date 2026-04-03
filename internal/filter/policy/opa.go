@@ -82,7 +82,11 @@ func (e *Evaluator) Load() error {
 		return fmt.Errorf("load rego files: %w", err)
 	}
 	if len(modules) == 0 {
-		slog.Warn("no rego files found", "path", cfg.BundlePath)
+		slog.Warn("no rego files found, clearing policies", "path", cfg.BundlePath)
+		e.mu.Lock()
+		e.prepared = nil
+		e.mu.Unlock()
+		e.recordReload(true)
 		return nil
 	}
 
