@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
+	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
@@ -39,6 +40,12 @@ func (h *Handler) ChatCompletionsRefactored(w http.ResponseWriter, r *http.Reque
 	// Route to provider
 	routeResult, err := h.routeRequest(r.Context(), parsedReq)
 	if err != nil {
+		h.writeHTTPError(w, reqID, err)
+		return
+	}
+
+	// Run OPA policy evaluation after routing (needs provider type)
+	if err := h.runPolicyCheck(r, parsedReq, routeResult, authInfo); err != nil {
 		h.writeHTTPError(w, reqID, err)
 		return
 	}
@@ -100,6 +107,27 @@ func (h *Handler) runContentFilters(r *http.Request, parsedReq *ParsedRequestWit
 	
 	_, err := processor.RunFilters(r, parsedReq.AegisRequest, authInfo)
 	return err
+}
+
+// runPolicyCheck runs OPA policy evaluation after routing has resolved the provider type.
+func (h *Handler) runPolicyCheck(r *http.Request, parsedReq *ParsedRequestWithModel, routeResult *RouteResultWithModel, authInfo *auth.AuthInfo) error {
+	if h.policyEvaluator == nil || !h.policyEvaluator.Enabled() {
+		return nil
+	}
+
+	parsedReq.AegisRequest.ProviderType = routeResult.Adapter.Name()
+	result := h.policyEvaluator.ScanRequest(r.Context(), parsedReq.AegisRequest)
+	if result.Action == filter.ActionBlock {
+		reqID := r.Header.Get("X-Request-ID")
+		if h.auditLogger != nil {
+			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+		}
+		if h.metrics != nil {
+			h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
+		}
+		return &httputil.HTTPError{StatusCode: http.StatusForbidden, Message: result.Message}
+	}
+	return nil
 }
 
 // routeRequest handles provider routing.

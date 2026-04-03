@@ -29,8 +29,7 @@ type Metrics struct {
 	ValidationFailureTotal *prometheus.CounterVec
 	
 	// Policy reload metrics
-	PolicyReloadTotal      *prometheus.CounterVec
-	PolicyReloadErrorTotal prometheus.Counter
+	PolicyReloadTotal *prometheus.CounterVec
 
 	// Streaming metrics
 	StreamingChunkTotal     *prometheus.CounterVec
@@ -120,11 +119,6 @@ func NewMetrics() *Metrics {
 			Name: "aegis_policy_reload_total",
 			Help: "Total number of policy reload attempts.",
 		}, []string{"status"}),
-
-		PolicyReloadErrorTotal: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "aegis_policy_reload_error_total",
-			Help: "Total number of failed policy reloads (syntax errors, missing files, etc).",
-		}),
 
 		StreamingChunkTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_streaming_chunk_total",
@@ -303,7 +297,6 @@ func (m *Metrics) RecordPolicyReload(success bool) {
 		m.PolicyReloadTotal.WithLabelValues("success").Inc()
 	} else {
 		m.PolicyReloadTotal.WithLabelValues("error").Inc()
-		m.PolicyReloadErrorTotal.Inc()
 	}
 }
 
