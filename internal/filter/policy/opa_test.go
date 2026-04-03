@@ -438,6 +438,130 @@ func TestEvaluator_Disabled(t *testing.T) {
 	}
 }
 
+func TestEvaluator_EnabledThenDisabled(t *testing.T) {
+	// Simulates: policy enabled at startup with policies loaded,
+	// then config reloads with policy disabled.
+	// The old prepared query stays cached but Enabled() returns false,
+	// so the handler will never call ScanRequest.
+	enabled := true
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           enabled,
+			BundlePath:        "",
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	})
+	if err := e.LoadFromModules(map[string]string{"test.rego": defaultPolicy}); err != nil {
+		t.Fatalf("failed to load: %v", err)
+	}
+
+	// While enabled, evaluation works.
+	if !e.Enabled() {
+		t.Fatal("expected enabled")
+	}
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Fatal("expected allowed while enabled")
+	}
+
+	// Config reloads — policy now disabled.
+	enabled = false
+	if e.Enabled() {
+		t.Error("expected disabled after config change")
+	}
+
+	// Old prepared query is still there, but the handler won't call us
+	// because Enabled() is false. Verify that Evaluate still works if
+	// called directly (defensive — not a handler code path).
+	allowed, _, err = e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Error("cached query should still work if called directly")
+	}
+}
+
+func TestEvaluator_DisabledThenEnabled(t *testing.T) {
+	// Simulates: policy disabled at startup (Load never called),
+	// then config reloads with policy enabled and Load() runs.
+	enabled := false
+	dir := t.TempDir()
+	// Write a valid policy file to the temp dir.
+	regoContent := []byte(defaultPolicy)
+	if err := os.WriteFile(filepath.Join(dir, "test.rego"), regoContent, 0644); err != nil {
+		t.Fatalf("failed to write rego: %v", err)
+	}
+
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           enabled,
+			BundlePath:        dir,
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	})
+
+	// At startup: disabled, no Load() called, prepared is nil.
+	if e.Enabled() {
+		t.Fatal("expected disabled at startup")
+	}
+	// Evaluate without loading — fail-closed.
+	allowed, reason, _ := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if allowed {
+		t.Error("expected denied with no policies loaded")
+	}
+	if reason != "no policies loaded" {
+		t.Errorf("expected 'no policies loaded', got: %s", reason)
+	}
+
+	// Config reloads — policy now enabled. The reload callback calls Load().
+	enabled = true
+	if !e.Enabled() {
+		t.Fatal("expected enabled after config change")
+	}
+	if err := e.Load(); err != nil {
+		t.Fatalf("Load() after enabling failed: %v", err)
+	}
+
+	// Now evaluation works.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL", ProviderType: "openai"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed after loading policies")
+	}
+}
+
+func TestEvaluator_DisabledStaysDisabled(t *testing.T) {
+	// Policy disabled at startup, stays disabled on reload.
+	// Load() is never called, prepared stays nil, Enabled() stays false.
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{Enabled: false}
+	})
+
+	if e.Enabled() {
+		t.Error("expected disabled")
+	}
+
+	// No Load() called — prepared is nil, fail-closed if called directly.
+	allowed, _, _ := e.Evaluate(context.Background(), PolicyInput{})
+	if allowed {
+		t.Error("expected denied with nil prepared (fail-closed)")
+	}
+
+	// Simulate reload — still disabled, OnReload skips Load().
+	// Nothing changes.
+	if e.Enabled() {
+		t.Error("still expected disabled")
+	}
+}
+
 func TestEvaluator_CustomDenyAllPolicy(t *testing.T) {
 	denyAll := `
 package aegis.policy

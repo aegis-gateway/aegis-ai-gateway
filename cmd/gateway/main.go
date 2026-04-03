@@ -179,6 +179,9 @@ func main() {
 		}
 	}
 	loader.OnReload(func() {
+		if !loader.Config().Filter.Policy.Enabled {
+			return
+		}
 		if err := policyEvaluator.Load(); err != nil {
 			logger.Error("policy reload failed", "error", err)
 		} else {
