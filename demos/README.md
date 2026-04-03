@@ -12,17 +12,22 @@ Self-contained, runnable demos that showcase gateway features. Each demo lives i
 | # | Name | What it shows | Status |
 |---|------|---------------|--------|
 | [00](00-quickstart/) | **Quickstart** | Full stack with Open WebUI — multi-provider routing, secrets filter, cost tracking, metrics | Ready |
-| [01](01-curl-basics/) | **curl Basics** | Step-by-step curl walkthrough of every endpoint | Planned |
+| [01](01-curl-basics/) | **curl Basics** | Step-by-step curl walkthrough of every endpoint | Ready |
 | [02](02-streaming/) | **Streaming** | SSE streaming, Anthropic→OpenAI format conversion, TTFT metrics | Planned |
 | [03](03-cost-tracking/) | **Cost Tracking** | Per-request cost, aggregated reports, Prometheus cost metrics | Planned |
 | [04](04-secrets-filter/) | **Secrets Filter** | AWS keys, GitHub tokens, private keys, JWTs — all blocked | Planned |
 
 ## Quick start
 
+If your provider keys are already exported, it just works:
+
 ```bash
+export OPENAI_API_KEY=sk-proj-...   # or ANTHROPIC_API_KEY
 cd demos/00-quickstart
 ./run.sh
 ```
+
+Otherwise the script creates a `.env` file for you to fill in.
 
 ## Structure
 
