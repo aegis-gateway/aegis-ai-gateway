@@ -2,6 +2,9 @@ package policy
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +12,19 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
+
+type fakeMetrics struct {
+	reloadSuccess int
+	reloadError   int
+}
+
+func (f *fakeMetrics) RecordPolicyReload(success bool) {
+	if success {
+		f.reloadSuccess++
+	} else {
+		f.reloadError++
+	}
+}
 
 func testCfg() func() config.PolicyFilterConfig {
 	return func() config.PolicyFilterConfig {
@@ -149,12 +165,400 @@ func TestEvaluator_ScanRequest_Pass(t *testing.T) {
 	}
 }
 
+func TestLoad_SyntaxError_KeepsOldPolicy(t *testing.T) {
+	// Start with a valid policy that allows everything.
+	validPolicy := `
+package aegis.policy
+
+import rego.v1
+
+default allow := true
+default reason := ""
+`
+	fm := &fakeMetrics{}
+	e := NewEvaluator(testCfg())
+	e.SetMetrics(fm)
+
+	// Load the valid policy first.
+	if err := e.LoadFromModules(map[string]string{"valid.rego": validPolicy}); err != nil {
+		t.Fatalf("failed to load valid policy: %v", err)
+	}
+
+	// Confirm it works.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("expected allowed with valid policy")
+	}
+
+	// Write a broken .rego file to a temp dir.
+	dir := t.TempDir()
+	brokenRego := `package aegis.policy @@@ THIS IS INVALID SYNTAX`
+	if err := os.WriteFile(filepath.Join(dir, "broken.rego"), []byte(brokenRego), 0644); err != nil {
+		t.Fatalf("failed to write broken rego: %v", err)
+	}
+
+	// Point Load() at the broken dir — should fail.
+	brokenCfg := func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           true,
+			BundlePath:        dir,
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	}
+	eBroken := &Evaluator{
+		prepared: e.prepared, // start with the known-good query
+		cfg:      brokenCfg,
+		metrics:  fm,
+	}
+
+	err = eBroken.Load()
+	if err == nil {
+		t.Fatal("expected error from broken rego, got nil")
+	}
+
+	// The old query must still be intact.
+	allowed, _, err = eBroken.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil {
+		t.Fatalf("evaluation should still work after bad reload: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed — old policy should still be active after failed reload")
+	}
+
+	// ScanRequest should also still work.
+	result := eBroken.ScanRequest(context.Background(), &types.AegisRequest{
+		Model:          "gpt-4o",
+		Classification: "PUBLIC",
+		UserID:         "u1",
+		OrganizationID: "org1",
+		TeamID:         "team1",
+	})
+	if result.Action != filter.ActionPass {
+		t.Errorf("expected pass from ScanRequest, got %s: %s", result.Action, result.Message)
+	}
+
+	// Metrics: at least one error recorded.
+	if fm.reloadError == 0 {
+		t.Error("expected reload error metric to be incremented")
+	}
+}
+
+func TestLoad_EmptyDir_ClearsPolicies(t *testing.T) {
+	// Start with a valid policy loaded.
+	e := loadTestEvaluator(t, defaultPolicy)
+
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Fatal("expected allowed before clearing")
+	}
+
+	// Point Load() at an empty directory — should clear the prepared query.
+	emptyDir := t.TempDir()
+	e.cfg = func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           true,
+			BundlePath:        emptyDir,
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	}
+	if err := e.Load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With no policies loaded, evaluator should fail-closed.
+	allowed, reason, _ := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if allowed {
+		t.Error("expected denied after all policies removed (fail-closed)")
+	}
+	if reason != "no policies loaded" {
+		t.Errorf("expected 'no policies loaded', got: %s", reason)
+	}
+}
+
+func TestMissingDefaults_DeniesCleanRequest(t *testing.T) {
+	// When no module provides `default allow := true`, a clean request
+	// (no deny fires) leaves `allow` undefined. The evaluator treats
+	// undefined as "no policy result" and denies — fail-closed.
+	// This is the bug that base.rego prevents.
+	moduleNoDef := `
+package aegis.policy
+
+import rego.v1
+
+deny contains msg if {
+	input.request.model == "blocked"
+	msg := "blocked"
+}
+
+allow := false if { count(deny) > 0 }
+reason := concat("; ", deny) if { count(deny) > 0 }
+`
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(map[string]string{"nodef.rego": moduleNoDef}); err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// A clean request — no deny fires, but allow is undefined (no default).
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected denied when defaults are missing and no deny fires")
+	}
+	if reason != "no policy result" {
+		t.Errorf("expected 'no policy result', got: %s", reason)
+	}
+}
+
+func TestBaseWithDenyModules_AllowsCleanRequest(t *testing.T) {
+	// With a base module providing defaults, clean requests pass
+	// even when other modules only have conditional deny rules.
+	base := `
+package aegis.policy
+
+import rego.v1
+
+default allow := true
+default reason := ""
+
+allow := false if { count(deny) > 0 }
+reason := concat("; ", deny) if { count(deny) > 0 }
+`
+	denyModule := `
+package aegis.policy
+
+import rego.v1
+
+deny contains msg if {
+	input.request.model == "blocked"
+	msg := "blocked model"
+}
+`
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(map[string]string{
+		"base.rego": base,
+		"deny.rego": denyModule,
+	}); err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// Clean request — should be allowed.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed when base provides defaults and no deny fires")
+	}
+
+	// Blocked request — should be denied.
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "blocked", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected denied for blocked model")
+	}
+	if !strings.Contains(reason, "blocked model") {
+		t.Errorf("expected reason to contain 'blocked model', got: %s", reason)
+	}
+}
+
+func TestDemoPolicies_CompileTogether(t *testing.T) {
+	// Verify that all demo .rego files compile together without
+	// conflicting complete-rule errors.
+	demoDir := filepath.Join("..", "..", "..", "demos", "15-custom-policies", "policies")
+	modules, err := LoadRegoFiles(demoDir)
+	if err != nil {
+		t.Fatalf("failed to load demo policies: %v", err)
+	}
+	if len(modules) == 0 {
+		t.Fatal("no demo policy files found")
+	}
+
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(modules); err != nil {
+		t.Fatalf("demo policies failed to compile together: %v", err)
+	}
+
+	// A clean request should be allowed.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		User:     PolicyUser{ID: "u1", Org: "org1", Team: "engineering"},
+		Request:  PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+		Messages: []PolicyMessage{{Role: "user", Content: "Hello world"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected clean request to be allowed")
+	}
+
+	// A competitor mention should be denied.
+	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
+		User:     PolicyUser{ID: "u1", Org: "org1", Team: "engineering"},
+		Request:  PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
+		Messages: []PolicyMessage{{Role: "user", Content: "How does Portkey compare?"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Error("expected competitor mention to be denied")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for competitor denial")
+	}
+}
+
 func TestEvaluator_Disabled(t *testing.T) {
 	e := NewEvaluator(func() config.PolicyFilterConfig {
 		return config.PolicyFilterConfig{Enabled: false}
 	})
 	if e.Enabled() {
 		t.Error("expected evaluator to be disabled")
+	}
+}
+
+func TestEvaluator_EnabledThenDisabled(t *testing.T) {
+	// Simulates: policy enabled at startup with policies loaded,
+	// then config reloads with policy disabled.
+	// The old prepared query stays cached but Enabled() returns false,
+	// so the handler will never call ScanRequest.
+	enabled := true
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           enabled,
+			BundlePath:        "",
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	})
+	if err := e.LoadFromModules(map[string]string{"test.rego": defaultPolicy}); err != nil {
+		t.Fatalf("failed to load: %v", err)
+	}
+
+	// While enabled, evaluation works.
+	if !e.Enabled() {
+		t.Fatal("expected enabled")
+	}
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Fatal("expected allowed while enabled")
+	}
+
+	// Config reloads — policy now disabled.
+	enabled = false
+	if e.Enabled() {
+		t.Error("expected disabled after config change")
+	}
+
+	// Old prepared query is still there, but the handler won't call us
+	// because Enabled() is false. Verify that Evaluate still works if
+	// called directly (defensive — not a handler code path).
+	allowed, _, err = e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if err != nil || !allowed {
+		t.Error("cached query should still work if called directly")
+	}
+}
+
+func TestEvaluator_DisabledThenEnabled(t *testing.T) {
+	// Simulates: policy disabled at startup (Load never called),
+	// then config reloads with policy enabled and Load() runs.
+	enabled := false
+	dir := t.TempDir()
+	// Write a valid policy file to the temp dir.
+	regoContent := []byte(defaultPolicy)
+	if err := os.WriteFile(filepath.Join(dir, "test.rego"), regoContent, 0644); err != nil {
+		t.Fatalf("failed to write rego: %v", err)
+	}
+
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{
+			Enabled:           enabled,
+			BundlePath:        dir,
+			EvaluationTimeout: 100 * time.Millisecond,
+		}
+	})
+
+	// At startup: disabled, no Load() called, prepared is nil.
+	if e.Enabled() {
+		t.Fatal("expected disabled at startup")
+	}
+	// Evaluate without loading — fail-closed.
+	allowed, reason, _ := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "PUBLIC"},
+	})
+	if allowed {
+		t.Error("expected denied with no policies loaded")
+	}
+	if reason != "no policies loaded" {
+		t.Errorf("expected 'no policies loaded', got: %s", reason)
+	}
+
+	// Config reloads — policy now enabled. The reload callback calls Load().
+	enabled = true
+	if !e.Enabled() {
+		t.Fatal("expected enabled after config change")
+	}
+	if err := e.Load(); err != nil {
+		t.Fatalf("Load() after enabling failed: %v", err)
+	}
+
+	// Now evaluation works.
+	allowed, _, err := e.Evaluate(context.Background(), PolicyInput{
+		Request: PolicyReq{Model: "gpt-4o", Classification: "INTERNAL", ProviderType: "openai"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed after loading policies")
+	}
+}
+
+func TestEvaluator_DisabledStaysDisabled(t *testing.T) {
+	// Policy disabled at startup, stays disabled on reload.
+	// Load() is never called, prepared stays nil, Enabled() stays false.
+	e := NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{Enabled: false}
+	})
+
+	if e.Enabled() {
+		t.Error("expected disabled")
+	}
+
+	// No Load() called — prepared is nil, fail-closed if called directly.
+	allowed, _, _ := e.Evaluate(context.Background(), PolicyInput{})
+	if allowed {
+		t.Error("expected denied with nil prepared (fail-closed)")
+	}
+
+	// Simulate reload — still disabled, OnReload skips Load().
+	// Nothing changes.
+	if e.Enabled() {
+		t.Error("still expected disabled")
 	}
 }
 

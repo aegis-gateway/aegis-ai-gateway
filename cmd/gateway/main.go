@@ -172,12 +172,23 @@ func main() {
 		}
 	}
 	policyEvaluator := policy.NewEvaluator(func() config.PolicyFilterConfig { return loader.Config().Filter.Policy })
+	policyEvaluator.SetMetrics(metrics)
 	if cfg.Filter.Policy.Enabled {
 		if err := policyEvaluator.Load(); err != nil {
 			logger.Warn("failed to load OPA policies (policy filter disabled)", "error", err)
 		}
 	}
-	filterChain := filter.NewChain(secretsFilter, injectionScanner, piiClient, policyEvaluator)
+	loader.OnReload(func() {
+		if !loader.Config().Filter.Policy.Enabled {
+			return
+		}
+		if err := policyEvaluator.Load(); err != nil {
+			logger.Error("policy reload failed", "error", err)
+		} else {
+			logger.Info("policies reloaded")
+		}
+	})
+	filterChain := filter.NewChain(secretsFilter, injectionScanner, piiClient)
 
 	// Rate limiting
 	rateLimiter := ratelimit.NewLimiter(rdb)
@@ -216,7 +227,7 @@ func main() {
 		return loader.Models()
 	}, func() *config.Config {
 		return loader.Config()
-	}, filterChain, metrics, costCalc, usageRecorder, auditLogger, retryExecutor, contextMonitor, validator)
+	}, filterChain, policyEvaluator, metrics, costCalc, usageRecorder, auditLogger, retryExecutor, contextMonitor, validator)
 
 	// Router setup
 	r := chi.NewRouter()

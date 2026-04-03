@@ -24,7 +24,7 @@ func TestNewHandler(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if h == nil {
 		t.Fatal("expected non-nil handler")
@@ -46,7 +46,7 @@ func TestChatCompletions_RequiresAuth(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	reqBody := `{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -70,7 +70,7 @@ func TestChatCompletions_RequiresModel(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	reqBody := `{"messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -99,7 +99,7 @@ func TestChatCompletions_RequiresMessages(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	reqBody := `{"model": "gpt-4o"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -128,7 +128,7 @@ func TestChatCompletions_InvalidJSON(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	reqBody := `{invalid json}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -157,7 +157,7 @@ func TestListModels_RequiresAuth(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 
@@ -189,7 +189,7 @@ func TestListModels_ReturnsModels(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
@@ -236,7 +236,7 @@ func TestListModels_FilteredByAllowedModels(t *testing.T) {
 		return &config.Config{}
 	}
 
-	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/af-corp/aegis-gateway/internal/auth"
+	"github.com/af-corp/aegis-gateway/internal/filter"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/types"
 )
@@ -39,6 +40,12 @@ func (h *Handler) ChatCompletionsRefactored(w http.ResponseWriter, r *http.Reque
 	// Route to provider
 	routeResult, err := h.routeRequest(r.Context(), parsedReq)
 	if err != nil {
+		h.writeHTTPError(w, reqID, err)
+		return
+	}
+
+	// Run OPA policy evaluation after routing (needs provider type)
+	if err := h.runPolicyCheck(r, reqID, parsedReq, routeResult, authInfo); err != nil {
 		h.writeHTTPError(w, reqID, err)
 		return
 	}
@@ -100,6 +107,36 @@ func (h *Handler) runContentFilters(r *http.Request, parsedReq *ParsedRequestWit
 	
 	_, err := processor.RunFilters(r, parsedReq.AegisRequest, authInfo)
 	return err
+}
+
+// runPolicyCheck runs OPA policy evaluation after routing has resolved the provider type.
+// It temporarily restores the original model name so policies see the user-requested model,
+// not the provider-specific one set by RouteToProvider.
+func (h *Handler) runPolicyCheck(r *http.Request, reqID string, parsedReq *ParsedRequestWithModel, routeResult *RouteResultWithModel, authInfo *auth.AuthInfo) error {
+	if h.policyEvaluator == nil || !h.policyEvaluator.Enabled() {
+		return nil
+	}
+
+	// RouteToProvider already mutated AegisRequest.Model to the provider model.
+	// Restore the original for policy evaluation, then put the provider model back.
+	providerModel := parsedReq.AegisRequest.Model
+	parsedReq.AegisRequest.Model = parsedReq.OriginalModel
+	parsedReq.AegisRequest.ProviderType = routeResult.Adapter.Name()
+
+	result := h.policyEvaluator.ScanRequest(r.Context(), parsedReq.AegisRequest)
+
+	parsedReq.AegisRequest.Model = providerModel
+
+	if result.Action == filter.ActionBlock {
+		if h.auditLogger != nil {
+			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+		}
+		if h.metrics != nil {
+			h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
+		}
+		return &httputil.HTTPError{StatusCode: http.StatusForbidden, Message: result.Message}
+	}
+	return nil
 }
 
 // routeRequest handles provider routing.
