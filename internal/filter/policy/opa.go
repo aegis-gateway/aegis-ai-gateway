@@ -13,11 +13,18 @@ import (
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 
+// PolicyMessage represents a single message for policy evaluation.
+type PolicyMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // PolicyInput is the data sent to OPA for evaluation.
 type PolicyInput struct {
-	User    PolicyUser    `json:"user"`
-	Request PolicyReq    `json:"request"`
-	Time    PolicyTime   `json:"time"`
+	User     PolicyUser      `json:"user"`
+	Request  PolicyReq       `json:"request"`
+	Messages []PolicyMessage `json:"messages"`
+	Time     PolicyTime      `json:"time"`
 }
 
 type PolicyUser struct {
@@ -37,11 +44,17 @@ type PolicyTime struct {
 	Day  string `json:"day"`
 }
 
+// ReloadMetrics is an optional interface for recording policy reload outcomes.
+type ReloadMetrics interface {
+	RecordPolicyReload(success bool)
+}
+
 // Evaluator implements filter.Filter using OPA.
 type Evaluator struct {
 	mu       sync.RWMutex
 	prepared *rego.PreparedEvalQuery
 	cfg      func() config.PolicyFilterConfig
+	metrics  ReloadMetrics
 }
 
 // NewEvaluator creates a policy evaluator. Call Load() to compile policies.
@@ -49,14 +62,23 @@ func NewEvaluator(cfg func() config.PolicyFilterConfig) *Evaluator {
 	return &Evaluator{cfg: cfg}
 }
 
+// SetMetrics attaches a metrics recorder for policy reload events.
+func (e *Evaluator) SetMetrics(m ReloadMetrics) {
+	e.metrics = m
+}
+
 func (e *Evaluator) Name() string  { return "policy" }
 func (e *Evaluator) Enabled() bool { return e.cfg().Enabled }
 
 // Load compiles Rego modules from the bundle path.
+// On success, the new query atomically replaces the old one.
+// On failure, the existing query is left untouched so evaluation continues
+// with the last known-good policy.
 func (e *Evaluator) Load() error {
 	cfg := e.cfg()
 	modules, err := LoadRegoFiles(cfg.BundlePath)
 	if err != nil {
+		e.recordReload(false)
 		return fmt.Errorf("load rego files: %w", err)
 	}
 	if len(modules) == 0 {
@@ -64,15 +86,8 @@ func (e *Evaluator) Load() error {
 		return nil
 	}
 
-	opts := []func(*rego.Rego){
-		rego.Query("data.aegis.policy.allow"),
-		rego.Query("data.aegis.policy.reason"),
-	}
-	for name, src := range modules {
-		opts = append(opts, rego.Module(name, src))
-	}
-
-	// Build with two queries for allow and reason
+	// Compile into a new PreparedEvalQuery first — if this fails,
+	// e.prepared is never touched (atomic swap).
 	r := rego.New(
 		rego.Query("[data.aegis.policy.allow, data.aegis.policy.reason]"),
 		func() func(*rego.Rego) {
@@ -90,15 +105,26 @@ func (e *Evaluator) Load() error {
 
 	prepared, err := r.PrepareForEval(context.Background())
 	if err != nil {
+		slog.Error("opa policy compile failed — keeping previous policies",
+			"error", err, "path", cfg.BundlePath)
+		e.recordReload(false)
 		return fmt.Errorf("prepare rego: %w", err)
 	}
 
+	// Swap only after successful compilation.
 	e.mu.Lock()
 	e.prepared = &prepared
 	e.mu.Unlock()
 
 	slog.Info("opa policies loaded", "modules", len(modules))
+	e.recordReload(true)
 	return nil
+}
+
+func (e *Evaluator) recordReload(success bool) {
+	if e.metrics != nil {
+		e.metrics.RecordPolicyReload(success)
+	}
 }
 
 // LoadFromModules compiles policies from provided module sources (useful for testing).
@@ -173,6 +199,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, input PolicyInput) (bool, stri
 // ScanRequest implements filter.Filter.
 func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) filter.Result {
 	now := time.Now().UTC()
+
+	msgs := make([]PolicyMessage, len(req.Messages))
+	for i, m := range req.Messages {
+		msgs[i] = PolicyMessage{Role: m.Role, Content: m.Content}
+	}
+
 	input := PolicyInput{
 		User: PolicyUser{
 			ID:   req.UserID,
@@ -182,7 +214,9 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 		Request: PolicyReq{
 			Model:          req.Model,
 			Classification: string(req.Classification),
+			ProviderType:   req.ProviderType,
 		},
+		Messages: msgs,
 		Time: PolicyTime{
 			Hour: now.Hour(),
 			Day:  now.Weekday().String(),

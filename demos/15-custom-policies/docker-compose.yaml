@@ -1,0 +1,97 @@
+# demos/15-custom-policies — OPA custom policy enforcement
+#
+# Same stack as 00-quickstart but with custom .rego policies
+# mounted into the gateway's OPA bundle path.
+#
+# Usage:
+#   cd demos/15-custom-policies
+#   ./run.sh
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aegis-demo-postgres
+    environment:
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegis-dev
+      POSTGRES_DB: aegis
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-demo-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: aegis-demo-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+      - "${METRICS_PORT:-9090}:9090"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: aegis
+      DB_PASSWORD: aegis-dev
+      DB_NAME: aegis
+      DATABASE_URL: postgres://aegis:aegis-dev@postgres:5432/aegis?sslmode=disable
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      AEGIS_SEED_DEMO_KEY: "true"
+      OPA_BUNDLE_PATH: "/etc/aegis/custom-policies"
+    volumes:
+      - ./policies:/etc/aegis/custom-policies:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: aegis-demo-webui
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+    environment:
+      OPENAI_API_BASE_URL: http://gateway:8080/v1
+      OPENAI_API_KEY: aegis-demo-quickstart
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_OPENAI_API: "true"
+      BYPASS_MODEL_ACCESS_CONTROL: "true"
+      ENABLE_EVALUATION_ARENA_MODELS: "false"
+      WEBUI_SECRET_KEY: aegis-quickstart-secret
+    volumes:
+      - webuidata:/app/backend/data
+
+volumes:
+  pgdata:
+  redisdata:
+  webuidata:

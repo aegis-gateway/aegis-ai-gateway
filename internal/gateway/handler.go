@@ -12,6 +12,7 @@ import (
 	"github.com/af-corp/aegis-gateway/internal/config"
 	"github.com/af-corp/aegis-gateway/internal/cost"
 	"github.com/af-corp/aegis-gateway/internal/filter"
+	"github.com/af-corp/aegis-gateway/internal/filter/policy"
 	"github.com/af-corp/aegis-gateway/internal/httputil"
 	"github.com/af-corp/aegis-gateway/internal/retry"
 	"github.com/af-corp/aegis-gateway/internal/router"
@@ -33,6 +34,7 @@ type Handler struct {
 	modelsCfg        func() *config.ModelsConfig
 	cfg              func() *config.Config
 	filterChain      *filter.Chain
+	policyEvaluator  *policy.Evaluator
 	metrics          *telemetry.Metrics
 	costCalc         *cost.Calculator
 	usageRecorder    *storage.UsageRecorder
@@ -43,20 +45,21 @@ type Handler struct {
 	streamingHandler *StreamingHandler
 }
 
-func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger, retryExecutor *retry.Executor, contextMonitor *retry.ContextMonitor, validator *validation.Validator) *Handler {
+func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, modelsCfg func() *config.ModelsConfig, cfg func() *config.Config, filterChain *filter.Chain, policyEvaluator *policy.Evaluator, metrics *telemetry.Metrics, costCalc *cost.Calculator, usageRecorder *storage.UsageRecorder, auditLogger AuditLogger, retryExecutor *retry.Executor, contextMonitor *retry.ContextMonitor, validator *validation.Validator) *Handler {
 	h := &Handler{
-		registry:       registry,
-		healthTracker:  healthTracker,
-		modelsCfg:      modelsCfg,
-		cfg:            cfg,
-		filterChain:    filterChain,
-		metrics:        metrics,
-		costCalc:       costCalc,
-		usageRecorder:  usageRecorder,
-		auditLogger:    auditLogger,
-		retryExecutor:  retryExecutor,
-		contextMonitor: contextMonitor,
-		validator:      validator,
+		registry:        registry,
+		healthTracker:   healthTracker,
+		modelsCfg:       modelsCfg,
+		cfg:             cfg,
+		filterChain:     filterChain,
+		policyEvaluator: policyEvaluator,
+		metrics:         metrics,
+		costCalc:        costCalc,
+		usageRecorder:   usageRecorder,
+		auditLogger:     auditLogger,
+		retryExecutor:   retryExecutor,
+		contextMonitor:  contextMonitor,
+		validator:       validator,
 	}
 	
 	// Initialize streaming handler with configuration
@@ -161,6 +164,29 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
 		return
+	}
+
+	// Set provider type for policy evaluation (adapter.Name() returns "openai", "anthropic", etc.)
+	aegisReq.ProviderType = adapter.Name()
+
+	// Run OPA policy evaluation after routing (needs provider type)
+	if h.policyEvaluator != nil && h.policyEvaluator.Enabled() {
+		result := h.policyEvaluator.ScanRequest(r.Context(), &aegisReq)
+		if result.Action == filter.ActionBlock {
+			slog.Warn("request blocked by policy",
+				"request_id", reqID,
+				"filter", result.FilterName,
+				"org_id", authInfo.OrganizationID,
+			)
+			if h.auditLogger != nil {
+				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+			}
+			if h.metrics != nil {
+				h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
+			}
+			httputil.WriteContentBlockedError(w, reqID, result.Message)
+			return
+		}
 	}
 
 	// Override model with the provider-specific model name

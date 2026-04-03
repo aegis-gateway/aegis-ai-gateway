@@ -16,6 +16,7 @@ Self-contained, runnable demos that showcase gateway features. Each demo lives i
 | [02](02-streaming/) | **Streaming** | SSE streaming, Anthropic→OpenAI format conversion, TTFT metrics | Planned |
 | [03](03-cost-tracking/) | **Cost Tracking** | Per-request cost, aggregated reports, Prometheus cost metrics | Planned |
 | [04](04-secrets-filter/) | **Secrets Filter** | AWS keys, GitHub tokens, private keys, JWTs — all blocked | Planned |
+| [15](15-custom-policies/) | **Custom Policies** | OPA Rego policies — competitor mentions, token budgets, topic restrictions, hot-reload | Ready |
 
 ## Quick start
 

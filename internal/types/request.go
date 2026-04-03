@@ -28,6 +28,9 @@ type AegisRequest struct {
 	TraceContext   string `json:"trace_context,omitempty"`
 	SkipCache      bool   `json:"skip_cache,omitempty"`
 
+	// Resolved at routing time
+	ProviderType string `json:"-"`
+
 	// Internal tracking
 	ReceivedAt      time.Time `json:"-"`
 	EstimatedTokens int       `json:"-"`

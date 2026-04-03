@@ -28,6 +28,10 @@ type Metrics struct {
 	// Validation metrics
 	ValidationFailureTotal *prometheus.CounterVec
 	
+	// Policy reload metrics
+	PolicyReloadTotal      *prometheus.CounterVec
+	PolicyReloadErrorTotal prometheus.Counter
+
 	// Streaming metrics
 	StreamingChunkTotal     *prometheus.CounterVec
 	StreamingTimeToFirstToken *prometheus.HistogramVec
@@ -112,6 +116,16 @@ func NewMetrics() *Metrics {
 			Help: "Total number of validation failures.",
 		}, []string{"field"}),
 		
+		PolicyReloadTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_policy_reload_total",
+			Help: "Total number of policy reload attempts.",
+		}, []string{"status"}),
+
+		PolicyReloadErrorTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "aegis_policy_reload_error_total",
+			Help: "Total number of failed policy reloads (syntax errors, missing files, etc).",
+		}),
+
 		StreamingChunkTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_streaming_chunk_total",
 			Help: "Total number of streaming chunks sent.",
@@ -281,6 +295,16 @@ func (m *Metrics) RecordStreamingMetrics(labels StreamingLabels) {
 	m.StreamingDurationMs.WithLabelValues(
 		labels.Provider, labels.Model,
 	).Observe(labels.StreamDurationMs)
+}
+
+// RecordPolicyReload records a policy reload attempt.
+func (m *Metrics) RecordPolicyReload(success bool) {
+	if success {
+		m.PolicyReloadTotal.WithLabelValues("success").Inc()
+	} else {
+		m.PolicyReloadTotal.WithLabelValues("error").Inc()
+		m.PolicyReloadErrorTotal.Inc()
+	}
 }
 
 // RecordStreamingError records a streaming error.

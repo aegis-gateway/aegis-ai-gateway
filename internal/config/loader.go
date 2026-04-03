@@ -123,6 +123,17 @@ func (l *Loader) Watch() error {
 		return fmt.Errorf("watch config dir %s: %w", l.configDir, err)
 	}
 
+	// Also watch subdirectories (e.g. policies/) so .rego file changes trigger reload.
+	entries, _ := os.ReadDir(l.configDir)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			subdir := l.configDir + "/" + entry.Name()
+			if err := watcher.Add(subdir); err != nil {
+				l.logger.Warn("failed to watch config subdirectory", "path", subdir, "error", err)
+			}
+		}
+	}
+
 	go func() {
 		defer func() { _ = watcher.Close() }()
 		for {

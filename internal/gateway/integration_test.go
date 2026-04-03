@@ -214,6 +214,7 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 		func() *config.ModelsConfig { return modelsCfg },
 		func() *config.Config { return cfg },
 		filterChain,
+		nil, // policyEvaluator
 		metrics,
 		costCalc,
 		usageRecorder,
