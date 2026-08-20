@@ -76,7 +76,7 @@ docker run -d \
   --name aegis-gateway \
   -p 8080:8080 \
   -p 9090:9090 \
-  -e DATABASE_URL=postgres://aegis:<password>@<host>:5432/aegis?sslmode=require \
+  -e DB_HOST=<host> -e DB_PORT=5432 -e DB_USER=aegis -e DB_PASSWORD=<password> -e DB_NAME=aegis \
   -e REDIS_URL=redis://:<password>@<host>:6379 \
   -e OPENAI_API_KEY=sk-proj-... \
   -v $(pwd)/configs:/app/configs:ro \
@@ -96,7 +96,7 @@ AEGIS reads configuration from two sources, in order of precedence:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | — |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | PostgreSQL connection settings. The gateway does **not** read `DATABASE_URL` — only the `keygen` and `migrate` CLIs do. Note that `DSN()` hardcodes `sslmode=disable`. | see `configs/gateway.yaml` |
 | `REDIS_URL` | Redis connection string | — |
 | `REDIS_PASSWORD` | Redis password (if not in URL) | — |
 | `OPENAI_API_KEY` | OpenAI provider key | — |
