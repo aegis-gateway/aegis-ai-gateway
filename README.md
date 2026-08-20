@@ -1,6 +1,10 @@
 # AEGIS AI Gateway
 
-AI Enablement, Governance & Innovation System — a unified gateway that proxies requests to multiple AI providers (OpenAI, Anthropic, Azure, vLLM) with authentication, content filtering, classification gating, and observability.
+Every AI call your organization makes — governed and auditable.
+
+LiteLLM and Bifrost route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a persisted audit trail of every denial — built in Go, Apache 2.0.
+
+→ [aegisgateway.ai](https://aegisgateway.ai) · [Quick start](#quick-demo) · [Docs](docs/) · [Commercial](mailto:komlan@atlanticfrontier.com)
 
 ## Quick Demo
 
@@ -135,26 +139,60 @@ OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+### Key Features
+
+#### Governance
+
+- **Policy-as-code** — write permit/deny rules in Rego (OPA), hot-reload without restart, version your policies alongside your code (`internal/filter/policy`)
+- **Classification gating** — every model alias carries a data classification level (INTERNAL / CONFIDENTIAL); requests are routed or rejected based on the key's clearance (`internal/router`, `internal/types`)
+- **Deny audit trail** — every denial (auth failure, rate limit, filter block, policy block) is written to `audit_events` with request metadata, IP, and reason (`internal/audit`). Successful calls are recorded separately in `usage_records` with tokens, cost, and the model actually served (`internal/storage`)
+- **Secrets & PII filtering** — AWS keys, GitHub tokens, private keys, JWTs, and PII patterns are detected and blocked on inbound requests (`internal/filter/secrets`, `internal/filter/pii`)
+- **Prompt injection detection** — heuristic scanner catches jailbreak and instruction-override attempts before they reach the provider (`internal/filter/injection`)
+- **Per-key rate limiting** — sliding-window request limits per API key, enforced in Redis, rejected with an auditable deny record (`internal/ratelimit`)
+- **Input validation** — request schema and content validation before any downstream processing (`internal/validation`)
+
+#### Table Stakes
+
+- **Multi-provider routing** with fallback chains — OpenAI, Anthropic, Azure OpenAI, vLLM (`internal/router`)
+- **OpenAI-compatible API** — drop-in replacement; no SDK changes required
+- **Streaming SSE** — transparent Anthropic-to-OpenAI format conversion (`internal/gateway`)
+- **Cost tracking** — per-request token cost estimation persisted to `usage_records` (`internal/cost`)
+- **Retry & reliability** — retry with exponential backoff and jitter (`internal/retry`), plus per-provider circuit breaking (`internal/router`)
+- **Prometheus metrics** — request counts, latency histograms, token usage (`internal/telemetry`)
+- **Config hot-reload** — update models and providers without restarting (`internal/config`)
+- **Two-tier auth caching** — Redis + PostgreSQL (`internal/auth`)
+
 ### Architecture
 
 ```
 cmd/
-  gateway/     Main API server
-  keygen/      API key generation CLI
-  migrate/     Database migration runner
+  gateway/      Main API server
+  keygen/       API key generation CLI
+  migrate/      Database migration runner
 internal/
-  auth/        API key auth middleware + Redis caching
-  config/      YAML config with hot-reload (fsnotify)
-  filter/      Content filtering (secrets scanner)
-  gateway/     Request handler + SSE streaming
-  httputil/    OpenAI-compatible error responses
-  router/      Provider registry + classification gating
-    adapters/  OpenAI, Anthropic, Azure, vLLM adapters
-  telemetry/   Prometheus metrics
-  types/       Shared types (classification, request/response)
-configs/       YAML configuration (gateway, models, providers)
-deploy/        Docker Compose for local services
-migrations/    PostgreSQL migrations
+  auth/         API key validation + two-tier caching (Redis + PostgreSQL)
+  config/       YAML config loader with hot-reload (fsnotify)
+  filter/
+    policy/     OPA/Rego policy evaluation
+    secrets/    Secrets scanning (AWS keys, tokens, JWTs, private keys)
+    pii/        PII detection (blocks at CONFIDENTIAL+, flags below)
+    injection/  Prompt injection heuristics
+  gateway/      Request handler, SSE streaming, telemetry logging
+  audit/        Deny/failure audit logger → audit_events
+  cost/         Per-request token cost estimation → usage_records
+  ratelimit/    Per-key sliding-window rate limiting (Redis)
+  retry/        Retry with exponential backoff, jitter, cancellation
+  router/       Provider registry, classification gating, fallback chains
+    adapters/   OpenAI, Anthropic, Azure OpenAI, vLLM
+  storage/      Shared DB access layer
+  telemetry/    Prometheus metrics
+  types/        Shared types: classification levels, request/response
+  validation/   Input validation
+  httputil/     OpenAI-compatible error responses
+configs/        YAML configuration (gateway.yaml, models.yaml, providers.yaml)
+deploy/         Docker Compose for local services
+migrations/     PostgreSQL migrations
+demos/          End-to-end runnable examples
 ```
 
 ### API Endpoints
@@ -164,16 +202,6 @@ migrations/    PostgreSQL migrations
 | GET | `/aegis/v1/health` | No | Health check |
 | POST | `/v1/chat/completions` | Yes | Chat completions (OpenAI-compatible) |
 | GET | `/v1/models` | Yes | List available models |
-
-### Key Features
-
-- **Multi-provider routing** with fallback chains and classification gating
-- **OpenAI-compatible API** — drop-in replacement for OpenAI SDK
-- **Streaming SSE** with transparent Anthropic-to-OpenAI format conversion
-- **Secrets scanning** — blocks AWS keys, GitHub tokens, private keys, JWTs, and more
-- **Prometheus metrics** — request counts, latency histograms, token usage, cost tracking
-- **Config hot-reload** — update models/providers without restarting
-- **Two-tier auth caching** — Redis + PostgreSQL
 
 ## Contributing
 
@@ -185,4 +213,8 @@ To report a security vulnerability, see [SECURITY.md](.github/SECURITY.md) — p
 
 AEGIS AI Gateway is open source under the [Apache License 2.0](LICENSE).
 
-For teams that need SSO, multi-tenant policy management, and evidence reporting, a commercial control plane is available. Contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com).
+## Commercial
+
+The gateway is Apache 2.0 — no usage restrictions.
+
+Teams that need **SSO, multi-tenant policy management, long-horizon tamper-evident audit, evidence export, and support** can access the AEGIS control plane. Contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com) or visit [aegisgateway.ai](https://aegisgateway.ai).
