@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/telemetry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 )
 
 var (

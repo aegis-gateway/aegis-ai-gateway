@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
 
 // Calculator provides cost estimation based on model pricing configuration.

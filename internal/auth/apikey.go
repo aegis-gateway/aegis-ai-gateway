@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 const alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"

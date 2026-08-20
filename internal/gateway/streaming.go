@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/af-corp/aegis-gateway/internal/httputil"
-	"github.com/af-corp/aegis-gateway/internal/router/adapters"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 )
 
 // streamSSE reads SSE events from the provider response and forwards them to the client,
