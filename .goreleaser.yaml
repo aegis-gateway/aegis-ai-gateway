@@ -33,14 +33,21 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
+    formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
-      - NOTICE
+      - .env.example
       - configs/*.yaml
-      - configs/*.example
+      # Shipped so the bundled gateway.yaml (filter.policy.enabled: true,
+      # bundle_path: configs/policies) can actually load a policy. Without it
+      # the evaluator stays Enabled() with no compiled query and fails closed,
+      # blocking every request.
+      - configs/policies/*.rego
+      # aegis-migrate defaults to -path migrations, resolved from the working
+      # directory, and log.Fatalf()s if the directory is absent.
+      - migrations/*.sql
 
 checksum:
   name_template: checksums.txt
