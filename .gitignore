@@ -1,5 +1,8 @@
 # Binaries
 bin/
+/gateway
+/keygen
+/migrate
 *.exe
 
 # Environment (secrets)
