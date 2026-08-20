@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Relicensed from Business Source License 1.1 to Apache License 2.0. The gateway is now fully open source with no usage restrictions. Commercial value moves to the separately-developed control plane.
+
+---
+
 ## [0.1.0] — 2026-08-20
 
 Initial public release of AEGIS AI Gateway.
@@ -62,5 +69,4 @@ Initial public release of AEGIS AI Gateway.
 
 ## License
 
-AEGIS AI Gateway is licensed under the [Business Source License 1.1](LICENSE).
-After February 20, 2030, it will convert to Apache License 2.0.
+AEGIS AI Gateway is open source under the [Apache License 2.0](LICENSE).
