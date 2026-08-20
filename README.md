@@ -183,9 +183,6 @@ To report a security vulnerability, see [SECURITY.md](.github/SECURITY.md) — p
 
 ## License
 
-AEGIS AI Gateway is licensed under the [Business Source License 1.1](LICENSE).
+AEGIS AI Gateway is open source under the [Apache License 2.0](LICENSE).
 
-- **During the restriction period (until February 20, 2030):** Free for non-production use (development, testing, staging) and non-commercial evaluation. Commercial or SaaS use requires a license from Atlantic Frontier Corporations LLC — contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com).
-- **After February 20, 2030:** The code converts to [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) — fully open-source.
-
-Copyright © 2026 Atlantic Frontier Corporations LLC.
+For teams that need SSO, multi-tenant policy management, and evidence reporting, a commercial control plane is available. Contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com).

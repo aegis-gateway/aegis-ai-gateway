@@ -4,8 +4,7 @@ Thank you for your interest in contributing. This document covers how to get inv
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same
-[Business Source License 1.1](LICENSE) that covers this project.
+By contributing to AEGIS, you agree that your contributions will be licensed under the Apache License 2.0. All contributions are subject to the AEGIS Individual Contributor License Agreement (CLA). See [docs/cla/](docs/cla/) for details.
 
 ## Getting Started
 
