@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // ProviderAdapter transforms requests/responses between AEGIS canonical format

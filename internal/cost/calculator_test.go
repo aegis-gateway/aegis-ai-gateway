@@ -3,7 +3,7 @@ package cost
 import (
 	"testing"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
 
 func TestCalculator_Calculate(t *testing.T) {

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package aegis.filter.v1;
 
-option go_package = "github.com/af-corp/aegis-gateway/gen/filter/v1;filterv1";
+option go_package = "github.com/aegis-gateway/aegis-ai-gateway/gen/filter/v1;filterv1";
 
 service FilterService {
   // ScanPII scans text for personally identifiable information.

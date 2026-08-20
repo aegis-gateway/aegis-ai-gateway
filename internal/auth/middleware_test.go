@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // mockKeyStore implements KeyStore for testing.

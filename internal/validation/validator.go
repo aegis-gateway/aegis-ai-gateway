@@ -5,8 +5,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/af-corp/aegis-gateway/internal/telemetry"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // ValidationError represents a validation error with a field and message

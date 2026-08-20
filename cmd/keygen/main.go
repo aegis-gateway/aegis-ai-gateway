@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/jackc/pgx/v5"
 )
 

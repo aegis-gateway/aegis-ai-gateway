@@ -3,7 +3,7 @@ package filter
 import (
 	"context"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // Action represents the filter decision.

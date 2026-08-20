@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/af-corp/aegis-gateway/internal/auth"
-	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/cost"
-	"github.com/af-corp/aegis-gateway/internal/telemetry"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // TestNewHandler tests handler construction.
