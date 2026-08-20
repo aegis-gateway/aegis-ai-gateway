@@ -13,10 +13,10 @@ Self-contained, runnable demos that showcase gateway features. Each demo lives i
 |---|------|---------------|--------|
 | [00](00-quickstart/) | **Quickstart** | Full stack with Open WebUI — multi-provider routing, secrets filter, cost tracking, metrics | Ready |
 | [01](01-curl-basics/) | **curl Basics** | Step-by-step curl walkthrough of every endpoint | Ready |
-| [02](02-streaming/) | **Streaming** | SSE streaming, Anthropic→OpenAI format conversion, TTFT metrics | Planned |
-| [03](03-cost-tracking/) | **Cost Tracking** | Per-request cost, aggregated reports, Prometheus cost metrics | Planned |
-| [04](04-secrets-filter/) | **Secrets Filter** | AWS keys, GitHub tokens, private keys, JWTs — all blocked | Planned |
-| [15](15-custom-policies/) | **Custom Policies** | OPA Rego policies — competitor mentions, token budgets, topic restrictions, hot-reload | Ready |
+| [02](02-streaming/) | **Streaming** | SSE streaming, Anthropic→OpenAI format conversion, TTFT metrics | Ready |
+| [03](03-cost-tracking/) | **Cost Tracking** | Per-request cost, aggregated reports, Prometheus cost metrics | Ready |
+| [04](04-secrets-filter/) | **Secrets Filter** | AWS keys, GitHub tokens, private keys, JWTs — all blocked | Ready |
+| [05](05-custom-policies/) | **Custom Policies** | OPA Rego policies — competitor mentions, token budgets, topic restrictions, hot-reload | Ready |
 
 ## Quick start
 
@@ -43,13 +43,23 @@ demos/
     run.sh               ← one-command launcher
     README.md
   01-curl-basics/
-    README.md            ← (planned)
+    run.sh
+    README.md
   02-streaming/
-    README.md            ← (planned)
+    run.sh
+    README.md
   03-cost-tracking/
-    README.md            ← (planned)
+    run.sh
+    README.md
   04-secrets-filter/
-    README.md            ← (planned)
+    docker-compose.yaml
+    run.sh
+    README.md
+  05-custom-policies/
+    docker-compose.yaml
+    run.sh
+    policies/            ← Rego policy files (hot-reloaded)
+    README.md
 ```
 
 ## Writing a new demo

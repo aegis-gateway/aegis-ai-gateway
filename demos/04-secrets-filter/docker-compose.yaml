@@ -1,10 +1,10 @@
-# demos/15-custom-policies — OPA custom policy enforcement
+# demos/04-secrets-filter — secrets scanner demonstration
 #
-# Same stack as 00-quickstart but with custom .rego policies
-# mounted into the gateway's OPA bundle path.
+# Brings up the full AEGIS stack (gateway + postgres + redis) with
+# the built-in secrets filter enabled (it is always on by default).
 #
 # Usage:
-#   cd demos/15-custom-policies
+#   cd demos/04-secrets-filter
 #   ./run.sh
 
 services:
@@ -62,9 +62,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       AEGIS_SEED_DEMO_KEY: "true"
-      OPA_BUNDLE_PATH: "/etc/aegis/custom-policies"
-    volumes:
-      - ./policies:/etc/aegis/custom-policies:ro
+      # gateway.yaml resolves bundle_path as ${OPA_BUNDLE_PATH:configs/policies},
+      # which is relative to the working directory. The image has no WORKDIR, so
+      # the default lands on /configs/policies, the policy load fails, and the
+      # evaluator stays Enabled() with a nil query — which fails closed and blocks
+      # every request, including the clean one this demo expects to return 200.
+      OPA_BUNDLE_PATH: "/etc/aegis/configs/policies"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
       interval: 10s
@@ -72,26 +75,6 @@ services:
       retries: 5
       start_period: 15s
 
-  webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: aegis-demo-webui
-    depends_on:
-      gateway:
-        condition: service_healthy
-    ports:
-      - "${WEBUI_PORT:-3000}:8080"
-    environment:
-      OPENAI_API_BASE_URL: http://gateway:8080/v1
-      OPENAI_API_KEY: aegis-demo-quickstart
-      ENABLE_OLLAMA_API: "false"
-      ENABLE_OPENAI_API: "true"
-      BYPASS_MODEL_ACCESS_CONTROL: "true"
-      ENABLE_EVALUATION_ARENA_MODELS: "false"
-      WEBUI_SECRET_KEY: aegis-quickstart-secret
-    volumes:
-      - webuidata:/app/backend/data
-
 volumes:
   pgdata:
   redisdata:
-  webuidata:

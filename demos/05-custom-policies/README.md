@@ -1,4 +1,4 @@
-# 15 — Custom OPA Policies
+# 05 — Custom OPA Policies
 
 Three custom Rego policies — competitor mentions, token budgets, topic restrictions — enforced at the gateway with no code changes and hot-reloaded without restart.
 
@@ -83,7 +83,7 @@ Most AI gateways give you a list of blocked patterns. AEGIS gives you a policy e
 ## How to run
 
 ```bash
-cd demos/15-custom-policies
+cd demos/05-custom-policies
 cp ../shared/.env.example .env
 # add at least one provider key
 docker compose up --build -d

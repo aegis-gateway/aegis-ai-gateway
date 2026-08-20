@@ -399,7 +399,7 @@ deny contains msg if {
 func TestDemoPolicies_CompileTogether(t *testing.T) {
 	// Verify that all demo .rego files compile together without
 	// conflicting complete-rule errors.
-	demoDir := filepath.Join("..", "..", "..", "demos", "15-custom-policies", "policies")
+	demoDir := filepath.Join("..", "..", "..", "demos", "05-custom-policies", "policies")
 	modules, err := LoadRegoFiles(demoDir)
 	if err != nil {
 		t.Fatalf("failed to load demo policies: %v", err)
