@@ -32,6 +32,11 @@ if ! grep -qE '^(OPENAI_API_KEY|ANTHROPIC_API_KEY)=.+' .env && \
   exit 1
 fi
 
+# The gateway and keygen both exit unless AEGIS_KEY_PEPPER is set (min 32
+# chars), and Compose only reaches the gateway through env_file — so make sure
+# .env carries one before starting the stack.
+../shared/ensure-pepper.sh .env
+
 # ── Start ────────────────────────────────────────────────────────
 echo "Building and starting AEGIS quickstart demo…"
 docker compose up --build -d

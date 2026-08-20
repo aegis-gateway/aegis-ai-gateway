@@ -289,6 +289,24 @@ Existing v1 keys continue to work transparently after the upgrade.
 3. Existing v1 keys remain valid until they expire — no forced invalidation.
 4. After all v1 keys have expired, the v1 fallback lookup can be removed.
 
+### Local development and demos
+
+You do not need to set a pepper by hand to run the project locally:
+
+- **`mise run dev` / `mise run keygen`** use the development value declared in
+  `.mise.toml`. It is declared before `_.file = ".env"`, so a real value in your
+  `.env` takes precedence. Never use that value outside local development.
+- **The demos** (`./quickstart.sh` and `demos/*/run.sh`) generate a throwaway
+  pepper into the demo's `.env` via `demos/shared/ensure-pepper.sh` before
+  starting the stack, because Compose reaches the gateway through `env_file`
+  only. Regenerating it between runs is harmless: the seeded demo key
+  (`aegis-demo-quickstart`) is stored as a v1 SHA-256 hash, which does not
+  involve the pepper.
+
+`.env.example` deliberately leaves `AEGIS_KEY_PEPPER` commented out. An empty
+assignment would override the `.mise.toml` default with a blank string and stop
+the gateway from starting.
+
 ### Pepper rotation warning
 
 **Do not rotate `AEGIS_KEY_PEPPER` after deployment.** All v2 keys are indexed by their HMAC hash; changing the pepper means the gateway can no longer look them up. If rotation is necessary, re-issue all active v2 keys before changing the pepper.
