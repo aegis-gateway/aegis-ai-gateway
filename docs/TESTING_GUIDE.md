@@ -403,9 +403,9 @@ xdg-open coverage.html  # Linux
 go test -cover ./...
 
 # Example output:
-ok      github.com/af-corp/aegis-gateway/internal/gateway    0.523s  coverage: 87.3% of statements
-ok      github.com/af-corp/aegis-gateway/internal/auth       0.234s  coverage: 92.1% of statements
-ok      github.com/af-corp/aegis-gateway/internal/validation 0.145s  coverage: 96.5% of statements
+ok      github.com/aegis-gateway/aegis-ai-gateway/internal/gateway    0.523s  coverage: 87.3% of statements
+ok      github.com/aegis-gateway/aegis-ai-gateway/internal/auth       0.234s  coverage: 92.1% of statements
+ok      github.com/aegis-gateway/aegis-ai-gateway/internal/validation 0.145s  coverage: 96.5% of statements
 ```
 
 ---

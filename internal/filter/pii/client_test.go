@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/filter"
-	filterv1 "github.com/af-corp/aegis-gateway/gen/filter/v1"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
+	filterv1 "github.com/aegis-gateway/aegis-ai-gateway/gen/filter/v1"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 	"google.golang.org/grpc"
 )
 

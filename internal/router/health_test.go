@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
 
 func TestHealthTracker_LazyCreation(t *testing.T) {

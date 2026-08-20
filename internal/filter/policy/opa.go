@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/filter"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 

@@ -1,4 +1,4 @@
-module github.com/af-corp/aegis-gateway
+module github.com/aegis-gateway/aegis-ai-gateway
 
 go 1.25.6
 

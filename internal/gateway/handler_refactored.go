@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/auth"
-	"github.com/af-corp/aegis-gateway/internal/filter"
-	"github.com/af-corp/aegis-gateway/internal/httputil"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // ChatCompletionsRefactored handles POST /v1/chat/completions with refactored logic.

@@ -3,7 +3,7 @@ package secrets
 import (
 	"testing"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 func TestScanner_AWSKey(t *testing.T) {

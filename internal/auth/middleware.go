@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/af-corp/aegis-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
 )
 
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).

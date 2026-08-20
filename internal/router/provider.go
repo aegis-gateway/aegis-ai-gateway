@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/router/adapters"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // Registry manages provider adapters.
