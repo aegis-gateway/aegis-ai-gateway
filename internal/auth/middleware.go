@@ -28,7 +28,9 @@ type AuditLogger interface {
 }
 
 // Middleware returns a chi middleware that authenticates requests via Bearer token.
-func Middleware(store KeyStore, auditLogger AuditLogger) func(http.Handler) http.Handler {
+// pepper is the AEGIS_KEY_PEPPER value; it is used to verify HMAC-SHA256 (v2) keys first,
+// with a fallback to SHA-256 (v1) for keys issued before the migration.
+func Middleware(store KeyStore, auditLogger AuditLogger, pepper string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reqID := w.Header().Get("X-Request-ID")
@@ -59,17 +61,37 @@ func Middleware(store KeyStore, auditLogger AuditLogger) func(http.Handler) http
 				return
 			}
 
-			// Hash and lookup
-			keyHash := HashKey(token)
-			meta, err := store.Lookup(r.Context(), keyHash)
+			// Try v2 (HMAC-SHA256) lookup first, then fall back to v1 (SHA-256).
+			// v2 keys are indexed by their HMAC hash; v1 keys by their SHA-256 hash.
+			// The pepper is always set at startup (gateway refuses to start without it).
+			var meta *KeyMetadata
+			var err error
+
+			v2Hash := HashKeyV2(token, pepper)
+			meta, err = store.Lookup(r.Context(), v2Hash)
 			if err != nil {
-				slog.Error("key lookup failed", "error", err, "key_prefix", safePrefix(token))
+				slog.Error("key lookup failed (v2)", "error", err, "key_prefix", safePrefix(token))
 				if auditLogger != nil {
 					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), token, "database lookup error")
 				}
 				httputil.WriteInternalError(w, reqID, "Internal error during authentication")
 				return
 			}
+
+			if meta == nil {
+				// Fall back to v1 SHA-256 lookup (pre-migration keys)
+				v1Hash := HashKey(token)
+				meta, err = store.Lookup(r.Context(), v1Hash)
+				if err != nil {
+					slog.Error("key lookup failed (v1 fallback)", "error", err, "key_prefix", safePrefix(token))
+					if auditLogger != nil {
+						auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), token, "database lookup error")
+					}
+					httputil.WriteInternalError(w, reqID, "Internal error during authentication")
+					return
+				}
+			}
+
 			if meta == nil {
 				slog.Warn("auth failed: key not found", "key_prefix", safePrefix(token))
 				if auditLogger != nil {

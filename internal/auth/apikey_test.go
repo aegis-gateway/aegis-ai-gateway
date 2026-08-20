@@ -91,6 +91,84 @@ func TestKeyPrefix(t *testing.T) {
 	}
 }
 
+func TestHashKeyV2(t *testing.T) {
+	key := "aegis-prod-abcdefghijklmnopqrstuvwxyz012345"
+	pepper := "a-test-pepper-value-that-is-at-least-32-chars"
+
+	hash := HashKeyV2(key, pepper)
+
+	// HMAC-SHA256 produces a 64-char hex string
+	if len(hash) != 64 {
+		t.Errorf("expected hash length 64, got %d", len(hash))
+	}
+
+	// Deterministic
+	if HashKeyV2(key, pepper) != hash {
+		t.Error("same inputs should produce same hash")
+	}
+
+	// Different key → different hash
+	if HashKeyV2("other-key", pepper) == hash {
+		t.Error("different keys should produce different hashes")
+	}
+
+	// Different pepper → different hash
+	if HashKeyV2(key, "different-pepper-value-that-is-32-chars!!") == hash {
+		t.Error("different peppers should produce different hashes")
+	}
+
+	// V1 and V2 must not collide
+	if HashKey(key) == hash {
+		t.Error("HashKey and HashKeyV2 must produce different values for the same key")
+	}
+}
+
+func TestVerifyKey_V1(t *testing.T) {
+	key := "aegis-prod-abcdefghijklmnopqrstuvwxyz012345"
+	pepper := "a-test-pepper-value-that-is-at-least-32-chars"
+	hash := HashKey(key)
+
+	if !VerifyKey(key, hash, 1, pepper) {
+		t.Error("VerifyKey v1 should return true for matching key")
+	}
+	if VerifyKey("wrong-key", hash, 1, pepper) {
+		t.Error("VerifyKey v1 should return false for wrong key")
+	}
+}
+
+func TestVerifyKey_V2(t *testing.T) {
+	key := "aegis-prod-abcdefghijklmnopqrstuvwxyz012345"
+	pepper := "a-test-pepper-value-that-is-at-least-32-chars"
+	hash := HashKeyV2(key, pepper)
+
+	if !VerifyKey(key, hash, 2, pepper) {
+		t.Error("VerifyKey v2 should return true for matching key+pepper")
+	}
+	if VerifyKey("wrong-key", hash, 2, pepper) {
+		t.Error("VerifyKey v2 should return false for wrong key")
+	}
+	if VerifyKey(key, hash, 2, "wrong-pepper-value-that-is-at-least-32ch") {
+		t.Error("VerifyKey v2 should return false for wrong pepper")
+	}
+}
+
+func TestVerifyKey_UnknownVersion(t *testing.T) {
+	if VerifyKey("any-key", "any-hash", 99, "any-pepper") {
+		t.Error("VerifyKey with unknown version should return false")
+	}
+}
+
+func TestVerifyKey_V1DoesNotAcceptV2Hash(t *testing.T) {
+	key := "aegis-prod-abcdefghijklmnopqrstuvwxyz012345"
+	pepper := "a-test-pepper-value-that-is-at-least-32-chars"
+	v2Hash := HashKeyV2(key, pepper)
+
+	// Version 1 verification against a v2 hash must fail
+	if VerifyKey(key, v2Hash, 1, pepper) {
+		t.Error("VerifyKey v1 must not verify a v2 hash")
+	}
+}
+
 func TestParseDuration(t *testing.T) {
 	tests := []struct {
 		input   string

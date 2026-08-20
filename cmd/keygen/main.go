@@ -44,13 +44,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Require AEGIS_KEY_PEPPER for HMAC-SHA256 hashing of new keys
+	pepper := os.Getenv("AEGIS_KEY_PEPPER")
+	if pepper == "" {
+		log.Fatal("AEGIS_KEY_PEPPER is not set; export a secret pepper (min 32 chars) before issuing keys")
+	}
+	if len(pepper) < 32 {
+		log.Fatal("AEGIS_KEY_PEPPER is too short; use at least 32 characters")
+	}
+
 	// Generate key
 	rawKey, err := auth.GenerateKey(*env)
 	if err != nil {
 		log.Fatalf("failed to generate key: %v", err)
 	}
 
-	keyHash := auth.HashKey(rawKey)
+	keyHash := auth.HashKeyV2(rawKey, pepper)
+	hashVersion := 2
 	keyPrefix := auth.KeyPrefix(rawKey)
 
 	// Parse expiry
@@ -89,10 +99,10 @@ func main() {
 	// Insert key
 	var keyID string
 	err = conn.QueryRow(ctx, `
-		INSERT INTO api_keys (key_hash, key_prefix, organization_id, team_id, user_id, name, max_classification, allowed_models, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO api_keys (key_hash, key_prefix, organization_id, team_id, user_id, name, max_classification, allowed_models, expires_at, hash_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, keyHash, keyPrefix, *org, *team, nilIfEmpty(*user), *name, *classification, allowedModels, expiresAt).Scan(&keyID)
+	`, keyHash, keyPrefix, *org, *team, nilIfEmpty(*user), *name, *classification, allowedModels, expiresAt, hashVersion).Scan(&keyID)
 	if err != nil {
 		log.Fatalf("failed to insert key: %v", err)
 	}

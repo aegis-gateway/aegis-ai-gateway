@@ -257,7 +257,38 @@ explicit rather than discovered in production.
 | `OPA_BUNDLE_PATH` | No | Path to OPA `.rego` policy files (default: `configs/policies`). Also exposed as `OPA_POLICY_BUNDLE_PATH` in the Docker Compose template. |
 | `OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint for trace export. Leave unset to disable. |
 | `PII_SERVICE_ADDR` | No | gRPC address of the NLP filter service (default: `aegis-filter-nlp:50051`) |
+| `AEGIS_KEY_PEPPER` | **Yes** | Server-side pepper for HMAC-SHA256 API key hashing. Both the gateway and the `keygen` CLI refuse to start without it. Generate once with `openssl rand -hex 32` (min 32 chars). Do **not** rotate after deploy — changing it invalidates all v2 keys. |
 | `WEBUI_SECRET_KEY` | Demo Compose only | Consumed by the bundled Open WebUI container, not by the gateway. Generate with `openssl rand -hex 32`. |
 | `POSTGRES_PASSWORD` | Demo Compose only | Initializes the PostgreSQL container password. Not read by the gateway — set `DB_PASSWORD` to match. |
 
 > **Security note**: Never commit real credentials to version control. Use the `.env.production.example` template and set values only in your deployment environment.
+
+---
+
+## API Key Hashing (`AEGIS_KEY_PEPPER`)
+
+AEGIS stores API keys as hashes, never in plaintext. Two hash schemes are supported for zero-downtime migration:
+
+| `hash_version` | Algorithm | Key type |
+|---|---|---|
+| 1 | SHA-256 | Legacy keys issued before HMAC support |
+| 2 | HMAC-SHA256 with `AEGIS_KEY_PEPPER` | All new keys |
+
+### How verification works
+
+When a request arrives, the gateway:
+1. Tries an HMAC-SHA256 (v2) lookup using the presented key + pepper
+2. If not found, falls back to a SHA-256 (v1) lookup
+
+Existing v1 keys continue to work transparently after the upgrade.
+
+### Migration path
+
+1. Set `AEGIS_KEY_PEPPER` to a strong random value (≥ 32 chars) before deploying.
+2. All **new** keys issued by `keygen` will use HMAC-SHA256 (`hash_version=2`).
+3. Existing v1 keys remain valid until they expire — no forced invalidation.
+4. After all v1 keys have expired, the v1 fallback lookup can be removed.
+
+### Pepper rotation warning
+
+**Do not rotate `AEGIS_KEY_PEPPER` after deployment.** All v2 keys are indexed by their HMAC hash; changing the pepper means the gateway can no longer look them up. If rotation is necessary, re-issue all active v2 keys before changing the pepper.
