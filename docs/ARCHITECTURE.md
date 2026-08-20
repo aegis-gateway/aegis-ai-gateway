@@ -125,19 +125,32 @@ Created by the `keygen` CLI tool. Stores a SHA-256 hash of the key (never the pl
 
 ### `audit_logs`
 
-Written for every completed request (by an application-layer component separate from `audit.Logger`). Captures full request metadata: duration, status code, identity context, model requested vs. model served, provider, token counts, cost, filter results (JSONB), and routing attempt counts.
-
-Note: The `audit_logs` table stores aggregate request records while `audit_events` stores individual security events; both can exist for the same request.
+**Created by migration 002 but never written.** No component in the codebase
+inserts into this table — a repository-wide search finds it only in the migration.
+The schema anticipates per-request records (duration, status code, identity, model
+requested vs. served, provider, tokens, cost, filter results, routing attempts),
+but nothing populates it, so it stays empty. Per-request data lives in
+`usage_records` instead.
 
 ### `audit_events`
 
-Written by `audit.Logger` for security-relevant events: `auth_failure`, `auth_success`, `rate_limit_violation`, `budget_violation`, `filter_block`, `redis_failure`, `provider_failure`, `request_complete`. Each row has a structured `metadata` JSONB column for event-specific context (e.g., filter type, spend amounts).
+Written by `audit.Logger`. Five event types are actually emitted, all of them
+denials or failures: `auth_failure`, `rate_limit_violation`, `budget_violation`,
+`filter_block`, `redis_failure`. The `auth_success`, `provider_failure`, and
+`request_complete` constants are declared in `internal/audit/logger.go` but no
+method emits them, so **successful requests produce no audit event**. Each row has
+a structured `metadata` JSONB column for event-specific context (e.g. filter type,
+spend amounts).
+
+Writes are fire-and-forget (`Log()` spawns a goroutine) and are skipped silently
+when the database handle is nil, so audit capture is best-effort rather than
+guaranteed.
 
 ### `usage_records`
 
 Written by `storage.UsageRecorder` for every completed request. Stores per-request token counts, estimated cost in USD, provider, model requested vs. served, classification level, and project tag. Used for cost attribution and budgeting.
 
-There is also a `usage_daily` table (migration 003) for daily aggregate roll-ups by org/team/model/provider, populated separately.
+There is also a `usage_daily` table (migration 003) intended for daily aggregate roll-ups by org/team/model/provider. Like `audit_logs`, **it has no writer in the codebase** and stays empty; roll-ups would have to be derived from `usage_records`.
 
 ---
 

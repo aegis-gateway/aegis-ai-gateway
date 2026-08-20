@@ -111,7 +111,16 @@ filter:
     evaluation_timeout: "100ms"
 ```
 
-At startup the gateway calls `Evaluator.Load()`, which reads all `*.rego` files under `bundle_path`, compiles them into a single `PreparedEvalQuery`, and atomically swaps in the new query. **Hot-reload** is supported: send a `SIGHUP` to the gateway process (or call the reload endpoint if configured) to recompile policies without restarting.
+At startup the gateway calls `Evaluator.Load()`, which reads all `*.rego` files under `bundle_path`, compiles them into a single `PreparedEvalQuery`, and atomically swaps in the new query.
+
+**Hot-reload is automatic — do not signal the process.** `config.Loader.Watch()`
+watches the config directory and its subdirectories with fsnotify, so writing or
+replacing a `.rego` file under `bundle_path` triggers a recompile on its own,
+usually within a second.
+
+> Do **not** send `SIGHUP`. `cmd/gateway/main.go` registers handlers for `SIGINT`
+> and `SIGTERM` only, so an unhandled `SIGHUP` keeps its default disposition and
+> **terminates the gateway**. There is no reload endpoint either.
 
 If compilation fails (syntax error, conflict), the **previous compiled query is kept** so existing traffic continues to be evaluated. The failed reload is recorded in metrics (`RecordPolicyReload(false)`) and logged at `ERROR` level.
 
@@ -119,7 +128,7 @@ If compilation fails (syntax error, conflict), the **previous compiled query is 
 
 ## Walkthrough: Demo Policies
 
-The demo policies live in `demos/15-custom-policies/policies/`. There are four files; they all share the `package aegis.policy` namespace so OPA merges their rules.
+The demo policies live in the custom-policies demo under `demos/`, in its `policies/` directory. There are four files; they all share the `package aegis.policy` namespace so OPA merges their rules.
 
 ### `base.rego` — the foundation
 
