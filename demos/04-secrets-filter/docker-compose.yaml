@@ -62,6 +62,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       AEGIS_SEED_DEMO_KEY: "true"
+      # gateway.yaml resolves bundle_path as ${OPA_BUNDLE_PATH:configs/policies},
+      # which is relative to the working directory. The image has no WORKDIR, so
+      # the default lands on /configs/policies, the policy load fails, and the
+      # evaluator stays Enabled() with a nil query — which fails closed and blocks
+      # every request, including the clean one this demo expects to return 200.
+      OPA_BUNDLE_PATH: "/etc/aegis/configs/policies"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
       interval: 10s
