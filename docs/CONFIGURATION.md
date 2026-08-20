@@ -170,6 +170,24 @@ pricing:
 
 Cost estimates shown in `usage_records.estimated_cost_usd` are calculated from these values. If a model/provider combination has no pricing entry, cost is recorded as `0` and a warning is logged.
 
+### Keeping pricing current
+
+`configs/models.yaml` contains **hardcoded per-token pricing** that goes stale as providers adjust their rates. Review and update the `pricing:` block at least quarterly, or whenever a provider announces a price change.
+
+Provider pricing pages:
+
+- **OpenAI** — <https://openai.com/api/pricing/>
+- **Anthropic** — <https://www.anthropic.com/pricing>
+- **Azure OpenAI** — <https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/>
+
+After updating `models.yaml`, the gateway hot-reloads config on `SIGHUP` — no restart required:
+
+```bash
+kill -HUP "$(pidof aegis-gateway)"
+```
+
+The `# Pricing as of <date>` comment at the top of the `pricing:` block records when rates were last verified. Update it with each refresh.
+
 ---
 
 ## `configs/providers.yaml`
