@@ -247,6 +247,13 @@ func main() {
 	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
 		return loader.Models()
 	})
+	// getPrice memoises each provider/model rate, so an fsnotify reload of
+	// models.yaml would otherwise keep costing requests at the old rate for
+	// every combination already seen. Clear the cache whenever config reloads.
+	loader.OnReload(func() {
+		costCalc.InvalidateCache()
+		logger.Info("pricing cache invalidated")
+	})
 	usageRecorder := storage.NewUsageRecorder(dbPool)
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()

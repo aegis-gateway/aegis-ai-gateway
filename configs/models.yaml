@@ -58,6 +58,8 @@ models:
       model: claude-sonnet-4-5-20250929
       classification_ceiling: CONFIDENTIAL
 
+# Pricing as of 2026-08-20. Update quarterly or when a provider announces changes.
+# See docs/CONFIGURATION.md for refresh instructions.
 pricing:
   openai:
     gpt-4o:
@@ -71,11 +73,11 @@ pricing:
       input: 0.003
       output: 0.015
     claude-haiku-4-5-20251001:
-      input: 0.0008
-      output: 0.004
+      input: 0.001
+      output: 0.005
     claude-opus-4-5-20251101:
-      input: 0.015
-      output: 0.075
+      input: 0.005
+      output: 0.025
   azure_openai:
     gpt-4o:
       input: 0.0025
