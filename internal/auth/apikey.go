@@ -15,8 +15,10 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -36,10 +38,30 @@ func GenerateKey(env string) (string, error) {
 	return fmt.Sprintf("aegis-%s-%s", env, random), nil
 }
 
-// HashKey returns the SHA-256 hex digest of an API key.
+// HashKey returns the SHA-256 hex digest of an API key (hash_version=1).
 func HashKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return fmt.Sprintf("%x", h)
+}
+
+// HashKeyV2 returns the HMAC-SHA256 hex digest of an API key using the given pepper (hash_version=2).
+func HashKeyV2(key, pepper string) string {
+	mac := hmac.New(sha256.New, []byte(pepper))
+	mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifyKey checks whether rawKey matches storedHash under the given hash_version.
+// version=1 uses SHA-256; version=2 uses HMAC-SHA256 with pepper.
+func VerifyKey(rawKey, storedHash string, version int, pepper string) bool {
+	switch version {
+	case 1:
+		return hmac.Equal([]byte(HashKey(rawKey)), []byte(storedHash))
+	case 2:
+		return hmac.Equal([]byte(HashKeyV2(rawKey, pepper)), []byte(storedHash))
+	default:
+		return false
+	}
 }
 
 // KeyPrefix extracts a display-safe prefix from a key: aegis-{env}-{first 8 chars}

@@ -18,6 +18,10 @@ REDIS_HOST = "localhost"
 REDIS_PORT = "6379"
 REDIS_PASSWORD = ""
 DATABASE_URL = "postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable"
+# Local-development pepper only. The gateway and keygen refuse to start without
+# one of at least 32 characters; a real deployment must set its own. Declared
+# before _.file so a value in .env overrides it.
+AEGIS_KEY_PEPPER = "aegis-local-development-pepper-not-for-production"
 _.file = ".env"
 
 # ── Setup ─────────────────────────────────────────────────────────

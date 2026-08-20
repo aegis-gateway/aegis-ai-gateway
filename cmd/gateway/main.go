@@ -231,6 +231,17 @@ func main() {
 	// Build input validator
 	validator := validation.NewValidator(validation.DefaultLimits(), metrics)
 
+	// Require AEGIS_KEY_PEPPER for HMAC key hashing
+	keyPepper := os.Getenv("AEGIS_KEY_PEPPER")
+	if keyPepper == "" {
+		logger.Error("AEGIS_KEY_PEPPER is not set; set a secret pepper (min 32 chars) before starting the gateway")
+		os.Exit(1)
+	}
+	if len(keyPepper) < 32 {
+		logger.Error("AEGIS_KEY_PEPPER is too short; use at least 32 characters")
+		os.Exit(1)
+	}
+
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
 	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
@@ -254,7 +265,7 @@ func main() {
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(keyStore, auditLogger))
+		r.Use(auth.Middleware(keyStore, auditLogger, keyPepper))
 		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics, auditLogger))
 		r.Post("/v1/chat/completions", handler.ChatCompletions)
 		r.Get("/v1/models", handler.ListModels)

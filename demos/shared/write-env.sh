@@ -9,6 +9,7 @@ set -euo pipefail
 [ -n "${AZURE_OPENAI_KEY:-}" ]      && echo "AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}"
 [ -n "${AZURE_OPENAI_ENDPOINT:-}" ] && echo "AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}"
 [ -n "${OPENAI_ORG_ID:-}" ]         && echo "OPENAI_ORG_ID=${OPENAI_ORG_ID}"
+[ -n "${AEGIS_KEY_PEPPER:-}" ]      && echo "AEGIS_KEY_PEPPER=${AEGIS_KEY_PEPPER}"
 
 # Ensure at least one line was written
 true

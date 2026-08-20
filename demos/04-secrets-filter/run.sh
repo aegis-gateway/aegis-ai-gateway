@@ -54,6 +54,11 @@ B64="eyJ"
 JWT_FAKE="${B64}hbGciOiJIUzI1NiJ9.${B64}zdWIiOiJ0ZXN0In0.notarealsignature"
 PEM_FAKE='-----BEGIN RSA PRIVATE KEY-----'
 
+# The gateway and keygen both exit unless AEGIS_KEY_PEPPER is set (min 32
+# chars), and Compose only reaches the gateway through env_file — so make sure
+# .env carries one before starting the stack.
+../shared/ensure-pepper.sh .env
+
 # ── Start stack ───────────────────────────────────────────────────
 echo "Building and starting AEGIS secrets-filter demo…"
 docker compose up --build -d
