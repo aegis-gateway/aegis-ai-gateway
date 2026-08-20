@@ -596,5 +596,4 @@ dlv test ./internal/gateway/ -- -test.run TestFullRequestLifecycle
 
 ---
 
-**Last Updated**: Sprint 7-10 (2026-03-22)  
 **Maintainer**: AEGIS Team

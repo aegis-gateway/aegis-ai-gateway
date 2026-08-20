@@ -656,6 +656,4 @@ def stream_chat(message):
 
 ---
 
-**Last Updated**: Sprint 7-10 (2026-03-22)  
-**Version**: 1.0.0  
 **Maintainer**: AEGIS Team

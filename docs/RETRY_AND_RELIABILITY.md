@@ -1,6 +1,6 @@
 # Retry Logic and Reliability Features
 
-This document describes the retry logic, context cancellation, and input validation features implemented in Sprint 5-6.
+This document describes the retry logic, context cancellation, and input validation features in AEGIS AI Gateway.
 
 ## Table of Contents
 
@@ -509,6 +509,5 @@ if err := validator.Validate(req); err != nil {
 
 ## See Also
 
-- [Circuit Breaker Documentation](CIRCUIT_BREAKER.md)
-- [Metrics and Monitoring](METRICS.md)
-- [Configuration Reference](CONFIG_REFERENCE.md)
+- [Deployment Guide](DEPLOYMENT.md)
+- [Configuration Reference](CONFIGURATION.md)
