@@ -1,8 +1,11 @@
-# This file has been consolidated.
-# The canonical quickstart Compose file is: demos/00-quickstart/docker-compose.yaml
+# The quickstart stack now lives in demos/00-quickstart/docker-compose.yaml.
 #
-# To start the full quickstart stack:
-#   ./quickstart.sh
+# This file is kept as a working entry point so the previously documented
+# command still starts the stack rather than failing with "no services":
 #
-# Or manually:
-#   cd demos/00-quickstart && docker compose up --build
+#   docker compose -f deploy/docker-compose.quickstart.yaml up --build
+#
+# Prefer ./quickstart.sh — it also provisions .env (provider keys and
+# AEGIS_KEY_PEPPER), which this bare Compose path does not.
+include:
+  - path: ../demos/00-quickstart/docker-compose.yaml

@@ -180,11 +180,14 @@ Provider pricing pages:
 - **Anthropic** — <https://www.anthropic.com/pricing>
 - **Azure OpenAI** — <https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/>
 
-After updating `models.yaml`, the gateway hot-reloads config on `SIGHUP` — no restart required:
+After updating `models.yaml`, the gateway picks the new rates up on its own — no
+restart and no signal. `config.Loader` watches the config directory with fsnotify,
+and the reload clears the cost calculator's price cache so subsequent requests are
+costed at the new rates.
 
-```bash
-kill -HUP "$(pidof aegis-gateway)"
-```
+> Do **not** send `SIGHUP`. `cmd/gateway/main.go` handles `SIGINT` and `SIGTERM`
+> only, so `SIGHUP` keeps its default disposition and **terminates the gateway**.
+> See [POLICIES.md](POLICIES.md) for the same warning about policy reloads.
 
 The `# Pricing as of <date>` comment at the top of the `pricing:` block records when rates were last verified. Update it with each refresh.
 
