@@ -1,12 +1,23 @@
 # Licensing
 
-## The gateway is Apache 2.0 — no restrictions
+## The gateway is Apache 2.0 — free for any use, including commercial
 
 The AEGIS AI Gateway in this repository is released under the **Apache License 2.0**.
 
 You can use it, modify it, and deploy it for any purpose — including commercial production use — without paying Atlantic Frontier anything. There is no usage cap, no time limit, no SaaS carve-out, no "non-commercial only" clause. The full license text is in [LICENSE](./LICENSE).
 
-If you want to run this at your company: go ahead. No lawyer required.
+If you want to run this at your company: go ahead. Deploying it — modified or not, in production, behind a paid service — is not redistribution, so the conditions below do not apply. No lawyer required.
+
+### If you redistribute it
+
+Apache 2.0 attaches conditions to *distributing* the gateway or a derivative work, not to running it. If you ship it to someone else, [LICENSE](./LICENSE) section 4 asks you to:
+
+- include a copy of the Apache 2.0 license;
+- mark any files you changed as changed;
+- keep the existing copyright, patent, trademark, and attribution notices; and
+- carry the attribution text from [NOTICE](./NOTICE) along with it.
+
+These are the ordinary Apache 2.0 obligations — the same ones you already meet when redistributing any Apache-licensed dependency.
 
 ## What the commercial control plane adds
 
