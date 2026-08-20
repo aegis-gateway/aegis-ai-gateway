@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/af-corp/aegis-gateway/internal/config"
-	"github.com/af-corp/aegis-gateway/internal/httputil"
-	"github.com/af-corp/aegis-gateway/internal/retry"
-	"github.com/af-corp/aegis-gateway/internal/router"
-	"github.com/af-corp/aegis-gateway/internal/router/adapters"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // RouterProcessor handles provider routing and request transformation.

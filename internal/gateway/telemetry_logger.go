@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/af-corp/aegis-gateway/internal/auth"
-	"github.com/af-corp/aegis-gateway/internal/storage"
-	"github.com/af-corp/aegis-gateway/internal/telemetry"
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // TelemetryLogger handles logging and metrics recording.

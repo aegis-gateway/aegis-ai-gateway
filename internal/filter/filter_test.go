@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/af-corp/aegis-gateway/internal/types"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // mockFilter is a configurable test filter.
