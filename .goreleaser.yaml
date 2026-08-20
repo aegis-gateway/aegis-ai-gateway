@@ -37,6 +37,9 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
+      # Apache-2.0 section 4(d) requires the NOTICE file to travel with any
+      # distribution of the work. Added to the repo by the relicense in #20.
+      - NOTICE
       - README.md
       - .env.example
       - configs/*.yaml
