@@ -1,8 +1,8 @@
 # AEGIS AI Gateway
 
-Every AI call your organization makes — governed and provable.
+Every AI call your organization makes — governed and auditable.
 
-LiteLLM and Bifrost route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a tamper-evident allow/deny log for every request — built in Go, Apache 2.0.
+LiteLLM and Bifrost route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a persisted audit trail of every denial — built in Go, Apache 2.0.
 
 → [aegisgateway.ai](https://aegisgateway.ai) · [Quick start](#quick-demo) · [Docs](docs/) · [Commercial](mailto:komlan@atlanticfrontier.com)
 
@@ -145,10 +145,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 - **Policy-as-code** — write permit/deny rules in Rego (OPA), hot-reload without restart, version your policies alongside your code (`internal/filter/policy`)
 - **Classification gating** — every model alias carries a data classification level (INTERNAL / CONFIDENTIAL); requests are routed or rejected based on the key's clearance (`internal/router`, `internal/types`)
-- **Audit log** — every allow *and* deny decision is persisted to `audit_logs` and `audit_events` tables with full request metadata; no request goes unrecorded (`internal/audit`)
+- **Deny audit trail** — every denial (auth failure, rate limit, filter block, policy block) is written to `audit_events` with request metadata, IP, and reason (`internal/audit`). Successful calls are recorded separately in `usage_records` with tokens, cost, and the model actually served (`internal/storage`)
 - **Secrets & PII filtering** — AWS keys, GitHub tokens, private keys, JWTs, and PII patterns are detected and blocked on inbound requests (`internal/filter/secrets`, `internal/filter/pii`)
 - **Prompt injection detection** — heuristic scanner catches jailbreak and instruction-override attempts before they reach the provider (`internal/filter/injection`)
-- **Per-key budget enforcement** — set spend limits per API key; requests that would exceed the limit are rejected with an auditable deny record (`internal/ratelimit`)
+- **Per-key rate limiting** — sliding-window request limits per API key, enforced in Redis, rejected with an auditable deny record (`internal/ratelimit`)
 - **Input validation** — request schema and content validation before any downstream processing (`internal/validation`)
 
 #### Table Stakes
@@ -157,7 +157,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 - **OpenAI-compatible API** — drop-in replacement; no SDK changes required
 - **Streaming SSE** — transparent Anthropic-to-OpenAI format conversion (`internal/gateway`)
 - **Cost tracking** — per-request token cost estimation persisted to `usage_records` (`internal/cost`)
-- **Retry & reliability** — configurable retry with circuit breaker (`internal/retry`)
+- **Retry & reliability** — retry with exponential backoff and jitter (`internal/retry`), plus per-provider circuit breaking (`internal/router`)
 - **Prometheus metrics** — request counts, latency histograms, token usage (`internal/telemetry`)
 - **Config hot-reload** — update models and providers without restarting (`internal/config`)
 - **Two-tier auth caching** — Redis + PostgreSQL (`internal/auth`)
@@ -175,13 +175,13 @@ internal/
   filter/
     policy/     OPA/Rego policy evaluation
     secrets/    Secrets scanning (AWS keys, tokens, JWTs, private keys)
-    pii/        PII detection and redaction
+    pii/        PII detection (blocks at CONFIDENTIAL+, flags below)
     injection/  Prompt injection heuristics
   gateway/      Request handler, SSE streaming, telemetry logging
-  audit/        Audit logger → audit_logs + audit_events tables
+  audit/        Deny/failure audit logger → audit_events
   cost/         Per-request token cost estimation → usage_records
-  ratelimit/    Per-key rate limiting and budget enforcement
-  retry/        Configurable retry with circuit breaker
+  ratelimit/    Per-key sliding-window rate limiting (Redis)
+  retry/        Retry with exponential backoff, jitter, cancellation
   router/       Provider registry, classification gating, fallback chains
     adapters/   OpenAI, Anthropic, Azure OpenAI, vLLM
   storage/      Shared DB access layer
