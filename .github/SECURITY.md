@@ -37,12 +37,16 @@ Out of scope:
 
 ## Security Design
 
-AEGIS includes several built-in security layers:
+AEGIS includes several built-in security layers applied to **inbound requests**:
 
-- **Secrets scanning** — outbound responses are scanned for leaked credentials
-- **Prompt injection detection** — heuristic detection of jailbreak/injection attempts
-- **Classification gating** — requests are classified and routed based on sensitivity level
-- **Audit logging** — all requests and policy decisions are logged
-- **API key hashing** — keys are stored as SHA-256 hashes, never in plaintext
+- **Secrets scanning** (`internal/filter/secrets`) — inbound request content is scanned for credentials (AWS keys, GitHub tokens, private keys, JWTs, and more) before the request reaches a provider
+- **Prompt injection detection** (`internal/filter/injection`) — heuristic detection of jailbreak and injection attempts in request content
+- **PII filtering** (`internal/filter/pii`) — request content is checked against a gRPC-backed NLP filter service
+- **Classification gating** (`internal/router`) — requests are gated based on the API key's assigned classification level before routing
+- **OPA policy evaluation** (`internal/filter/policy`) — every request is evaluated against Rego policies; allow/deny decisions are logged
+- **Audit logging** (`internal/audit`) — all requests and policy decisions are written to `audit_logs` and `audit_events`
+- **API key hashing** (`internal/auth`) — keys are stored as SHA-256 hashes, never in plaintext
 
-For production deployments, always review the [configuration guide](docs/DEPLOYMENT.md) for secure defaults.
+**Note:** Response-side egress scanning (checking provider responses for credential leakage) is not yet implemented. A tracking issue covers the design. Until it lands, treat AEGIS as an inbound governance layer.
+
+For production deployments, always review the [deployment guide](docs/DEPLOYMENT.md) for secure defaults.
