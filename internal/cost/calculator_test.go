@@ -15,6 +15,7 @@
 package cost
 
 import (
+	"math"
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
@@ -245,4 +246,52 @@ func BenchmarkCalculator_Calculate(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		calc.Calculate(details)
 	}
+}
+
+// TestCalculate_LongContextIgnoresCachedSubset asserts the long-context tier is
+// selected from the true input size. CachedTokens is documented as a subset of
+// PromptTokens, so adding the two double-counted the cached portion and applied
+// long-context rates to requests below the threshold — a 200k prompt with 100k
+// cache hits was billed at exactly 2x.
+func TestCalculate_LongContextIgnoresCachedSubset(t *testing.T) {
+	cfg := &config.PricingConfig{Providers: map[string]config.ProviderPricing{
+		"anthropic": {Models: map[string]config.PriceEntry{
+			"m": {
+				Input: 5, CachedInput: 0.5, Output: 25,
+				LongContext: &config.LongContextPricing{
+					ThresholdTokens: 272000, Input: 10, CachedInput: 1, Output: 50,
+				},
+			},
+		}},
+	}}
+	c := NewCalculator(func() *config.PricingConfig { return cfg })
+
+	t.Run("below threshold despite cached tokens", func(t *testing.T) {
+		got, ok := c.Calculate(RequestDetails{
+			Provider: "anthropic", Model: "m",
+			PromptTokens: 200_000, CachedTokens: 100_000, CompletionTokens: 1_000,
+		})
+		if !ok {
+			t.Fatal("expected pricing to be found")
+		}
+		want := (100_000.0/1e6)*5 + (100_000.0/1e6)*0.5 + (1_000.0/1e6)*25
+		if math.Abs(got-want) > 1e-9 {
+			t.Errorf("got %.6f, want %.6f — 200k real input is below the 272k threshold "+
+				"and must use standard rates", got, want)
+		}
+	})
+
+	t.Run("above threshold uses long-context rates", func(t *testing.T) {
+		got, ok := c.Calculate(RequestDetails{
+			Provider: "anthropic", Model: "m",
+			PromptTokens: 300_000, CachedTokens: 0, CompletionTokens: 1_000,
+		})
+		if !ok {
+			t.Fatal("expected pricing to be found")
+		}
+		want := (300_000.0/1e6)*10 + (1_000.0/1e6)*50
+		if math.Abs(got-want) > 1e-9 {
+			t.Errorf("got %.6f, want %.6f — 300k input must use long-context rates", got, want)
+		}
+	})
 }

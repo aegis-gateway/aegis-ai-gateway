@@ -81,8 +81,10 @@ func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
 	cachedInputRate := entry.CachedInput
 	outputRate := entry.Output
 
-	totalInput := details.PromptTokens + details.CachedTokens
-	if entry.LongContext != nil && totalInput >= entry.LongContext.ThresholdTokens {
+	// CachedTokens is a subset of PromptTokens (see RequestDetails), so the
+	// prompt count alone is the true input size. Adding them double-counts the
+	// cached portion and selects long-context rates below the threshold.
+	if entry.LongContext != nil && details.PromptTokens >= entry.LongContext.ThresholdTokens {
 		inputRate = entry.LongContext.Input
 		cachedInputRate = entry.LongContext.CachedInput
 		outputRate = entry.LongContext.Output
@@ -191,8 +193,29 @@ func (c *Calculator) GetModelPrice(provider, model string) (ModelPrice, bool) {
 // Use this for pre-dispatch checks rather than GetModelPrice when only
 // presence matters.
 func (c *Calculator) HasPricing(provider, model string) bool {
-	_, found := c.getPrice(provider, model)
-	return found
+	entry, found := c.getPrice(provider, model)
+	return found && IsUsablePriceEntry(entry)
+}
+
+// IsUsablePriceEntry reports whether a PriceEntry carries rates that can
+// actually price a request. A key that exists but unmarshalled to zeroes —
+// because the YAML fields were misspelled, or the stanza is empty — would
+// otherwise satisfy a presence check while recording zero spend for every
+// request, which is the governance bypass fail-closed pricing exists to stop.
+//
+// Output may legitimately be zero only if input is too (a free model is
+// expressed by omitting the model, not by zero rates), so both are required.
+func IsUsablePriceEntry(entry config.PriceEntry) bool {
+	if entry.Input <= 0 || entry.Output <= 0 {
+		return false
+	}
+	if entry.LongContext != nil {
+		lc := entry.LongContext
+		if lc.ThresholdTokens <= 0 || lc.Input <= 0 || lc.Output <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // MissingPricingPair describes a provider/model combination that lacks a pricing entry.
@@ -227,7 +250,8 @@ func ValidatePricingCoverage(modelsCfg *config.ModelsConfig, pricingCfg *config.
 		var hasPricing bool
 		if pricingCfg != nil && pricingCfg.Providers != nil {
 			if provPricing, ok := pricingCfg.Providers[provider]; ok {
-				_, hasPricing = provPricing.Models[model]
+				entry, ok := provPricing.Models[model]
+				hasPricing = ok && IsUsablePriceEntry(entry)
 			}
 		}
 		if !hasPricing {

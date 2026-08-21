@@ -283,12 +283,28 @@ func main() {
 		for i, p := range missing {
 			pairs[i] = p.String()
 		}
-		logger.Error("startup validation failed: routed models have no pricing configuration",
-			"missing_pairs", strings.Join(pairs, ", "),
-		)
-		os.Exit(1)
+		// Honour the configured policy. Exiting unconditionally made the
+		// documented flag and allow modes unusable for their stated purpose —
+		// running a dev or test gateway with intentionally unpriced routes —
+		// because the process died before the handler could apply either.
+		// Anything that is not an explicit pass-through mode is deny, matching
+		// the request-path gate.
+		switch cfg.Cost.OnMissingPricing {
+		case "flag", "allow":
+			logger.Warn("routed models have no pricing configuration; continuing per on_missing_pricing",
+				"mode", cfg.Cost.OnMissingPricing,
+				"missing_pairs", strings.Join(pairs, ", "),
+			)
+		default:
+			logger.Error("startup validation failed: routed models have no pricing configuration",
+				"mode", "deny",
+				"missing_pairs", strings.Join(pairs, ", "),
+			)
+			os.Exit(1)
+		}
+	} else {
+		logger.Info("pricing coverage validated: all routed models have pricing entries")
 	}
-	logger.Info("pricing coverage validated: all routed models have pricing entries")
 
 	usageRecorder := storage.NewUsageRecorder(dbPool)
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
@@ -457,11 +473,11 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 			for _, provName := range providers {
 				healthy := healthTracker.IsAvailable(provName)
 				state := healthTracker.GetState(provName)
-				
+
 				if healthy {
 					provHealth.Available++
 				}
-				
+
 				provHealth.Details[provName] = providerStatus{
 					Healthy: healthy,
 					State:   state,

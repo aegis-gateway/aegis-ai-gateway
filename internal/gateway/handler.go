@@ -39,6 +39,7 @@ import (
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).
 type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
+	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -75,10 +76,10 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 		contextMonitor:  contextMonitor,
 		validator:       validator,
 	}
-	
+
 	// Initialize streaming handler with configuration
 	h.streamingHandler = NewStreamingHandler(h, DefaultStreamingConfig())
-	
+
 	return h
 }
 
@@ -174,11 +175,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Route to provider
 	modelsCfg := h.modelsCfg()
-	adapter, providerModel, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
+	route, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
 		return
 	}
+	// providerKey is the configured provider name; adapter.Name() is only the
+	// adapter type and is shared across providers (azure_openai and
+	// internal_vllm both report "openai"). Pricing, metrics and usage must use
+	// providerKey or they attribute to the wrong provider.
+	adapter, providerKey, providerModel := route.Adapter, route.ProviderKey, route.Model
 
 	// Set provider type for policy evaluation (adapter.Name() returns "openai", "anthropic", etc.)
 	aegisReq.ProviderType = adapter.Name()
@@ -211,30 +217,47 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// This prevents unpriced traffic from silently bypassing spend controls.
 	if h.costCalc != nil && h.cfg != nil {
 		cfg := h.cfg()
+		// Anything that is not explicitly a documented pass-through mode is
+		// treated as deny. A typo or an unsupported value must not silently
+		// reopen the bypass this gate exists to close.
 		mode := cfg.Cost.OnMissingPricing
-		if mode == "" {
-			mode = "deny" // safe default
+		switch mode {
+		case "flag", "allow":
+			// documented non-deny modes
+		case "", "deny":
+			mode = "deny"
+		default:
+			slog.Error("unrecognised on_missing_pricing value; treating as deny",
+				"configured", cfg.Cost.OnMissingPricing, "request_id", reqID)
+			mode = "deny"
 		}
-		if mode != "allow" && !h.costCalc.HasPricing(adapter.Name(), providerModel) {
+
+		if mode != "allow" && !h.costCalc.HasPricing(providerKey, providerModel) {
 			if h.metrics != nil {
-				h.metrics.UnpricedRequestsTotal.WithLabelValues(adapter.Name(), providerModel, mode).Inc()
+				h.metrics.UnpricedRequestsTotal.WithLabelValues(providerKey, providerModel, mode).Inc()
 			}
 			slog.Warn("pricing_unknown: no pricing entry for routed model",
 				"event_type", "pricing_unknown",
-				"provider", adapter.Name(),
+				"provider", providerKey,
 				"model", providerModel,
 				"mode", mode,
 				"request_id", reqID,
 				"org_id", authInfo.OrganizationID,
 			)
+			// Persist the decision. Both deny and flag are governance events and
+			// belong in the audit trail, not only in process logs that rotate.
+			if h.auditLogger != nil {
+				h.auditLogger.LogPricingDenied(reqID, authInfo.OrganizationID, authInfo.TeamID,
+					authInfo.KeyID, providerKey, providerModel, mode, r.RemoteAddr)
+			}
 			if mode == "deny" {
 				httputil.WriteError(w, reqID, http.StatusPaymentRequired,
 					"billing_error", "pricing_unknown",
-					"no pricing configuration for "+adapter.Name()+"/"+providerModel+"; contact your AEGIS administrator",
+					"no pricing configuration for "+providerKey+"/"+providerModel+"; contact your AEGIS administrator",
 				)
 				return
 			}
-			// mode == "flag": logged and counted above; request proceeds.
+			// mode == "flag": logged, counted and audited above; request proceeds.
 		}
 	}
 
@@ -296,7 +319,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	aegisResp.RequestID = reqID
-	
+
+	// Adapters set Provider to their own type ("openai", "anthropic") because
+	// that is all they know. Everything downstream — cost lookup, metrics
+	// labels, the usage record — needs the configured provider key, or an
+	// azure_openai / internal_vllm route passes the pre-dispatch gate and then
+	// fails to price, recording zero spend under the wrong provider. Normalise
+	// once, here, so the two identities cannot diverge again below.
+	aegisResp.Provider = providerKey
+
 	// Calculate cost using actual provider and model served.
 	if h.costCalc != nil {
 		if cost, found := h.costCalc.CalculateSimple(
@@ -315,7 +346,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	}
-	
+
 	totalDuration := time.Since(receivedAt)
 
 	slog.Info("request completed",
