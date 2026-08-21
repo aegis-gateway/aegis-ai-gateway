@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -80,6 +81,12 @@ func NewSealer(db *pgxpool.Pool, opts SealOptions) *Sealer {
 }
 
 // Run acquires the advisory lock and seals all outstanding events.
+// ErrSealPausedAtGap reports that sealing stopped because an id gap separates
+// the last checkpoint from the next visible event. Unsealed events remain, so
+// this is deliberately an error rather than a quiet return: a scheduled sealer
+// that treated it as success would report a healthy chain while it stalled.
+var ErrSealPausedAtGap = errors.New("seal: paused at an event id gap")
+
 func (s *Sealer) Run(ctx context.Context) error {
 	conn, err := s.db.Acquire(ctx)
 	if err != nil {
@@ -103,6 +110,12 @@ func (s *Sealer) Run(ctx context.Context) error {
 
 	for {
 		sealed, err := s.sealBatch(ctx, conn.Conn())
+		if errors.Is(err, ErrSealPausedAtGap) {
+			// Distinct from "caught up": unsealed events remain beyond the gap.
+			// Returning an error means a cron invocation exits non-zero and is
+			// visible, rather than reporting success while the chain stalls.
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -178,7 +191,8 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 			"last_sealed_event_id", effectiveStart,
 			"next_visible_event_id", events[0].ID,
 			"reason", "an in-flight transaction may still commit into the gap")
-		return false, nil
+		return false, fmt.Errorf("%w: last sealed event %d, next visible event %d",
+			ErrSealPausedAtGap, effectiveStart, events[0].ID)
 	}
 
 	// 2. Stop at the first gap inside the batch.
