@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aegis-gateway.dev/controlplane/v1/gateway-registration-v1.schema.json",
+  "title": "AEGIS control plane gateway registration, version 1",
+  "description": "Announces one gateway deployment to a control plane. Carries no prompt content, no response content, and no audit event. The organization is not named here: it is determined by the bearer token presented with the request.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "gateway_version"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\u0000-\u001f\u007f]+$",
+      "description": "Operator-chosen label distinguishing this deployment within its organization. Never derived from a governed request. Registration is idempotent on this value."
+    },
+    "gateway_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[^\u0000-\u001f\u007f]+$",
+      "description": "Build version of the registering gateway."
+    }
+  }
+}

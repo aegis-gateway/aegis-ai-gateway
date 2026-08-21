@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aegis-gateway.dev/controlplane/v1/checkpoint-submission-v1.schema.json",
+  "title": "AEGIS control plane checkpoint submission, version 1",
+  "description": "One sealed Merkle checkpoint from a gateway's audit trail. It attests that a contiguous range of audit events existed in a particular form at a particular time. It does not contain those events, and no property of this schema holds prompt content, response content, or an individual decision record. Proving that a specific event falls under merkle_root requires an inclusion proof served by the sealing gateway, which is not part of this message.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "gateway_id",
+    "checkpoint_id",
+    "range_start",
+    "range_end",
+    "event_count",
+    "merkle_root",
+    "prev_checkpoint_id",
+    "prev_checkpoint_hash",
+    "checkpoint_hash",
+    "hash_algorithm",
+    "hash_schema_version",
+    "canonicalization_spec",
+    "sealed_at",
+    "sealer_version",
+    "gateway_version"
+  ],
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A SHA-256 digest as 64 lowercase hexadecimal characters."
+    },
+    "microsecondTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$",
+      "description": "RFC 3339 timestamp, UTC, exactly six fractional digits. The precision is required, not conventional: sealed_at is hashed as microseconds since the Unix epoch, so a coarser or finer spelling makes the checkpoint hash unrecomputable."
+    },
+    "genesisPrevHash": {
+      "const": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "shortLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[^\u0000-\u001f\u007f]+$"
+    }
+  },
+  "properties": {
+    "gateway_id": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Identifier returned by gateway registration."
+    },
+    "checkpoint_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The gateway's audit_checkpoints.id: a per-gateway sequence increasing by one per checkpoint sealed. The gateway schema has no separate sequence column; this is the sequence."
+    },
+    "range_start": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "First audit event ID covered, inclusive."
+    },
+    "range_end": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Last audit event ID covered, inclusive."
+    },
+    "event_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of events the Merkle tree was built over. An input to the checkpoint hash, so a verifier must use the sealed value rather than deriving it from the range."
+    },
+    "merkle_root": {
+      "$ref": "#/$defs/sha256Hex",
+      "description": "RFC 6962 Merkle root over the covered events. Attests the range; does not reveal any event in it."
+    },
+    "prev_checkpoint_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "Checkpoint ID of the predecessor, or null for the first checkpoint in the chain. Sent alongside prev_checkpoint_hash because the checkpoint hash input does not cover the predecessor's identity, so a chain can be repointed with every hash still verifying."
+    },
+    "prev_checkpoint_hash": {
+      "$ref": "#/$defs/sha256Hex",
+      "description": "The predecessor's checkpoint_hash, or 32 zero bytes for the first checkpoint. The chain binds the predecessor's whole hash rather than its Merkle root, so altering any attested field of an earlier checkpoint invalidates every checkpoint after it."
+    },
+    "checkpoint_hash": {
+      "$ref": "#/$defs/sha256Hex",
+      "description": "SHA-256 over merkle_root || prev_checkpoint_hash || uint64_le(range_start) || uint64_le(range_end) || uint32_le(event_count) || uint32_le(hash_schema_version) || int64_le(sealed_at microseconds since the Unix epoch). 96 bytes of input at hash schema version 1."
+    },
+    "hash_algorithm": {
+      "enum": [
+        "sha-256"
+      ],
+      "description": "Digest used for leaf, node, and chain hashing. Carried explicitly even with one legal value because verification may happen long after sealing, by a tool that has never seen this release."
+    },
+    "hash_schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which set of audit event columns the leaf hashes covered. An input to the checkpoint hash."
+    },
+    "canonicalization_spec": {
+      "$ref": "#/$defs/shortLabel",
+      "description": "Byte-level serialization applied to each event before leaf hashing, for example rfc8785-v1."
+    },
+    "sealed_at": {
+      "$ref": "#/$defs/microsecondTimestamp",
+      "description": "When the checkpoint was sealed. An input to the checkpoint hash, so it cannot be adjusted after sealing without breaking the chain."
+    },
+    "sealer_version": {
+      "$ref": "#/$defs/shortLabel",
+      "description": "Build version of the sealer. Excluded from every hash by the gateway and carried here for the same purpose: it is debug metadata and carries no attestation weight."
+    },
+    "gateway_version": {
+      "$ref": "#/$defs/shortLabel",
+      "description": "Build version of the gateway at submission time. May differ from sealer_version when a checkpoint is forwarded after an upgrade."
+    },
+    "covered_from": {
+      "$ref": "#/$defs/microsecondTimestamp",
+      "description": "Reserved. Timestamp of the earliest covered audit event. The sealer works in event ID space and does not compute this today, so a current gateway omits it. Advisory when present: not an input to any hash and not attested."
+    },
+    "covered_to": {
+      "$ref": "#/$defs/microsecondTimestamp",
+      "description": "Reserved. Timestamp of the latest covered audit event. Advisory when present. Must be sent together with covered_from."
+    },
+    "config_hash": {
+      "$ref": "#/$defs/sha256Hex",
+      "description": "Reserved. Digest of the gateway configuration in force while the covered events were produced. Nothing in the gateway computes this today. Declared now so that adding it later is a gateway change rather than a protocol version bump."
+    },
+    "policy_bundles": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "Reserved. Policy bundles in force while the covered events were produced. Identifies bundles by digest; carries no policy source.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "digest",
+          "hash_algorithm"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\u0000-\u001f\u007f]+$"
+          },
+          "digest": {
+            "$ref": "#/$defs/sha256Hex"
+          },
+          "hash_algorithm": {
+            "enum": [
+              "sha-256"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "dependentRequired": {
+    "covered_from": [
+      "covered_to"
+    ],
+    "covered_to": [
+      "covered_from"
+    ]
+  },
+  "allOf": [
+    {
+      "description": "A genesis checkpoint carries the genesis constant as its predecessor hash, and a non-genesis checkpoint does not. The two are the same 32 bytes only by accident; allowing either would let a gateway silently restart its chain.",
+      "if": {
+        "properties": {
+          "prev_checkpoint_id": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "prev_checkpoint_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "prev_checkpoint_hash": {
+            "$ref": "#/$defs/genesisPrevHash"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "prev_checkpoint_hash": {
+            "not": {
+              "$ref": "#/$defs/genesisPrevHash"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
