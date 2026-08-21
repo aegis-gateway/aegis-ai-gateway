@@ -39,6 +39,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter/policy"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter/secrets"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/gateway"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/purge"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/ratelimit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
@@ -197,6 +198,25 @@ func main() {
 			)
 		}
 	}()
+
+	// Refresh aegis_audit_oldest_event_age_days every 5 minutes.
+	go func() {
+		refresh := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			age := purge.OldestEventAgeDays(ctx, dbPool)
+			metrics.AuditOldestEventAgeDays.Set(age)
+		}
+		refresh() // seed on startup
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			refresh()
+		}
+	}()
+
+	// Refresh audit integrity metrics on startup and every 5 minutes.
+	go metrics.StartAuditMetricsRefresh(context.Background(), dbPool)
 
 	// Build filter chain
 	secretsFilter := secrets.NewFilter(func() bool { return loader.Config().Filter.Secrets.Enabled })

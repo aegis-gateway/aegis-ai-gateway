@@ -24,6 +24,7 @@ type Config struct {
 	Filter    FilterConfig    `yaml:"filter"`
 	Routing   RoutingConfig   `yaml:"routing"`
 	Cost      CostConfig      `yaml:"cost"`
+	Audit     AuditConfig     `yaml:"audit"`
 }
 
 // CostConfig controls how the gateway handles pricing.
@@ -36,6 +37,14 @@ type CostConfig struct {
 	// PricingStalenessThresholdDays is how many days after pricing.yaml's verified_at
 	// before a boot-time warning is logged. Default: 90.
 	PricingStalenessThresholdDays int `yaml:"pricing_staleness_threshold_days"`
+}
+
+// AuditConfig controls audit log retention policy.
+type AuditConfig struct {
+	// RetentionDays is the minimum number of days to keep audit_logs and
+	// audit_events rows. The purge subcommand enforces this floor; rows
+	// newer than RetentionDays are never eligible for purge.
+	RetentionDays int `yaml:"retention_days"`
 }
 
 type ServerConfig struct {
@@ -90,10 +99,10 @@ type TelemetryConfig struct {
 }
 
 type FilterConfig struct {
-	PIIService PIIServiceConfig       `yaml:"pii_service"`
-	Secrets    SecretsFilterConfig    `yaml:"secrets"`
-	Injection  InjectionFilterConfig  `yaml:"injection"`
-	Policy     PolicyFilterConfig     `yaml:"policy"`
+	PIIService PIIServiceConfig      `yaml:"pii_service"`
+	Secrets    SecretsFilterConfig   `yaml:"secrets"`
+	Injection  InjectionFilterConfig `yaml:"injection"`
+	Policy     PolicyFilterConfig    `yaml:"policy"`
 }
 
 type PIIServiceConfig struct {
@@ -121,12 +130,12 @@ type PolicyFilterConfig struct {
 }
 
 type RoutingConfig struct {
-	DefaultTimeout          time.Duration      `yaml:"default_timeout"`
-	StreamFirstChunkTimeout time.Duration      `yaml:"stream_first_chunk_timeout"`
-	StreamChunkTimeout      time.Duration      `yaml:"stream_chunk_timeout"`
-	MaxRetries              int                `yaml:"max_retries"`
+	DefaultTimeout          time.Duration        `yaml:"default_timeout"`
+	StreamFirstChunkTimeout time.Duration        `yaml:"stream_first_chunk_timeout"`
+	StreamChunkTimeout      time.Duration        `yaml:"stream_chunk_timeout"`
+	MaxRetries              int                  `yaml:"max_retries"`
 	CircuitBreaker          CircuitBreakerConfig `yaml:"circuit_breaker"`
-	HealthCheckInterval     time.Duration      `yaml:"health_check_interval"`
+	HealthCheckInterval     time.Duration        `yaml:"health_check_interval"`
 }
 
 type CircuitBreakerConfig struct {
@@ -200,6 +209,9 @@ func DefaultConfig() *Config {
 		Cost: CostConfig{
 			OnMissingPricing:              "deny",
 			PricingStalenessThresholdDays: 90,
+		},
+		Audit: AuditConfig{
+			RetentionDays: 365,
 		},
 	}
 }
