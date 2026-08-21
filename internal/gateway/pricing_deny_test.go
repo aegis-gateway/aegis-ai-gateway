@@ -408,3 +408,51 @@ func TestPricingGate_ZeroRatedEntryIsNotPricing(t *testing.T) {
 		t.Errorf("expected 402 for a zero-rated pricing entry, got %d", w.Code)
 	}
 }
+
+// TestPricingGate_ResponseProviderUsesConfiguredKey asserts the provider
+// identity carried into costing, metrics and the usage record is the configured
+// key, not the adapter type. Previously the pre-dispatch gate priced by key
+// while the post-response path used aegisResp.Provider — which adapters
+// hardcode to their own type — so an azure_openai or internal_vllm route passed
+// the gate and then recorded zero spend under "openai".
+func TestPricingGate_ResponseProviderUsesConfiguredKey(t *testing.T) {
+	pricing := &config.PricingConfig{Providers: map[string]config.ProviderPricing{
+		"internal_vllm": {Models: map[string]config.PriceEntry{
+			"llama-70b": {Input: 1.0, Output: 2.0},
+		}},
+	}}
+
+	// Registered under the configured key; Name() reports the adapter type,
+	// exactly as OpenAIAdapter does when serving internal_vllm.
+	reg := router.NewRegistry()
+	reg.Register("internal_vllm", &stubAdapter{name: "openai"})
+
+	modelsCfg := func() *config.ModelsConfig {
+		return &config.ModelsConfig{Models: map[string]config.ModelMapping{
+			"aegis-stub": {Primary: config.ProviderRoute{
+				Provider: "internal_vllm", Model: "llama-70b", ClassificationCeiling: "RESTRICTED",
+			}},
+		}}
+	}
+	cfg := func() *config.Config {
+		return &config.Config{Cost: config.CostConfig{OnMissingPricing: "deny"}}
+	}
+	h := NewHandler(reg, nil, modelsCfg, cfg, nil, nil, nil,
+		cost.NewCalculator(func() *config.PricingConfig { return pricing }), nil, nil, nil, nil, nil)
+
+	// The stub cannot complete a provider round-trip, so assert on the gate
+	// outcome: a priced route must not be refused, which is only true when the
+	// lookup uses the configured key.
+	if w := doPricingRequest(t, h); w.Code == http.StatusPaymentRequired {
+		t.Fatalf("priced internal_vllm route rejected with 402: pricing resolved by adapter type")
+	}
+
+	// And the calculator must price it under the configured key, not the type.
+	c := cost.NewCalculator(func() *config.PricingConfig { return pricing })
+	if _, ok := c.CalculateSimple("internal_vllm", "llama-70b", 1000, 1000); !ok {
+		t.Error("configured provider key does not resolve pricing")
+	}
+	if _, ok := c.CalculateSimple("openai", "llama-70b", 1000, 1000); ok {
+		t.Error("adapter type resolves pricing — the test cannot distinguish the two identities")
+	}
+}

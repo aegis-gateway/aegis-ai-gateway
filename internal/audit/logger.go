@@ -207,6 +207,14 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 // existed only as a process log line and was absent from audit exports — unlike
 // every other governance denial.
 func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string) {
+	// Only deny mode refuses the request. Recording 402 for a flagged request
+	// that actually reached the provider would misrepresent the outcome in
+	// audit exports — the trail has to say what happened, not what the feature
+	// is named after.
+	status := 0
+	if mode == "deny" {
+		status = 402
+	}
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -215,7 +223,7 @@ func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, mod
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
 		IPAddress:      ip,
-		StatusCode:     402,
+		StatusCode:     status,
 		ErrorMessage:   fmt.Sprintf("no pricing entry for %s/%s", provider, model),
 		Metadata: map[string]interface{}{
 			"provider": provider,

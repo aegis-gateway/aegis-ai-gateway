@@ -320,6 +320,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	aegisResp.RequestID = reqID
 
+	// Adapters set Provider to their own type ("openai", "anthropic") because
+	// that is all they know. Everything downstream — cost lookup, metrics
+	// labels, the usage record — needs the configured provider key, or an
+	// azure_openai / internal_vllm route passes the pre-dispatch gate and then
+	// fails to price, recording zero spend under the wrong provider. Normalise
+	// once, here, so the two identities cannot diverge again below.
+	aegisResp.Provider = providerKey
+
 	// Calculate cost using actual provider and model served.
 	if h.costCalc != nil {
 		if cost, found := h.costCalc.CalculateSimple(
