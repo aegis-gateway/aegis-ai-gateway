@@ -136,7 +136,21 @@ Operators who need tighter attestation windows (low-traffic deployments where th
 
 Two overlapping sealer runs (a cron retry, a slow first run) can compute overlapping ranges and insert two checkpoints claiming the same predecessor. The unique index on `(range_start, range_end)` does not prevent this — it only blocks exact duplicate ranges.
 
-**Fix:** Take `pg_advisory_lock(AEGIS_SEAL_LOCK_KEY)` for the duration of the seal operation. The sealer is single-writer by construction. Document this explicitly; operators who see a blocked sealer should investigate the prior run rather than force-killing the lock.
+**Fix:** Take `pg_advisory_lock(AEGIS_SEAL_LOCK_KEY)` for the duration of the seal operation.
+
+`AEGIS_SEAL_LOCK_KEY` is the first 8 bytes of `SHA-256("aegis_seal")` read as a
+little-endian `int64` — `4367013267506373021`. It is stated here as a normative
+constant because a maintenance script or an operator in psql must be able to take
+*the same* lock; a key derived any other way (for example `hashtext('aegis_seal')`,
+which is a 32-bit value) does not exclude the sealer, and both writers would run
+concurrently and could produce competing checkpoints.
+
+```sql
+-- Block the sealer while doing manual maintenance:
+SELECT pg_advisory_lock(4367013267506373021);
+-- ... maintenance ...
+SELECT pg_advisory_unlock(4367013267506373021);
+``` The sealer is single-writer by construction. Document this explicitly; operators who see a blocked sealer should investigate the prior run rather than force-killing the lock.
 
 ### Algorithm
 
