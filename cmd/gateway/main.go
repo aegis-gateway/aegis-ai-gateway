@@ -176,6 +176,26 @@ func main() {
 		}
 	}()
 
+	// Audit checkpoint freshness metrics: refresh on startup then every 5 min.
+	go func() {
+		refresh := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if age, ok, err := audit.LastSealAge(ctx, dbPool, time.Now()); err == nil && ok {
+				metrics.AuditLastSealAgeSeconds.Set(age.Seconds())
+			}
+			if count, err := audit.UnsealedEventCount(ctx, dbPool); err == nil {
+				metrics.AuditUnsealedEvents.Set(float64(count))
+			}
+		}
+		refresh()
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			refresh()
+		}
+	}()
+
 	// Build filter chain
 	secretsFilter := secrets.NewFilter(func() bool { return loader.Config().Filter.Secrets.Enabled })
 	injectionScanner := injection.NewScanner(func() config.InjectionFilterConfig { return loader.Config().Filter.Injection })

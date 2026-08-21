@@ -51,6 +51,10 @@ type Metrics struct {
 	StreamingTokensPerSecond  *prometheus.HistogramVec
 	StreamingDurationMs       *prometheus.HistogramVec
 	StreamingErrorTotal       *prometheus.CounterVec
+
+	// Audit checkpoint metrics
+	AuditLastSealAgeSeconds prometheus.Gauge
+	AuditUnsealedEvents     prometheus.Gauge
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -161,6 +165,15 @@ func NewMetrics() *Metrics {
 			Name: "aegis_streaming_error_total",
 			Help: "Total number of streaming errors.",
 		}, []string{"provider", "error_type"}),
+
+		AuditLastSealAgeSeconds: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_audit_last_seal_age_seconds",
+			Help: "Seconds since the most recent audit checkpoint's sealed_at.",
+		}),
+		AuditUnsealedEvents: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_audit_unsealed_events",
+			Help: "Count of audit_events beyond the last checkpoint's range_end.",
+		}),
 	}
 }
 
