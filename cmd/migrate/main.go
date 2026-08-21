@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/purge"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -185,8 +186,8 @@ func runVerifyChain(args []string) {
 	fromCP := fs.Int64("from-checkpoint", 0, "start verification from checkpoint N (0 = all)")
 	toCP := fs.Int64("to-checkpoint", 0, "end verification at checkpoint M (0 = all)")
 	eventID := fs.Int64("event", 0, "produce inclusion proof for event ID E")
-	outputJSON := fs.Bool("output", false, "output JSON (pass --output json)")
 	outputFmt := fs.String("output-format", "text", "output format: json or text")
+	fs.StringVar(outputFmt, "output", "text", "alias for --output-format")
 	dbURL := fs.String("db-url", "", "database URL (overrides env)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate verify-chain [flags]")
@@ -198,7 +199,6 @@ func runVerifyChain(args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("verify-chain: parse flags: %v", err)
 	}
-	_ = outputJSON // --output is also accepted as --output-format
 
 	asJSON := *outputFmt == "json"
 
@@ -305,10 +305,11 @@ func printProof(p *checkpoint.InclusionProofResult, asJSON bool) {
 // an audit_purges record for every run (including dry runs).
 func runPurge(args []string) {
 	fs := flag.NewFlagSet("purge", flag.ExitOnError)
-	beforeStr := fs.String("before", "", "delete rows with created_at < DATE (ISO 8601, required)")
+	beforeStr := fs.String("before", "", "delete rows with timestamp < DATE (ISO 8601, required)")
 	dryRun := fs.Bool("dry-run", false, "print counts and ID ranges without deleting; writes dry_run=true row to audit_purges")
 	tableStr := fs.String("table", "both", "table(s) to purge: audit_logs | audit_events | both")
 	dbURL := fs.String("db-url", "", "database URL (overrides DATABASE_URL env)")
+	configDir := fs.String("config", "configs", "configuration directory (for audit.retention_days)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate purge [flags]")
 		fmt.Fprintln(os.Stderr, "")
@@ -328,6 +329,22 @@ func runPurge(args []string) {
 	before, err := parsePurgeDate(*beforeStr)
 	if err != nil {
 		log.Fatalf("purge: invalid --before %q: %v", *beforeStr, err)
+	}
+
+	// Enforce the configured retention floor. audit.retention_days is
+	// documented as a minimum that purge honours; without this check the flag
+	// could delete rows well inside the window the policy promises to keep,
+	// and the operator would have no indication anything was wrong.
+	if cfg, cfgErr := loadPurgeConfig(*configDir); cfgErr != nil {
+		log.Printf("purge: warning: could not load audit config (%v); retention floor not enforced", cfgErr)
+	} else if cfg.Audit.RetentionDays > 0 {
+		floor := time.Now().UTC().AddDate(0, 0, -cfg.Audit.RetentionDays)
+		if before.After(floor) {
+			log.Fatalf("purge: --before %s is inside the configured retention window "+
+				"(audit.retention_days = %d, earliest permitted --before is %s). "+
+				"Lower retention_days if this is intended.",
+				before.Format(time.RFC3339), cfg.Audit.RetentionDays, floor.Format(time.RFC3339))
+		}
 	}
 
 	var tbl purge.Table
@@ -358,9 +375,9 @@ func runPurge(args []string) {
 	}
 
 	if *dryRun {
-		fmt.Printf("dry-run: querying rows with created_at < %s in table(s): %s\n", before.Format(time.RFC3339), tbl)
+		fmt.Printf("dry-run: querying rows with timestamp < %s in table(s): %s\n", before.Format(time.RFC3339), tbl)
 	} else {
-		fmt.Printf("purge: deleting rows with created_at < %s from table(s): %s\n", before.Format(time.RFC3339), tbl)
+		fmt.Printf("purge: deleting rows with timestamp < %s from table(s): %s\n", before.Format(time.RFC3339), tbl)
 	}
 
 	result, err := purge.Run(ctx, pool, opts)
@@ -410,4 +427,15 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// loadPurgeConfig reads gateway.yaml for the audit retention policy. It is
+// deliberately narrow: purge only needs audit.retention_days, and a missing or
+// unreadable config must not silently disable the floor.
+func loadPurgeConfig(dir string) (*config.Config, error) {
+	cfg := config.DefaultConfig()
+	if err := config.LoadFile(dir+"/gateway.yaml", cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }

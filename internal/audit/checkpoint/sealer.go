@@ -168,6 +168,35 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 
 	rangeStart := events[0].ID
 	rangeEnd := events[len(events)-1].ID
+
+	// Only seal a contiguous run.
+	//
+	// BIGSERIAL hands out an id before the inserting transaction commits, so a
+	// transaction holding id N can still be in flight while N+1 commits and
+	// becomes visible. Sealing to the highest *visible* id would checkpoint
+	// N+1; once N commits it sits below effectiveStart forever and is silently
+	// excluded from the chain — a valid audit event, permanently unattested.
+	// The timestamp lag does not prevent this: `timestamp` defaults to the
+	// transaction's start time, so a long transaction carries an old timestamp
+	// and still commits late.
+	//
+	// Stopping at the first gap is conservative: a hole may be a rolled-back
+	// insert that will never be filled, in which case sealing stalls until it
+	// is resolved. That is the correct direction to fail for a tamper-evidence
+	// feature — a visible stall beats a silent hole in the chain — but a
+	// permanent gap needs an operator decision, so say so loudly.
+	for i := 1; i < len(events); i++ {
+		if events[i].ID != events[i-1].ID+1 {
+			gapAfter := events[i-1].ID
+			events = events[:i]
+			rangeEnd = gapAfter
+			slog.Warn("sealing stopped at an id gap; events beyond it stay unsealed until it resolves",
+				"gap_after_event_id", gapAfter,
+				"next_visible_event_id", events[len(events)-1].ID+1,
+				"reason", "an in-flight transaction may still commit into the gap")
+			break
+		}
+	}
 	eventCount := int32(len(events))
 	sealedAt := time.Now().UTC()
 

@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"unicode/utf16"
 )
 
@@ -78,17 +77,12 @@ func jcsWrite(w *bytes.Buffer, v interface{}) error {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return fmt.Errorf("jcs: non-finite number %q", t)
 		}
-		// Use Go's json.Marshal for number serialization — it produces the same
-		// shortest round-trip decimal as ECMAScript's Number::toString for all
-		// finite float64 values.
-		b, _ := json.Marshal(f)
-		w.Write(b)
+		w.WriteString(jcsNumber(f))
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
 			return fmt.Errorf("jcs: non-finite float64 %v", t)
 		}
-		b, _ := json.Marshal(t)
-		w.Write(b)
+		w.WriteString(jcsNumber(t))
 	case string:
 		b, _ := json.Marshal(t)
 		w.Write(b)
@@ -149,13 +143,11 @@ func jcsKeyLess(a, b string) bool {
 }
 
 // jcsNumber formats a float64 as its ECMAScript string representation.
-// Exported for test use.
+// Go's json.Marshal produces the same shortest round-trip decimal as
+// ECMAScript's Number::toString for every finite float64, which is what
+// RFC 8785 requires. Both numeric cases above route through here so the
+// canonical form has a single definition.
 func jcsNumber(f float64) string {
 	b, _ := json.Marshal(f)
 	return string(b)
-}
-
-// jcsFormatInt formats an int64 as a JSON number string (no decimal point).
-func jcsFormatInt(i int64) string {
-	return strconv.FormatInt(i, 10)
 }

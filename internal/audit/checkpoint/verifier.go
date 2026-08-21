@@ -41,17 +41,17 @@ type VerifyOptions struct {
 
 // CheckpointRecord is one row from audit_checkpoints.
 type CheckpointRecord struct {
-	ID                 int64
-	RangeStart         int64
-	RangeEnd           int64
-	EventCount         int32
-	MerkleRoot         []byte
-	PrevCheckpointID   *int64
-	PrevCheckpointHash []byte
-	CheckpointHash     []byte
-	HashSchemaVersion  int32
-	SealedAt           time.Time
-	SealerVersion      string
+	ID                   int64
+	RangeStart           int64
+	RangeEnd             int64
+	EventCount           int32
+	MerkleRoot           []byte
+	PrevCheckpointID     *int64
+	PrevCheckpointHash   []byte
+	CheckpointHash       []byte
+	HashSchemaVersion    int32
+	SealedAt             time.Time
+	SealerVersion        string
 	CanonicalizationSpec string
 }
 
@@ -101,6 +101,18 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 
 	result := &VerifyResult{}
 	if len(checkpoints) == 0 {
+		// No checkpoints is only healthy if there is nothing to attest. Count
+		// the events that exist so an unsealed deployment is reported as
+		// unsealed rather than as OK.
+		var unsealed int64
+		if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&unsealed); err != nil {
+			return nil, fmt.Errorf("verify: count events with no checkpoints: %w", err)
+		}
+		result.UnsealedCount = unsealed
+		if unsealed > 0 {
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("no checkpoints exist, but %d audit event(s) are present — the chain attests nothing", unsealed))
+		}
 		return result, nil
 	}
 
@@ -136,6 +148,24 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		if !bytes.Equal(cp.PrevCheckpointHash, expectedPrev) {
 			result.Anomalies = append(result.Anomalies,
 				fmt.Sprintf("checkpoint %d: prev_checkpoint_hash mismatch (chain break)", cp.ID))
+		}
+
+		// Verify the predecessor's *identity*, not just its hash.
+		// computeCheckpointHash does not cover prev_checkpoint_id, so an
+		// attacker can repoint a checkpoint at an earlier one, leaving every
+		// hash valid and the foreign key satisfied, and silently detach the
+		// intervening checkpoints from the chain.
+		if i > 0 {
+			prev := checkpoints[i-1]
+			switch {
+			case cp.PrevCheckpointID == nil:
+				result.Anomalies = append(result.Anomalies,
+					fmt.Sprintf("checkpoint %d: claims to be genesis but follows checkpoint %d", cp.ID, prev.ID))
+			case *cp.PrevCheckpointID != prev.ID:
+				result.Anomalies = append(result.Anomalies,
+					fmt.Sprintf("checkpoint %d: prev_checkpoint_id is %d but the preceding checkpoint is %d (chain re-pointed)",
+						cp.ID, *cp.PrevCheckpointID, prev.ID))
+			}
 		}
 
 		// Recompute checkpoint_hash from stored fields.
@@ -190,7 +220,7 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 			var purgeID int64
 			err := conn.QueryRow(ctx, `
 				SELECT id FROM audit_purges
-				WHERE range_start <= $1 AND range_end >= $2
+				WHERE event_id_min <= $1 AND event_id_max >= $2
 				LIMIT 1
 			`, cp.RangeEnd, cp.RangeStart).Scan(&purgeID)
 			if err == nil {

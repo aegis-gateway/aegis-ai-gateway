@@ -36,7 +36,7 @@ const (
 
 // Options configures a purge run.
 type Options struct {
-	Before  time.Time // delete rows with created_at < Before
+	Before  time.Time // delete rows with timestamp < Before
 	DryRun  bool
 	Table   Table
 	BatchSz int // rows per DELETE statement; default 1000
@@ -93,11 +93,21 @@ func Run(ctx context.Context, pool *pgxpool.Pool, opts Options) (*Result, error)
 	res.IDMin = idMin
 	res.IDMax = idMax
 
-	cids, err := overlappingCheckpoints(ctx, pool, idMin, idMax)
-	if err != nil {
-		return nil, fmt.Errorf("checkpoint lookup: %w", err)
+	// Checkpoints attest audit_events only, and their range_start/range_end are
+	// audit_events ids. audit_logs has its own unrelated BIGSERIAL, so feeding a
+	// log id range into this lookup attributes arbitrary checkpoints — or none —
+	// to the purge, and that attribution is written permanently to audit_purges.
+	// Only look up checkpoints when audit_events rows are actually in scope.
+	if opts.Table == TableAuditEvents || opts.Table == TableBoth {
+		cids, err := overlappingCheckpoints(ctx, pool, idMin, idMax)
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint lookup: %w", err)
+		}
+		res.CheckpointIDs = cids
+	} else {
+		// Explicitly empty: no checkpoint covers audit_logs.
+		res.CheckpointIDs = []int64{}
 	}
-	res.CheckpointIDs = cids
 
 	if opts.DryRun {
 		count, err := countRows(ctx, pool, opts.Table, opts.Before)
@@ -140,7 +150,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, opts Options) (*Result, error)
 // Returns -1 when the table is empty or unreachable.
 func OldestEventAgeDays(ctx context.Context, pool *pgxpool.Pool) float64 {
 	var oldest time.Time
-	err := pool.QueryRow(ctx, `SELECT MIN(created_at) FROM audit_events`).Scan(&oldest)
+	err := pool.QueryRow(ctx, `SELECT MIN("timestamp") FROM audit_events`).Scan(&oldest)
 	if err != nil || oldest.IsZero() {
 		return -1
 	}
@@ -150,7 +160,7 @@ func OldestEventAgeDays(ctx context.Context, pool *pgxpool.Pool) float64 {
 // --- helpers -----------------------------------------------------------------
 
 func queryIDRange(ctx context.Context, pool *pgxpool.Pool, table string, before time.Time) (int64, int64, error) {
-	q := fmt.Sprintf(`SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM %s WHERE created_at < $1`, table)
+	q := fmt.Sprintf(`SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM %s WHERE "timestamp" < $1`, table)
 	var idMin, idMax int64
 	if err := pool.QueryRow(ctx, q, before).Scan(&idMin, &idMax); err != nil {
 		return 0, 0, err
@@ -162,7 +172,7 @@ func countRows(ctx context.Context, pool *pgxpool.Pool, tbl Table, before time.T
 	tables := tablesFor(tbl)
 	total := 0
 	for _, t := range tables {
-		q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE created_at < $1`, t)
+		q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE "timestamp" < $1`, t)
 		var n int
 		if err := pool.QueryRow(ctx, q, before).Scan(&n); err != nil {
 			return 0, fmt.Errorf("count %s: %w", t, err)
@@ -177,7 +187,7 @@ func execBatchDelete(ctx context.Context, tx pgx.Tx, tbl Table, before time.Time
 	total := 0
 	for _, t := range tables {
 		q := fmt.Sprintf(
-			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE created_at < $1 LIMIT $2)`,
+			`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE "timestamp" < $1 LIMIT $2)`,
 			t, t,
 		)
 		for {
@@ -238,7 +248,7 @@ func unsealedWarning(ctx context.Context, pool *pgxpool.Pool, before time.Time) 
 	}
 	var count int
 	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM audit_events WHERE created_at < $1 AND id > $2`,
+		`SELECT COUNT(*) FROM audit_events WHERE "timestamp" < $1 AND id > $2`,
 		before, lastEnd,
 	).Scan(&count); err != nil || count == 0 {
 		return ""

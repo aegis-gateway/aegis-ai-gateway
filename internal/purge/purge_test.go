@@ -49,7 +49,7 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS audit_events (
 			id         BIGSERIAL PRIMARY KEY,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			"timestamp" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			event_type TEXT NOT NULL DEFAULT 'test',
 			org_id     TEXT NOT NULL DEFAULT '',
 			team_id    TEXT NOT NULL DEFAULT '',
@@ -62,7 +62,7 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 	_, err = pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS audit_logs (
 			id         BIGSERIAL PRIMARY KEY,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			"timestamp" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			request_id TEXT NOT NULL DEFAULT ''
 		)`)
 	if err != nil {
@@ -93,14 +93,14 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 	})
 }
 
-// insertOldEvent inserts an audit_events row with a created_at in the past.
+// insertOldEvent inserts an audit_events row with a timestamp in the past.
 func insertOldEvent(t *testing.T, pool *pgxpool.Pool, age time.Duration) int64 {
 	t.Helper()
-	createdAt := time.Now().UTC().Add(-age)
+	ts := time.Now().UTC().Add(-age)
 	var id int64
 	if err := pool.QueryRow(context.Background(),
-		`INSERT INTO audit_events (created_at) VALUES ($1) RETURNING id`,
-		createdAt,
+		`INSERT INTO audit_events ("timestamp") VALUES ($1) RETURNING id`,
+		ts,
 	).Scan(&id); err != nil {
 		t.Fatalf("insert audit_events: %v", err)
 	}
