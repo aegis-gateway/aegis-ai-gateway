@@ -1,44 +1,45 @@
 # Licensing
 
-## The gateway is Apache 2.0 — free for any use, including commercial
+## What's free, permanently
 
-The AEGIS AI Gateway in this repository is released under the **Apache License 2.0**.
+The AEGIS AI Gateway is Apache 2.0 — free for any use, including commercial production.
 
-You can use it, modify it, and deploy it for any purpose — including commercial production use — without paying Atlantic Frontier anything. There is no usage cap, no time limit, no SaaS carve-out, no "non-commercial only" clause. The full license text is in [LICENSE](./LICENSE).
+The Apache core includes:
 
-If you want to run this at your company: go ahead. Deploying it — modified or not, in production, behind a paid service — is not redistribution, so the conditions below do not apply. No lawyer required.
+- **Gateway core** — multi-provider routing (OpenAI, Anthropic, Azure OpenAI, vLLM), streaming, request normalization
+- **Auth and access control** — API key management, classification-based policies, OPA integration
+- **Security filters** — secrets scanning, PII filtering, prompt injection detection
+- **Audit logging** — structured logs for every request and policy decision
+- **No-payload conformance test** — verifiable proof that request bodies are not stored in the audit trail (T22)
+- **Observability** — Prometheus metrics, structured logging, request tracing
 
-### If you redistribute it
+Committed to the open core, but **not yet shipped** — no release contains them
+today, and nothing above should be read as available:
 
-Apache 2.0 attaches conditions to *distributing* the gateway or a derivative work, not to running it. If you ship it to someone else, [LICENSE](./LICENSE) section 4 asks you to:
+- **Hash-chained tamper-evident audit** — Merkle checkpoints, so a deployment can prove its own audit trail has not been altered (T24) — in progress
+- **Retention configuration and purge** — set how long audit records are kept and remove them on schedule (T20) — in progress
+- **Audit read API** — JSON and CSV export for pulling records for review (T23) — planned
+- **Compliance mapping** — documentation mapping gateway controls to common regulatory frameworks (T19) — planned
 
-- include a copy of the Apache 2.0 license;
-- mark any files you changed as changed;
-- keep the existing copyright, patent, trademark, and attribution notices; and
-- carry the attribution text from [NOTICE](./NOTICE) along with it.
+No usage cap. No time limit. No SaaS carve-out. If you run it, modify it, or build a product on top of it, the Apache 2.0 terms apply — see [LICENSE](./LICENSE).
 
-These are the ordinary Apache 2.0 obligations — the same ones you already meet when redistributing any Apache-licensed dependency.
+## What's commercial
 
-## What the commercial control plane adds
+The commercial tier is planned for teams that need organizational-scale operations. It will include:
 
-The **AEGIS Control Plane** is a separate, closed-source product not included in this repo. It is built for teams that need managed multi-tenant operations and compliance tooling on top of the open-source gateway. It adds:
+- **Multi-tenant management console** and cross-gateway aggregation — planned
+- **SSO** with SAML, OIDC, and SCIM — planned
+- **Policy pack library** with approval workflows, versioning, staged rollout, and policy approval audit trail — planned
+- **Signed auditor-ready evidence bundles** with framework mapping and chain verification report — planned
+- **Long-horizon WORM archive** with external anchoring (RFC 3161 / notary integration) — planned
+- **Support with SLA and indemnity** — planned
 
-- **Multi-tenant management console** — manage multiple teams, API keys, and policy sets from a single interface
-- **SSO / enterprise identity integration** — SAML, OIDC, and directory sync
-- **Pre-built compliance policy packs** — ready-made policy sets for common regulatory frameworks
-- **Long-horizon tamper-evident audit** — an immutable audit trail extending well beyond what the gateway stores locally
-- **Evidence export** — structured audit exports for compliance reviews and regulatory reporting
-- **SLA-backed support** — guaranteed response times and escalation paths
+None of this is in the repo today. Interested? Email [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com)
 
-None of this is in this repo. The open-source gateway is fully functional without any of it.
+## Why this split
 
-## Contributor License Agreement
+The Apache core is enough for one deployment to prove its own governance posture — you can verify the audit trail, export records, and demonstrate that no request payloads are retained. The commercial tier adds the tooling organizations need when they are running multiple gateways, aggregating reports across teams, or handing evidence to an external auditor.
 
-Contributions to this repository require a signed CLA; see [`docs/cla/`](./docs/cla/).
+## License
 
-## Contact
-
-For commercial licensing or control plane access:
-
-- Email: [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com)
-- Web: [aegisgateway.ai](https://aegisgateway.ai)
+The gateway is [Apache 2.0](./LICENSE).

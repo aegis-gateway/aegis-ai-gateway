@@ -4,7 +4,7 @@ Thank you for your interest in contributing. This document covers how to get inv
 
 ## License
 
-By contributing to AEGIS, you agree that your contributions will be licensed under the Apache License 2.0. All contributions are subject to the AEGIS Individual Contributor License Agreement (CLA). See [docs/cla/](docs/cla/) for details.
+By contributing to AEGIS, you agree that your contributions will be licensed under the **Apache License 2.0** — the same license that covers this repository. There is no other inbound license; contributions are not subject to any proprietary or source-available license. All contributions are also subject to the AEGIS Individual Contributor License Agreement (CLA). See [docs/cla/](docs/cla/) for details.
 
 ## Getting Started
 
