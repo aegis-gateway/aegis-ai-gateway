@@ -28,32 +28,33 @@ import (
 type EventType string
 
 const (
-	EventAuthFailure         EventType = "auth_failure"
-	EventAuthSuccess         EventType = "auth_success"
-	EventRateLimitViolation  EventType = "rate_limit_violation"
-	EventBudgetViolation     EventType = "budget_violation"
-	EventFilterBlock         EventType = "filter_block"
-	EventRedisFailure        EventType = "redis_failure"
-	EventProviderFailure     EventType = "provider_failure"
-	EventRequestComplete     EventType = "request_complete"
+	EventAuthFailure        EventType = "auth_failure"
+	EventAuthSuccess        EventType = "auth_success"
+	EventRateLimitViolation EventType = "rate_limit_violation"
+	EventBudgetViolation    EventType = "budget_violation"
+	EventFilterBlock        EventType = "filter_block"
+	EventPricingDenied      EventType = "pricing_denied"
+	EventRedisFailure       EventType = "redis_failure"
+	EventProviderFailure    EventType = "provider_failure"
+	EventRequestComplete    EventType = "request_complete"
 )
 
 // Event represents a security-relevant audit event.
 type Event struct {
-	RequestID       string
-	Timestamp       time.Time
-	EventType       EventType
-	OrganizationID  string
-	TeamID          string
-	UserID          *string
-	APIKeyID        *string
-	IPAddress       string
-	UserAgent       string
-	Endpoint        string
-	Method          string
-	StatusCode      int
-	ErrorMessage    string
-	Metadata        map[string]interface{}
+	RequestID      string
+	Timestamp      time.Time
+	EventType      EventType
+	OrganizationID string
+	TeamID         string
+	UserID         *string
+	APIKeyID       *string
+	IPAddress      string
+	UserAgent      string
+	Endpoint       string
+	Method         string
+	StatusCode     int
+	ErrorMessage   string
+	Metadata       map[string]interface{}
 }
 
 // Logger writes audit events to the database.
@@ -201,6 +202,29 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 }
 
 // LogRedisFailure logs a Redis connectivity failure.
+// LogPricingDenied records a request refused (or flagged) because the routed
+// provider/model has no usable pricing entry. Without this, a pricing denial
+// existed only as a process log line and was absent from audit exports — unlike
+// every other governance denial.
+func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string) {
+	l.Log(Event{
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventPricingDenied,
+		OrganizationID: orgID,
+		TeamID:         teamID,
+		APIKeyID:       &keyID,
+		IPAddress:      ip,
+		StatusCode:     402,
+		ErrorMessage:   fmt.Sprintf("no pricing entry for %s/%s", provider, model),
+		Metadata: map[string]interface{}{
+			"provider": provider,
+			"model":    model,
+			"mode":     mode,
+		},
+	})
+}
+
 func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, ip string) {
 	l.Log(Event{
 		RequestID:      requestID,

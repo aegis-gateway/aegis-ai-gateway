@@ -47,9 +47,9 @@ func (rp *RouterProcessor) RouteToProvider(
 	aegisReq *types.AegisRequest,
 ) (*RouteResult, error) {
 	modelsCfg := rp.modelsCfg()
-	
+
 	// Route to provider based on model and classification
-	adapter, providerModel, err := router.ResolveRoute(
+	route, err := router.ResolveRoute(
 		modelsCfg,
 		rp.registry,
 		rp.healthTracker,
@@ -62,6 +62,7 @@ func (rp *RouterProcessor) RouteToProvider(
 			"No provider available: "+err.Error(),
 		)
 	}
+	adapter, providerModel := route.Adapter, route.Model
 
 	// Override model with the provider-specific model name
 	originalModel := aegisReq.Model

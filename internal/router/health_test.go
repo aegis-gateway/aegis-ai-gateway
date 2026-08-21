@@ -97,15 +97,15 @@ func TestResolveRoute_SkipsUnhealthyProvider(t *testing.T) {
 	// Mark openai as unhealthy
 	ht.RecordFailure("openai")
 
-	adapter, model, err := ResolveRoute(cfg, registry, ht, "test-model", "INTERNAL")
+	route, err := ResolveRoute(cfg, registry, ht, "test-model", "INTERNAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if adapter.Name() != "anthropic" {
-		t.Errorf("expected anthropic (fallback), got %s", adapter.Name())
+	if route.ProviderKey != "anthropic" {
+		t.Errorf("expected anthropic (fallback), got %s", route.ProviderKey)
 	}
-	if model != "claude-sonnet" {
-		t.Errorf("expected claude-sonnet, got %s", model)
+	if route.Model != "claude-sonnet" {
+		t.Errorf("expected claude-sonnet, got %s", route.Model)
 	}
 }
 
@@ -133,7 +133,7 @@ func TestResolveRoute_AllUnhealthy_ReturnsError(t *testing.T) {
 	ht.RecordFailure("openai")
 	ht.RecordFailure("anthropic")
 
-	_, _, err := ResolveRoute(cfg, registry, ht, "test-model", "INTERNAL")
+	_, err := ResolveRoute(cfg, registry, ht, "test-model", "INTERNAL")
 	if err == nil {
 		t.Fatal("expected error when all providers are unhealthy")
 	}

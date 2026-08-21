@@ -61,8 +61,8 @@ func newTestRegistry(provider string) *router.Registry {
 // HTTP 402 and the response body contains an auditable error code.
 func TestChatCompletions_UnpricedModel_Deny(t *testing.T) {
 	const (
-		providerName  = "stub-provider"
-		routedModel   = "stub-model-v1" // no pricing entry for this model
+		providerName   = "stub-provider"
+		routedModel    = "stub-model-v1" // no pricing entry for this model
 		requestedAlias = "aegis-stub"
 	)
 
@@ -272,3 +272,139 @@ func TestChatCompletions_PricedModel_NoDeny(t *testing.T) {
 
 // Compile-time check: stubAdapter must satisfy the ProviderAdapter interface.
 var _ adapters.ProviderAdapter = (*stubAdapter)(nil)
+
+// spyAuditLogger records pricing-denial audit calls so tests can assert the
+// decision reached the audit trail, not just the process log.
+type spyAuditLogger struct {
+	pricingDenied []struct{ Provider, Model, Mode string }
+}
+
+func (s *spyAuditLogger) LogFilterBlock(_, _, _, _, _, _ string, _ string) {}
+func (s *spyAuditLogger) LogPricingDenied(_, _, _, _, provider, model, mode string, _ string) {
+	s.pricingDenied = append(s.pricingDenied, struct{ Provider, Model, Mode string }{provider, model, mode})
+}
+
+// newPricingTestHandler wires a handler whose only routed alias points at
+// providerKey/routedModel, with pricing supplied by pricingCfg.
+func newPricingTestHandler(providerKey, routedModel, mode string,
+	pricing *config.PricingConfig, spy AuditLogger) *Handler {
+
+	modelsCfg := func() *config.ModelsConfig {
+		return &config.ModelsConfig{Models: map[string]config.ModelMapping{
+			"aegis-stub": {Primary: config.ProviderRoute{
+				Provider: providerKey, Model: routedModel, ClassificationCeiling: "RESTRICTED",
+			}},
+		}}
+	}
+	cfg := func() *config.Config {
+		return &config.Config{Cost: config.CostConfig{OnMissingPricing: mode}}
+	}
+	return NewHandler(newTestRegistry(providerKey), nil, modelsCfg, cfg, nil, nil, nil,
+		cost.NewCalculator(func() *config.PricingConfig { return pricing }), nil, spy, nil, nil, nil)
+}
+
+func doPricingRequest(t *testing.T, h *Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"aegis-stub","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+	}))
+	w := httptest.NewRecorder()
+	w.Header().Set("X-Request-ID", "req-pricing-test")
+	h.ChatCompletions(w, req)
+	return w
+}
+
+// TestPricingGate_UnknownModeFailsClosed asserts that a typo'd or unsupported
+// on_missing_pricing value is treated as deny. Previously anything that was not
+// exactly "deny" behaved like "flag", so a single misconfigured character
+// silently reopened the unpriced-traffic bypass.
+func TestPricingGate_UnknownModeFailsClosed(t *testing.T) {
+	empty := &config.PricingConfig{Providers: map[string]config.ProviderPricing{}}
+	for _, mode := range []string{"Deny", "DENY", "warn", "off", "flagg", "  deny"} {
+		t.Run(mode, func(t *testing.T) {
+			w := doPricingRequest(t, newPricingTestHandler("stub-provider", "stub-model", mode, empty, nil))
+			if w.Code != http.StatusPaymentRequired {
+				t.Errorf("mode %q: expected 402 (fail closed), got %d", mode, w.Code)
+			}
+		})
+	}
+}
+
+// TestPricingGate_LooksUpByConfiguredProviderKey asserts pricing is resolved by
+// the provider key from models.yaml, not by the adapter type. azure_openai and
+// internal_vllm are both served by the OpenAI adapter, whose Name() returns
+// "openai" — so keying off the adapter looked up the wrong pricing row and
+// denied a correctly priced route.
+func TestPricingGate_LooksUpByConfiguredProviderKey(t *testing.T) {
+	// Priced under the configured key, absent under the adapter type.
+	pricing := &config.PricingConfig{Providers: map[string]config.ProviderPricing{
+		"internal_vllm": {Models: map[string]config.PriceEntry{
+			"llama-70b": {Input: 1.0, Output: 2.0},
+		}},
+	}}
+	// The stub must mirror reality: registered under the configured key, but
+	// reporting the *adapter type* from Name(), exactly as OpenAIAdapter does
+	// when it serves internal_vllm. A stub whose Name() echoes the registered
+	// key cannot reproduce this bug at all.
+	reg := router.NewRegistry()
+	reg.Register("internal_vllm", &stubAdapter{name: "openai"})
+
+	modelsCfg := func() *config.ModelsConfig {
+		return &config.ModelsConfig{Models: map[string]config.ModelMapping{
+			"aegis-stub": {Primary: config.ProviderRoute{
+				Provider: "internal_vllm", Model: "llama-70b", ClassificationCeiling: "RESTRICTED",
+			}},
+		}}
+	}
+	cfg := func() *config.Config {
+		return &config.Config{Cost: config.CostConfig{OnMissingPricing: "deny"}}
+	}
+	spy := &spyAuditLogger{}
+	h := NewHandler(reg, nil, modelsCfg, cfg, nil, nil, nil,
+		cost.NewCalculator(func() *config.PricingConfig { return pricing }), nil, spy, nil, nil, nil)
+	w := doPricingRequest(t, h)
+	if w.Code == http.StatusPaymentRequired {
+		t.Errorf("priced route denied with 402: pricing was looked up by adapter type instead of the configured provider key")
+	}
+	if len(spy.pricingDenied) != 0 {
+		t.Errorf("priced route produced a pricing-denial audit event: %+v", spy.pricingDenied)
+	}
+}
+
+// TestPricingGate_DenialIsAudited asserts the decision is persisted, not merely
+// logged. Both deny and flag are governance events and must survive log
+// rotation in the audit trail.
+func TestPricingGate_DenialIsAudited(t *testing.T) {
+	empty := &config.PricingConfig{Providers: map[string]config.ProviderPricing{}}
+	for _, mode := range []string{"deny", "flag"} {
+		t.Run(mode, func(t *testing.T) {
+			spy := &spyAuditLogger{}
+			doPricingRequest(t, newPricingTestHandler("stub-provider", "stub-model", mode, empty, spy))
+			if len(spy.pricingDenied) != 1 {
+				t.Fatalf("mode %q: expected 1 audited pricing decision, got %d", mode, len(spy.pricingDenied))
+			}
+			got := spy.pricingDenied[0]
+			if got.Provider != "stub-provider" || got.Model != "stub-model" || got.Mode != mode {
+				t.Errorf("mode %q: audited %+v, want provider=stub-provider model=stub-model mode=%s", mode, got, mode)
+			}
+		})
+	}
+}
+
+// TestPricingGate_ZeroRatedEntryIsNotPricing asserts that a pricing row which
+// exists but carries no usable rates — a misspelled YAML field unmarshals to
+// zero — is treated as missing. A presence-only check passed such a row while
+// recording zero spend for every request.
+func TestPricingGate_ZeroRatedEntryIsNotPricing(t *testing.T) {
+	pricing := &config.PricingConfig{Providers: map[string]config.ProviderPricing{
+		"stub-provider": {Models: map[string]config.PriceEntry{
+			"stub-model": {}, // key present, every rate zero
+		}},
+	}}
+	w := doPricingRequest(t, newPricingTestHandler("stub-provider", "stub-model", "deny", pricing, nil))
+	if w.Code != http.StatusPaymentRequired {
+		t.Errorf("expected 402 for a zero-rated pricing entry, got %d", w.Code)
+	}
+}

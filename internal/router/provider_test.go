@@ -57,7 +57,7 @@ func TestResolveRoute_UnknownModel(t *testing.T) {
 	registry := newTestRegistry("openai")
 	cfg := modelsCfgWith(map[string]config.ModelMapping{})
 
-	_, _, err := ResolveRoute(cfg, registry, nil, "nonexistent", "INTERNAL")
+	_, err := ResolveRoute(cfg, registry, nil, "nonexistent", "INTERNAL")
 	if err == nil {
 		t.Fatal("expected error for unknown model")
 	}
@@ -75,15 +75,15 @@ func TestResolveRoute_PrimaryProvider(t *testing.T) {
 		},
 	})
 
-	adapter, model, err := ResolveRoute(cfg, registry, nil, "gpt-4o", "INTERNAL")
+	route, err := ResolveRoute(cfg, registry, nil, "gpt-4o", "INTERNAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if model != "gpt-4o" {
-		t.Errorf("expected model gpt-4o, got %s", model)
+	if route.Model != "gpt-4o" {
+		t.Errorf("expected model gpt-4o, got %s", route.Model)
 	}
-	if adapter.Name() != "openai" {
-		t.Errorf("expected adapter openai, got %s", adapter.Name())
+	if route.ProviderKey != "openai" {
+		t.Errorf("expected adapter openai, got %s", route.ProviderKey)
 	}
 }
 
@@ -107,15 +107,15 @@ func TestResolveRoute_ClassificationGating_BlocksPrimary(t *testing.T) {
 	})
 
 	// RESTRICTED data exceeds INTERNAL ceiling → should skip openai, use vllm
-	adapter, model, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
+	route, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if adapter.Name() != "internal_vllm" {
-		t.Errorf("expected internal_vllm (fallback), got %s", adapter.Name())
+	if route.ProviderKey != "internal_vllm" {
+		t.Errorf("expected internal_vllm (fallback), got %s", route.ProviderKey)
 	}
-	if model != "llama-70b" {
-		t.Errorf("expected llama-70b, got %s", model)
+	if route.Model != "llama-70b" {
+		t.Errorf("expected llama-70b, got %s", route.Model)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestResolveRoute_ClassificationGating_BlocksAll(t *testing.T) {
 	})
 
 	// RESTRICTED data exceeds all ceilings → should fail
-	_, _, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
+	_, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err == nil {
 		t.Fatal("expected error when all providers are below classification ceiling")
 	}
@@ -158,12 +158,12 @@ func TestResolveRoute_ClassificationGating_AllowsEqualLevel(t *testing.T) {
 	})
 
 	// CONFIDENTIAL data with CONFIDENTIAL ceiling → should be allowed
-	adapter, _, err := ResolveRoute(cfg, registry, nil, "test-model", "CONFIDENTIAL")
+	route, err := ResolveRoute(cfg, registry, nil, "test-model", "CONFIDENTIAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if adapter.Name() != "openai" {
-		t.Errorf("expected openai, got %s", adapter.Name())
+	if route.ProviderKey != "openai" {
+		t.Errorf("expected openai, got %s", route.ProviderKey)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestResolveRoute_NoCeiling_AllowsAll(t *testing.T) {
 	})
 
 	// RESTRICTED data with no ceiling → should be allowed
-	_, _, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
+	_, err := ResolveRoute(cfg, registry, nil, "test-model", "RESTRICTED")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,14 +211,14 @@ func TestResolveRoute_FallbackOrder(t *testing.T) {
 		},
 	})
 
-	adapter, model, err := ResolveRoute(cfg, registry, nil, "test-model", "INTERNAL")
+	route, err := ResolveRoute(cfg, registry, nil, "test-model", "INTERNAL")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if adapter.Name() != "provider-c" {
-		t.Errorf("expected provider-c, got %s", adapter.Name())
+	if route.ProviderKey != "provider-c" {
+		t.Errorf("expected provider-c, got %s", route.ProviderKey)
 	}
-	if model != "model-c" {
-		t.Errorf("expected model-c, got %s", model)
+	if route.Model != "model-c" {
+		t.Errorf("expected model-c, got %s", route.Model)
 	}
 }
