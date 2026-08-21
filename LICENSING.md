@@ -10,12 +10,16 @@ The Apache core includes:
 - **Auth and access control** — API key management, classification-based policies, OPA integration
 - **Security filters** — secrets scanning, PII filtering, prompt injection detection
 - **Audit logging** — structured logs for every request and policy decision
-- **Hash-chained tamper-evident audit** — Merkle checkpoint design so any deployment can prove its own audit trail has not been altered (T24)
-- **Audit read API** — JSON and CSV export so you can pull records for review (T23)
-- **Retention configuration and purge** — set how long audit records are kept and remove them on schedule (T20)
-- **Compliance mapping** — documentation mapping gateway controls to common regulatory frameworks (T19)
 - **No-payload conformance test** — verifiable proof that request bodies are not stored in the audit trail (T22)
 - **Observability** — Prometheus metrics, structured logging, request tracing
+
+Committed to the open core, but **not yet shipped** — no release contains them
+today, and nothing above should be read as available:
+
+- **Hash-chained tamper-evident audit** — Merkle checkpoints, so a deployment can prove its own audit trail has not been altered (T24) — in progress
+- **Retention configuration and purge** — set how long audit records are kept and remove them on schedule (T20) — in progress
+- **Audit read API** — JSON and CSV export for pulling records for review (T23) — planned
+- **Compliance mapping** — documentation mapping gateway controls to common regulatory frameworks (T19) — planned
 
 No usage cap. No time limit. No SaaS carve-out. If you run it, modify it, or build a product on top of it, the Apache 2.0 terms apply — see [LICENSE](./LICENSE).
 
