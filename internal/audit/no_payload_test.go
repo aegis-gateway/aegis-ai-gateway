@@ -16,6 +16,7 @@ package audit_test
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -34,64 +35,102 @@ var payloadColumnPattern = regexp.MustCompile(
 // e.g. "    column_name  TYPE …" → "column_name".
 var sqlColumnDeclPattern = regexp.MustCompile(`^\s+(\w+)\s+\w`)
 
-// TestNoPayload_SchemaIntrospection parses the *.up.sql files for audit_logs
-// (migration 002) and audit_events (migration 005) and fails if any column
-// name matches a set of payload-indicative words.
+// auditTablePattern matches a CREATE TABLE or ALTER TABLE statement targeting
+// one of the audit tables, capturing the statement kind and the table name.
+var auditTablePattern = regexp.MustCompile(
+	`(?i)\b(CREATE\s+TABLE|ALTER\s+TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?(audit_\w+)`)
+
+// alterAddColumnPattern extracts the column name from an ADD COLUMN clause.
+var alterAddColumnPattern = regexp.MustCompile(
+	`(?i)\bADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)`)
+
+// TestNoPayload_SchemaIntrospection scans *every* up migration for columns added
+// to an audit table and fails if any name matches a payload-indicative word.
+//
+// It deliberately does not hardcode migration 002 and 005: a later migration
+// such as "ALTER TABLE audit_logs ADD COLUMN payload TEXT" would slip past a
+// fixed list, which is exactly the regression this test exists to prevent.
 //
 // Allowed columns include metadata names such as "error_message", "user_agent",
-// "filter_results", "event_type", etc. — none of which match the anchored
-// pattern below.
+// "filter_results", "event_type" — none of which match the anchored pattern.
 //
 // This test does NOT connect to a database; it reads files from disk.
 func TestNoPayload_SchemaIntrospection(t *testing.T) {
 	t.Parallel()
 
-	migrations := map[string]string{
-		"002_create_audit_logs.up.sql":   "../../migrations/002_create_audit_logs.up.sql",
-		"005_create_audit_events.up.sql": "../../migrations/005_create_audit_events.up.sql",
+	paths, err := filepath.Glob("../../migrations/*.up.sql")
+	if err != nil {
+		t.Fatalf("globbing migrations: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no up migrations found — the schema guarantee is unverified")
 	}
 
-	for filename, path := range migrations {
-		t.Run(filename, func(t *testing.T) {
-			t.Parallel()
+	var auditMigrations int
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("cannot read migration %s: %v", path, err)
+		}
+		filename := filepath.Base(path)
 
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("cannot read migration %s: %v", path, err)
+		// Walk statement by statement so a migration touching several tables
+		// only has its audit-table statements inspected.
+		for _, stmt := range strings.Split(string(data), ";") {
+			m := auditTablePattern.FindStringSubmatch(stmt)
+			if m == nil {
+				continue
+			}
+			auditMigrations++
+			kind, table := strings.ToUpper(strings.Fields(m[1])[0]), m[2]
+
+			var cols []string
+			if kind == "CREATE" {
+				for _, line := range strings.Split(stmt, "\n") {
+					if c := sqlColumnDeclPattern.FindStringSubmatch(line); c != nil {
+						cols = append(cols, c[1])
+					}
+				}
+			} else {
+				for _, c := range alterAddColumnPattern.FindAllStringSubmatch(stmt, -1) {
+					cols = append(cols, c[1])
+				}
 			}
 
-			for _, line := range strings.Split(string(data), "\n") {
-				m := sqlColumnDeclPattern.FindStringSubmatch(line)
-				if m == nil {
-					continue
-				}
-				colName := strings.ToLower(m[1])
-				if payloadColumnPattern.MatchString(colName) {
-					t.Errorf("%s: column %q looks like it may hold payload content (line: %q)",
-						filename, m[1], strings.TrimSpace(line))
+			for _, col := range cols {
+				if payloadColumnPattern.MatchString(strings.ToLower(col)) {
+					t.Errorf("%s: %s %s adds column %q, which looks like it may hold "+
+						"payload content — the audit trail must store metadata only",
+						filename, kind, table, col)
 				}
 			}
-		})
+		}
 	}
+
+	if auditMigrations == 0 {
+		t.Fatal("scanned migrations but found no audit-table statements — " +
+			"the test is not actually inspecting the audit schema")
+	}
+	t.Logf("inspected %d audit-table statement(s) across %d migration file(s)", auditMigrations, len(paths))
 }
 
 // payloadFieldNames is the set of filter.Result field names that would indicate
 // the struct carries matched user content rather than only metadata.
 var payloadFieldNames = map[string]bool{
-	"MatchedText": true,
-	"Content":     true,
-	"Payload":     true,
-	"RawInput":    true,
-	"RawOutput":   true,
-	"Sample":      true,
-	"Excerpt":     true,
-	"Body":        true,
-	"Text":        true,
-	"Prompt":      true,
-	"Response":    true,
-	"Input":       true,
-	"Output":      true,
-	"Completion":  true,
+	"MatchedText":   true,
+	"Content":       true,
+	"Payload":       true,
+	"RawInput":      true,
+	"RawOutput":     true,
+	"Sample":        true,
+	"Excerpt":       true,
+	"Body":          true,
+	"Text":          true,
+	"Prompt":        true,
+	"Response":      true,
+	"Input":         true,
+	"Output":        true,
+	"Completion":    true,
 	"MatchedString": true,
 }
 
@@ -116,7 +155,7 @@ func TestNoPayload_FilterResultStruct(t *testing.T) {
 func assertNoPayloadFields(t *testing.T, typ reflect.Type, visited map[reflect.Type]bool) {
 	t.Helper()
 
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if typ.Kind() != reflect.Struct || visited[typ] {
@@ -143,7 +182,7 @@ func assertNoPayloadFields(t *testing.T, typ reflect.Type, visited map[reflect.T
 
 		// Recurse into embedded / nested struct types.
 		ft := field.Type
-		if ft.Kind() == reflect.Ptr {
+		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
 		if ft.Kind() == reflect.Struct {

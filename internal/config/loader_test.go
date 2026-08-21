@@ -154,6 +154,7 @@ func TestLoader_LoadAndAccessors(t *testing.T) {
 	writeTestFile(t, dir, "gateway.yaml", "server:\n  host: \"0.0.0.0\"\n  port: 3000\n")
 	writeTestFile(t, dir, "models.yaml", "models:\n  gpt-4o:\n    primary:\n      provider: openai\n      model: gpt-4o\n")
 	writeTestFile(t, dir, "providers.yaml", "providers:\n  openai:\n    name: openai\n    base_url: https://api.openai.com/v1\n")
+	writeTestFile(t, dir, "pricing.yaml", "verified_at: \"2026-08-21\"\nproviders:\n  openai:\n    source_url: https://openai.com/api/pricing/\n    models:\n      gpt-4o:\n        input: 2.5\n        output: 10.0\n")
 
 	logger := slog.Default()
 	loader := NewLoader(dir, logger)
@@ -183,6 +184,7 @@ func TestLoader_OnReload(t *testing.T) {
 	writeTestFile(t, dir, "gateway.yaml", "server:\n  port: 1111\n")
 	writeTestFile(t, dir, "models.yaml", "models: {}\n")
 	writeTestFile(t, dir, "providers.yaml", "providers: {}\n")
+	writeTestFile(t, dir, "pricing.yaml", "verified_at: \"2026-08-21\"\nproviders: {}\n")
 
 	logger := slog.Default()
 	loader := NewLoader(dir, logger)

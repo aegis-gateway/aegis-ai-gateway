@@ -21,27 +21,36 @@ import (
 // It MUST NOT appear in any audit table row after the request is processed.
 const canaryValue = "CANARY_PAYLOAD_8f4a2b91e3c7d056"
 
-// fakeAWSKey is a well-known fake AWS access key that should trigger the
-// secrets filter and cause the request to be blocked.
+// fakeAWSKey is AWS's own documentation example key. It matches the
+// AKIA[0-9A-Z]{16} pattern in internal/filter/secrets/patterns.go, so the
+// secrets filter blocks the request before it reaches a provider.
 const fakeAWSKey = "AKIAIOSFODNN7EXAMPLE"
 
-// TestNoPayload_CanaryEndToEnd sends a request containing a canary string
-// embedded alongside a fake AWS key (to trigger secrets filtering), then
-// asserts:
-//  1. The gateway returns a blocking response (HTTP 4xx).
-//  2. The canary string does NOT appear in any row of audit_logs or
-//     audit_events — confirming the gateway persists zero payload.
-//  3. The canary is not surfaced in structured log output captured by
-//     slog at INFO level (verified via the absence from audit DB which is
-//     the primary persistence path; direct log-line capture requires
-//     server-side stdout redirection and is noted as a best-effort check).
+// canaryModel must be a real alias in configs/models.yaml. Using a model that
+// does not exist would make the test pass for the wrong reason: routing would
+// fail and the request would never traverse the filter → audit path.
+const canaryModel = "aegis-fast"
+
+// blockedStatus is what httputil.WriteContentBlockedError emits for a filter
+// block. Asserting the exact status matters — a looser "any 4xx" check cannot
+// tell a real filter block apart from a 401 auth failure, a 400 validation
+// error, or a 503 unknown-model, none of which exercise the audited path, and
+// all of which would make the canary trivially absent.
+const blockedStatus = 451
+
+// TestNoPayload_CanaryEndToEnd proves the zero-retention guarantee by
+// contradiction rather than by absence:
 //
-// Requires:
-//   - TEST_DATABASE_URL — PostgreSQL DSN for the AEGIS database
-//   - TEST_SERVER_URL   — Base URL of a running AEGIS gateway (e.g. http://localhost:8080)
-//   - TEST_API_KEY      — A valid API key accepted by the gateway
+//  1. Send a request carrying a canary string alongside a fake AWS key, under
+//     a request ID we choose, so the row can be found deterministically.
+//  2. Assert the gateway blocked it with exactly 451.
+//  3. Assert an audit row WAS written for that request ID — the positive
+//     control. Without this, "canary not found" is satisfied by an empty
+//     table and the test proves nothing.
+//  4. Only then assert the canary appears in no audit row.
 //
-// Skips cleanly when any required env var is absent.
+// Requires TEST_DATABASE_URL, TEST_SERVER_URL, and TEST_API_KEY; skips cleanly
+// when any is absent.
 func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	serverURL := os.Getenv("TEST_SERVER_URL")
@@ -53,7 +62,6 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 
-	// --- Connect to database ---
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("connect to database: %v", err)
@@ -64,34 +72,29 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 		t.Fatalf("ping database: %v", err)
 	}
 
-	// --- Build request with canary + secrets-filter trigger ---
-	// The canary is embedded in the user message alongside a fake AWS key.
-	// A correct secrets filter will block this request; the canary must
-	// NOT be persisted in the audit trail.
+	// The gateway echoes an X-Request-ID it is given, so choosing one up front
+	// lets us look up this exact request's audit row instead of guessing.
+	requestID := fmt.Sprintf("req_canary_%d", time.Now().UnixNano())
+
 	reqBody, _ := json.Marshal(map[string]any{
-		"model": "gpt-4o",
-		"messages": []map[string]string{
-			{
-				"role": "user",
-				"content": fmt.Sprintf(
-					"%s Please validate my AWS credentials: %s",
-					canaryValue, fakeAWSKey,
-				),
-			},
-		},
+		"model": canaryModel,
+		"messages": []map[string]string{{
+			"role": "user",
+			"content": fmt.Sprintf("%s Please validate my AWS credentials: %s",
+				canaryValue, fakeAWSKey),
+		}},
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(serverURL, "/")+"/v1/chat/completions",
-		bytes.NewReader(reqBody),
-	)
+		bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Request-ID", requestID)
 
-	// --- Send request ---
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("send request: %v", err)
@@ -99,39 +102,54 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// 1. Assert the request was blocked.
-	if resp.StatusCode < 400 {
-		t.Errorf("expected a blocking response (HTTP 4xx), got %d — "+
-			"the secrets filter should have blocked the fake AWS key; "+
-			"response body: %s", resp.StatusCode, body)
-	} else {
-		t.Logf("gateway correctly blocked the request with HTTP %d", resp.StatusCode)
+	// 1. The request must be blocked by the secrets filter specifically.
+	if resp.StatusCode != blockedStatus {
+		t.Fatalf("expected HTTP %d from the secrets filter, got %d — the request did "+
+			"not traverse the filter → audit path, so this test cannot prove anything "+
+			"about retention; response body: %s", blockedStatus, resp.StatusCode, body)
 	}
+	t.Logf("gateway blocked the request with HTTP %d as expected", resp.StatusCode)
 
-	// Give the async audit writer (Logger.Log uses a goroutine) time to flush.
-	time.Sleep(500 * time.Millisecond)
+	// 2. Positive control: the audit writer is asynchronous, so poll for the
+	//    row rather than sleeping a fixed interval.
+	deadline := time.Now().Add(10 * time.Second)
+	var found int
+	for time.Now().Before(deadline) {
+		err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM audit_events WHERE request_id = $1 AND event_type = 'filter_block'`,
+			requestID).Scan(&found)
+		if err != nil {
+			t.Fatalf("querying audit_events for the positive control: %v", err)
+		}
+		if found > 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if found == 0 {
+		t.Fatalf("no filter_block audit row was written for request %q — without a "+
+			"confirmed audit write, the canary being absent proves nothing", requestID)
+	}
+	t.Logf("positive control satisfied: %d filter_block row(s) written for %s", found, requestID)
 
-	// 2. Assert the canary does not appear in any audit table row.
+	// 3. Now the absence check is meaningful: the audit path demonstrably ran
+	//    for this request, and the payload still must not be in it.
 	for _, table := range []string{"audit_logs", "audit_events"} {
 		assertCanaryAbsent(ctx, t, pool, table, canaryValue)
 	}
 
 	if !t.Failed() {
-		t.Logf("zero-retention confirmed: canary %q absent from all audit rows", canaryValue)
+		t.Logf("zero-retention confirmed: audit row written for %s, canary %q absent from all audit rows",
+			requestID, canaryValue)
 	}
 }
 
-// assertCanaryAbsent converts each audit table row to JSON text and asserts
-// the canary string does not appear anywhere — catching any column type.
+// assertCanaryAbsent serialises each audit row to JSON text and asserts the
+// canary string appears nowhere — catching any column, including JSONB.
 func assertCanaryAbsent(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, canary string) {
 	t.Helper()
 
-	// row_to_json serialises the entire row including all JSONB columns.
-	// Using a table alias so PostgreSQL resolves the composite type.
-	query := fmt.Sprintf(
-		`SELECT COUNT(*) FROM %s t WHERE row_to_json(t)::text ILIKE $1`,
-		table,
-	)
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s t WHERE row_to_json(t)::text ILIKE $1`, table)
 
 	var count int
 	if err := pool.QueryRow(ctx, query, "%"+canary+"%").Scan(&count); err != nil {
