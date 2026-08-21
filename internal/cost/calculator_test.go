@@ -20,165 +20,148 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
 
-func TestCalculator_Calculate(t *testing.T) {
-	tests := []struct {
-		name              string
-		provider          string
-		model             string
-		promptTokens      int
-		completionTokens  int
-		expectedCost      float64
-		expectedFound     bool
-	}{
-		{
-			name:             "OpenAI GPT-4o standard request",
-			provider:         "openai",
-			model:            "gpt-4o",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedCost:     0.0025*1 + 0.01*0.5, // 1000/1000 * 0.0025 + 500/1000 * 0.01 = 0.0075
-			expectedFound:    true,
-		},
-		{
-			name:             "OpenAI GPT-4o-mini economical",
-			provider:         "openai",
-			model:            "gpt-4o-mini",
-			promptTokens:     10000,
-			completionTokens: 2000,
-			expectedCost:     0.00015*10 + 0.0006*2, // 10000/1000 * 0.00015 + 2000/1000 * 0.0006 = 0.0027
-			expectedFound:    true,
-		},
-		{
-			name:             "Anthropic Claude Sonnet",
-			provider:         "anthropic",
-			model:            "claude-sonnet-4-5-20250929",
-			promptTokens:     2500,
-			completionTokens: 1500,
-			expectedCost:     0.003*2.5 + 0.015*1.5, // 2500/1000 * 0.003 + 1500/1000 * 0.015 = 0.03
-			expectedFound:    true,
-		},
-		{
-			name:             "Anthropic Claude Haiku fast",
-			provider:         "anthropic",
-			model:            "claude-haiku-4-5-20251001",
-			promptTokens:     5000,
-			completionTokens: 1000,
-			expectedCost:     0.0008*5 + 0.004*1, // 5000/1000 * 0.0008 + 1000/1000 * 0.004 = 0.008
-			expectedFound:    true,
-		},
-		{
-			name:             "Anthropic Claude Opus expensive",
-			provider:         "anthropic",
-			model:            "claude-opus-4-5-20250929",
-			promptTokens:     1000,
-			completionTokens: 1000,
-			expectedCost:     0.015*1 + 0.075*1, // 1000/1000 * 0.015 + 1000/1000 * 0.075 = 0.09
-			expectedFound:    true,
-		},
-		{
-			name:             "Azure OpenAI GPT-4o",
-			provider:         "azure_openai",
-			model:            "gpt-4o",
-			promptTokens:     3000,
-			completionTokens: 1500,
-			expectedCost:     0.0025*3 + 0.01*1.5, // 3000/1000 * 0.0025 + 1500/1000 * 0.01 = 0.0225
-			expectedFound:    true,
-		},
-		{
-			name:             "Zero tokens",
-			provider:         "openai",
-			model:            "gpt-4o",
-			promptTokens:     0,
-			completionTokens: 0,
-			expectedCost:     0.0,
-			expectedFound:    true,
-		},
-		{
-			name:             "Unknown provider",
-			provider:         "unknown",
-			model:            "mystery-model",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedCost:     0.0,
-			expectedFound:    false,
-		},
-		{
-			name:             "Unknown model for known provider",
-			provider:         "openai",
-			model:            "gpt-5-turbo",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedCost:     0.0,
-			expectedFound:    false,
-		},
-		{
-			name:             "Only prompt tokens",
-			provider:         "openai",
-			model:            "gpt-4o-mini",
-			promptTokens:     5000,
-			completionTokens: 0,
-			expectedCost:     0.00015*5, // 5000/1000 * 0.00015 = 0.00075
-			expectedFound:    true,
-		},
-		{
-			name:             "Only completion tokens",
-			provider:         "openai",
-			model:            "gpt-4o-mini",
-			promptTokens:     0,
-			completionTokens: 3000,
-			expectedCost:     0.0006*3, // 3000/1000 * 0.0006 = 0.0018
-			expectedFound:    true,
-		},
-	}
-
-	modelsCfg := func() *config.ModelsConfig {
-		return &config.ModelsConfig{
-			Pricing: map[string]map[string]config.PriceEntry{
-				"openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
-					},
-					"gpt-4o-mini": {
-						Input:  0.00015,
-						Output: 0.0006,
-					},
-				},
+func makeTestPricingCfg() func() *config.PricingConfig {
+	return func() *config.PricingConfig {
+		return &config.PricingConfig{
+			VerifiedAt: "2026-08-21",
+			Providers: map[string]config.ProviderPricing{
 				"anthropic": {
-					"claude-sonnet-4-5-20250929": {
-						Input:  0.003,
-						Output: 0.015,
-					},
-					"claude-haiku-4-5-20251001": {
-						Input:  0.0008,
-						Output: 0.004,
-					},
-					"claude-opus-4-5-20250929": {
-						Input:  0.015,
-						Output: 0.075,
+					Models: map[string]config.PriceEntry{
+						"claude-opus-5": {
+							Input: 5.00, CachedInput: 0.50, Output: 25.00,
+							BatchMultiplier: 0.5,
+						},
+						"claude-sonnet-5": {
+							Input: 2.00, CachedInput: 0.20, Output: 10.00,
+							BatchMultiplier: 0.5,
+						},
+						"claude-haiku-4-5-20251001": {
+							Input: 1.00, CachedInput: 0.10, Output: 5.00,
+							BatchMultiplier: 0.5,
+						},
 					},
 				},
-				"azure_openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
+				"openai": {
+					Models: map[string]config.PriceEntry{
+						"gpt-5.6-sol": {
+							Input: 5.00, CachedInput: 0.50, Output: 30.00,
+							BatchMultiplier: 0.5,
+							LongContext: &config.LongContextPricing{
+								ThresholdTokens: 272000,
+								Input:           10.00,
+								CachedInput:     1.00,
+								Output:          45.00,
+							},
+						},
+						"gpt-5.6-luna": {
+							Input: 0.20, CachedInput: 0.02, Output: 1.20,
+							BatchMultiplier: 0.5,
+						},
 					},
 				},
 			},
 		}
 	}
+}
 
-	calc := NewCalculator(modelsCfg)
+func TestCalculator_Calculate(t *testing.T) {
+	calc := NewCalculator(makeTestPricingCfg())
+
+	tests := []struct {
+		name          string
+		details       RequestDetails
+		expectedCost  float64
+		expectedFound bool
+	}{
+		{
+			name: "standard anthropic request",
+			details: RequestDetails{
+				Provider: "anthropic", Model: "claude-opus-5",
+				PromptTokens: 1_000_000, CompletionTokens: 1_000_000,
+			},
+			// 1M * $5/M + 1M * $25/M = $30
+			expectedCost:  30.00,
+			expectedFound: true,
+		},
+		{
+			name: "cached tokens use cached_input rate",
+			details: RequestDetails{
+				Provider: "anthropic", Model: "claude-opus-5",
+				PromptTokens: 1_000_000, CachedTokens: 500_000,
+				CompletionTokens: 0,
+			},
+			// 500K uncached * $5/M + 500K cached * $0.50/M = $2.50 + $0.25 = $2.75
+			expectedCost:  2.75,
+			expectedFound: true,
+		},
+		{
+			name: "batch job applies batch_multiplier",
+			details: RequestDetails{
+				Provider: "anthropic", Model: "claude-sonnet-5",
+				PromptTokens: 1_000_000, CompletionTokens: 1_000_000,
+				IsBatch: true,
+			},
+			// ($2 + $10) * 0.5 = $6
+			expectedCost:  6.00,
+			expectedFound: true,
+		},
+		{
+			name: "openai long context tier",
+			details: RequestDetails{
+				Provider: "openai", Model: "gpt-5.6-sol",
+				PromptTokens: 300_000, CompletionTokens: 50_000,
+			},
+			// total input 300K >= 272K → long_context: $10/M input, $45/M output
+			// 300K * $10/M + 50K * $45/M = $3.00 + $2.25 = $5.25
+			expectedCost:  5.25,
+			expectedFound: true,
+		},
+		{
+			name: "openai standard context below threshold",
+			details: RequestDetails{
+				Provider: "openai", Model: "gpt-5.6-sol",
+				PromptTokens: 100_000, CompletionTokens: 10_000,
+			},
+			// 100K * $5/M + 10K * $30/M = $0.50 + $0.30 = $0.80
+			expectedCost:  0.80,
+			expectedFound: true,
+		},
+		{
+			name: "zero tokens",
+			details: RequestDetails{
+				Provider: "anthropic", Model: "claude-haiku-4-5-20251001",
+			},
+			expectedCost:  0.0,
+			expectedFound: true,
+		},
+		{
+			name: "unknown provider",
+			details: RequestDetails{
+				Provider: "unknown", Model: "mystery-model",
+				PromptTokens: 1000, CompletionTokens: 500,
+			},
+			expectedCost:  0.0,
+			expectedFound: false,
+		},
+		{
+			name: "unknown model for known provider",
+			details: RequestDetails{
+				Provider: "openai", Model: "gpt-4o",
+				PromptTokens: 1000, CompletionTokens: 500,
+			},
+			expectedCost:  0.0,
+			expectedFound: false,
+		},
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cost, found := calc.Calculate(tt.provider, tt.model, tt.promptTokens, tt.completionTokens)
+			cost, found := calc.Calculate(tt.details)
 
 			if found != tt.expectedFound {
 				t.Errorf("Calculate() found = %v, want %v", found, tt.expectedFound)
 			}
 
-			// Use a small epsilon for float comparison
 			const epsilon = 0.0001
 			if diff := cost - tt.expectedCost; diff < -epsilon || diff > epsilon {
 				t.Errorf("Calculate() cost = %v, want %v (diff: %v)", cost, tt.expectedCost, diff)
@@ -187,110 +170,79 @@ func TestCalculator_Calculate(t *testing.T) {
 	}
 }
 
+func TestCalculator_CalculateSimple(t *testing.T) {
+	calc := NewCalculator(makeTestPricingCfg())
+
+	cost, found := calc.CalculateSimple("anthropic", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000)
+	if !found {
+		t.Fatal("expected pricing to be found")
+	}
+	// $1/M input + $5/M output = $6
+	const want = 6.00
+	const epsilon = 0.0001
+	if diff := cost - want; diff < -epsilon || diff > epsilon {
+		t.Errorf("CalculateSimple() = %v, want %v", cost, want)
+	}
+}
+
 func TestCalculator_CacheInvalidation(t *testing.T) {
-	modelsCfg := func() *config.ModelsConfig {
-		return &config.ModelsConfig{
-			Pricing: map[string]map[string]config.PriceEntry{
-				"openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
-					},
-				},
-			},
-		}
-	}
+	calc := NewCalculator(makeTestPricingCfg())
 
-	calc := NewCalculator(modelsCfg)
-
-	// First call should populate cache
-	cost1, found1 := calc.Calculate("openai", "gpt-4o", 1000, 500)
+	cost1, found1 := calc.CalculateSimple("openai", "gpt-5.6-luna", 1_000_000, 1_000_000)
 	if !found1 {
-		t.Fatal("Expected pricing to be found")
+		t.Fatal("expected pricing to be found")
 	}
-
-	// Verify cache has entry
 	if len(calc.priceCache) != 1 {
-		t.Errorf("Expected cache to have 1 entry, got %d", len(calc.priceCache))
+		t.Errorf("expected 1 cache entry, got %d", len(calc.priceCache))
 	}
 
-	// Second call should use cache (same result)
-	cost2, found2 := calc.Calculate("openai", "gpt-4o", 1000, 500)
+	cost2, found2 := calc.CalculateSimple("openai", "gpt-5.6-luna", 1_000_000, 1_000_000)
 	if cost1 != cost2 || found1 != found2 {
-		t.Error("Cached result differs from original")
+		t.Error("cached result differs from original")
 	}
 
-	// Invalidate cache
 	calc.InvalidateCache()
 	if len(calc.priceCache) != 0 {
-		t.Errorf("Expected cache to be empty after invalidation, got %d entries", len(calc.priceCache))
+		t.Errorf("expected empty cache after invalidation, got %d entries", len(calc.priceCache))
 	}
 
-	// Third call should repopulate cache
-	cost3, found3 := calc.Calculate("openai", "gpt-4o", 1000, 500)
+	cost3, found3 := calc.CalculateSimple("openai", "gpt-5.6-luna", 1_000_000, 1_000_000)
 	if cost1 != cost3 || found1 != found3 {
-		t.Error("Result after cache invalidation differs")
+		t.Error("result after invalidation differs from original")
 	}
-
 	if len(calc.priceCache) != 1 {
-		t.Errorf("Expected cache to have 1 entry after repopulation, got %d", len(calc.priceCache))
+		t.Errorf("expected 1 cache entry after repopulation, got %d", len(calc.priceCache))
 	}
 }
 
 func TestCalculator_GetModelPrice(t *testing.T) {
-	modelsCfg := func() *config.ModelsConfig {
-		return &config.ModelsConfig{
-			Pricing: map[string]map[string]config.PriceEntry{
-				"openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
-					},
-				},
-			},
-		}
-	}
+	calc := NewCalculator(makeTestPricingCfg())
 
-	calc := NewCalculator(modelsCfg)
-
-	price, found := calc.GetModelPrice("openai", "gpt-4o")
+	price, found := calc.GetModelPrice("anthropic", "claude-opus-5")
 	if !found {
-		t.Fatal("Expected pricing to be found")
+		t.Fatal("expected pricing to be found")
+	}
+	// $5/M = $0.000005 per token
+	wantInput := 5.00 / 1_000_000.0
+	const epsilon = 1e-10
+	if diff := price.InputPerToken - wantInput; diff < -epsilon || diff > epsilon {
+		t.Errorf("InputPerToken = %v, want %v", price.InputPerToken, wantInput)
 	}
 
-	if price.InputPerToken != 0.0025 {
-		t.Errorf("Expected input price 0.0025, got %v", price.InputPerToken)
-	}
-
-	if price.OutputPerToken != 0.01 {
-		t.Errorf("Expected output price 0.01, got %v", price.OutputPerToken)
-	}
-
-	// Test unknown model
-	_, found = calc.GetModelPrice("openai", "unknown")
+	_, found = calc.GetModelPrice("openai", "does-not-exist")
 	if found {
-		t.Error("Expected pricing not to be found for unknown model")
+		t.Error("expected not found for unknown model")
 	}
 }
 
 func BenchmarkCalculator_Calculate(b *testing.B) {
-	modelsCfg := func() *config.ModelsConfig {
-		return &config.ModelsConfig{
-			Pricing: map[string]map[string]config.PriceEntry{
-				"openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
-					},
-				},
-			},
-		}
+	calc := NewCalculator(makeTestPricingCfg())
+	details := RequestDetails{
+		Provider: "openai", Model: "gpt-5.6-sol",
+		PromptTokens: 1000, CompletionTokens: 500,
 	}
-
-	calc := NewCalculator(modelsCfg)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		calc.Calculate("openai", "gpt-4o", 1000, 500)
+		calc.Calculate(details)
 	}
 }

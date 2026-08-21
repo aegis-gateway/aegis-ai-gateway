@@ -23,6 +23,19 @@ type Config struct {
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 	Filter    FilterConfig    `yaml:"filter"`
 	Routing   RoutingConfig   `yaml:"routing"`
+	Cost      CostConfig      `yaml:"cost"`
+}
+
+// CostConfig controls how the gateway handles pricing.
+type CostConfig struct {
+	// OnMissingPricing controls behaviour when a routed model has no pricing entry.
+	// "deny"  — reject with 402 and write an audit log entry (default, safest).
+	// "flag"  — proceed but emit an audit log entry and increment aegis_requests_unpriced_total.
+	// "allow" — silent pass-through; preserved for dev/test environments only.
+	OnMissingPricing string `yaml:"on_missing_pricing"`
+	// PricingStalenessThresholdDays is how many days after pricing.yaml's verified_at
+	// before a boot-time warning is logged. Default: 90.
+	PricingStalenessThresholdDays int `yaml:"pricing_staleness_threshold_days"`
 }
 
 type ServerConfig struct {
@@ -183,6 +196,10 @@ func DefaultConfig() *Config {
 				RecoveryProbeInterval: 15 * time.Second,
 			},
 			HealthCheckInterval: 10 * time.Second,
+		},
+		Cost: CostConfig{
+			OnMissingPricing:              "deny",
+			PricingStalenessThresholdDays: 90,
 		},
 	}
 }

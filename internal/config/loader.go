@@ -65,6 +65,7 @@ type Loader struct {
 	mu        sync.RWMutex
 	cfg       *Config
 	models    *ModelsConfig
+	pricing   *PricingConfig
 	providers *ProvidersConfig
 	watchers  []func()
 	logger    *slog.Logger
@@ -88,6 +89,11 @@ func (l *Loader) Load() error {
 		return fmt.Errorf("load models config: %w", err)
 	}
 
+	pricing := &PricingConfig{}
+	if err := LoadFile(l.configDir+"/pricing.yaml", pricing); err != nil {
+		return fmt.Errorf("load pricing config: %w", err)
+	}
+
 	providers := &ProvidersConfig{}
 	if err := LoadFile(l.configDir+"/providers.yaml", providers); err != nil {
 		return fmt.Errorf("load providers config: %w", err)
@@ -96,6 +102,7 @@ func (l *Loader) Load() error {
 	l.mu.Lock()
 	l.cfg = cfg
 	l.models = models
+	l.pricing = pricing
 	l.providers = providers
 	l.mu.Unlock()
 
@@ -113,6 +120,12 @@ func (l *Loader) Models() *ModelsConfig {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.models
+}
+
+func (l *Loader) Pricing() *PricingConfig {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.pricing
 }
 
 func (l *Loader) Providers() *ProvidersConfig {

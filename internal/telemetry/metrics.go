@@ -45,6 +45,12 @@ type Metrics struct {
 	// Policy reload metrics
 	PolicyReloadTotal *prometheus.CounterVec
 
+	// Unpriced-model metrics
+	UnpricedRequestsTotal *prometheus.CounterVec
+
+	// Pricing freshness gauge (set once at startup).
+	PricingAgeDays prometheus.Gauge
+
 	// Streaming metrics
 	StreamingChunkTotal     *prometheus.CounterVec
 	StreamingTimeToFirstToken *prometheus.HistogramVec
@@ -133,6 +139,16 @@ func NewMetrics() *Metrics {
 			Name: "aegis_policy_reload_total",
 			Help: "Total number of policy reload attempts.",
 		}, []string{"status"}),
+
+		UnpricedRequestsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_requests_unpriced_total",
+			Help: "Total requests routed to a model with no pricing configuration. Incremented under deny and flag modes.",
+		}, []string{"provider", "model", "mode"}),
+
+		PricingAgeDays: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_pricing_age_days",
+			Help: "Age in days of the pricing snapshot (computed from configs/pricing.yaml verified_at).",
+		}),
 
 		StreamingChunkTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_streaming_chunk_total",

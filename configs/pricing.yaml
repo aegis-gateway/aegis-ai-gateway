@@ -1,0 +1,81 @@
+# Model pricing snapshot — USD per million tokens.
+# Update this file (and verified_at) whenever a provider announces price changes.
+# See docs/CONFIGURATION.md for field definitions and the "Keeping pricing current" section.
+verified_at: "2026-08-21"
+
+providers:
+  anthropic:
+    source_url: "https://www.anthropic.com/pricing"
+    models:
+      claude-opus-5:
+        input: 5.00
+        cached_input: 0.50
+        cache_write_5m: 0.625
+        output: 25.00
+        batch_multiplier: 0.5
+
+      claude-sonnet-5:
+        input: 2.00
+        cached_input: 0.20
+        cache_write_5m: 0.25
+        output: 10.00
+        batch_multiplier: 0.5
+
+      claude-haiku-4-5-20251001:
+        input: 1.00
+        cached_input: 0.10
+        cache_write_5m: 0.125
+        output: 5.00
+        batch_multiplier: 0.5
+
+      claude-fable-5:
+        input: 10.00
+        cached_input: 1.00
+        cache_write_5m: 1.25
+        output: 50.00
+        batch_multiplier: 0.5
+
+  openai:
+    source_url: "https://openai.com/api/pricing"
+    models:
+      gpt-5.6-sol:
+        input: 5.00
+        cached_input: 0.50
+        cache_write_5m: 6.25
+        output: 30.00
+        batch_multiplier: 0.5
+        regional_uplift: 0.10
+        long_context:
+          threshold_tokens: 272000
+          input: 10.00
+          cached_input: 1.00
+          cache_write_5m: 12.50
+          output: 45.00
+
+      gpt-5.6-terra:
+        input: 2.00
+        cached_input: 0.20
+        cache_write_5m: 2.50
+        output: 12.00
+        batch_multiplier: 0.5
+        regional_uplift: 0.10
+        long_context:
+          threshold_tokens: 272000
+          input: 4.00
+          cached_input: 0.40
+          cache_write_5m: 5.00
+          output: 18.00
+
+      gpt-5.6-luna:
+        input: 0.20
+        cached_input: 0.02
+        cache_write_5m: 0.25
+        output: 1.20
+        batch_multiplier: 0.5
+        regional_uplift: 0.10
+        long_context:
+          threshold_tokens: 272000
+          input: 0.40
+          cached_input: 0.04
+          cache_write_5m: 0.50
+          output: 1.80

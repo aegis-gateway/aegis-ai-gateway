@@ -180,7 +180,7 @@ func (fp *FilterProcessor) RunFilters(
 // ResponseBuilder handles response construction and enrichment.
 type ResponseBuilder struct {
 	costCalc interface {
-		Calculate(provider, model string, promptTokens, completionTokens int) (float64, bool)
+		CalculateSimple(provider, model string, promptTokens, completionTokens int) (float64, bool)
 	}
 }
 
@@ -193,7 +193,7 @@ func (rb *ResponseBuilder) BuildResponse(
 	
 	// Calculate cost using actual provider and model served
 	if rb.costCalc != nil && (aegisResp.Usage.PromptTokens > 0 || aegisResp.Usage.CompletionTokens > 0) {
-		if cost, found := rb.costCalc.Calculate(
+		if cost, found := rb.costCalc.CalculateSimple(
 			aegisResp.Provider,
 			aegisResp.Model,
 			aegisResp.Usage.PromptTokens,
@@ -201,7 +201,8 @@ func (rb *ResponseBuilder) BuildResponse(
 		); found {
 			aegisResp.EstimatedCostUSD = cost
 		} else {
-			slog.Warn("cost calculation failed - no pricing data",
+			slog.Warn("pricing_unknown: no pricing data for served model",
+				"event_type", "pricing_unknown",
 				"provider", aegisResp.Provider,
 				"model", aegisResp.Model,
 				"request_id", reqID,

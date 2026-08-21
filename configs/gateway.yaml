@@ -46,6 +46,15 @@ filter:
     bundle_path: "${OPA_BUNDLE_PATH:configs/policies}"
     evaluation_timeout: "100ms"
 
+cost:
+  # Controls what happens when a request is routed to a model that has no pricing row.
+  # "deny"  — reject with HTTP 402 and write an auditable log entry (default, recommended).
+  # "flag"  — proceed but emit an audit log entry and increment aegis_requests_unpriced_total.
+  # "allow" — silent pass-through (dev/test only; governance bypass risk).
+  on_missing_pricing: deny
+  # Days since pricing.yaml verified_at before a boot-time warning is logged.
+  pricing_staleness_threshold_days: ${PRICING_STALENESS_THRESHOLD_DAYS:90}
+
 routing:
   default_timeout: "30s"
   stream_first_chunk_timeout: "60s"

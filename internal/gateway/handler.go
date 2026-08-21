@@ -207,6 +207,37 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalModel := aegisReq.Model
 	aegisReq.Model = providerModel
 
+	// Enforce pricing policy before dispatching to provider.
+	// This prevents unpriced traffic from silently bypassing spend controls.
+	if h.costCalc != nil && h.cfg != nil {
+		cfg := h.cfg()
+		mode := cfg.Cost.OnMissingPricing
+		if mode == "" {
+			mode = "deny" // safe default
+		}
+		if mode != "allow" && !h.costCalc.HasPricing(adapter.Name(), providerModel) {
+			if h.metrics != nil {
+				h.metrics.UnpricedRequestsTotal.WithLabelValues(adapter.Name(), providerModel, mode).Inc()
+			}
+			slog.Warn("pricing_unknown: no pricing entry for routed model",
+				"event_type", "pricing_unknown",
+				"provider", adapter.Name(),
+				"model", providerModel,
+				"mode", mode,
+				"request_id", reqID,
+				"org_id", authInfo.OrganizationID,
+			)
+			if mode == "deny" {
+				httputil.WriteError(w, reqID, http.StatusPaymentRequired,
+					"billing_error", "pricing_unknown",
+					"no pricing configuration for "+adapter.Name()+"/"+providerModel+"; contact your AEGIS administrator",
+				)
+				return
+			}
+			// mode == "flag": logged and counted above; request proceeds.
+		}
+	}
+
 	// Start monitoring context for cancellation
 	var cleanupMonitor func()
 	if h.contextMonitor != nil {
@@ -266,9 +297,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	aegisResp.RequestID = reqID
 	
-	// Calculate cost using actual provider and model served
+	// Calculate cost using actual provider and model served.
 	if h.costCalc != nil {
-		if cost, found := h.costCalc.Calculate(
+		if cost, found := h.costCalc.CalculateSimple(
 			aegisResp.Provider,
 			aegisResp.Model,
 			aegisResp.Usage.PromptTokens,
@@ -276,7 +307,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		); found {
 			aegisResp.EstimatedCostUSD = cost
 		} else {
-			slog.Warn("cost calculation failed - no pricing data",
+			slog.Warn("pricing_unknown: no pricing data for served model",
+				"event_type", "pricing_unknown",
 				"provider", aegisResp.Provider,
 				"model", aegisResp.Model,
 				"request_id", reqID,
