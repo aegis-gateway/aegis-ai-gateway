@@ -144,9 +144,9 @@ func (sh *StreamingHandler) HandleStream(
 	
 	totalDuration := time.Since(receivedAt)
 	
-	// Calculate final cost if we have token counts
+	// Calculate final cost if we have token counts.
 	if sh.handler.costCalc != nil && metrics.TotalTokens > 0 {
-		if cost, found := sh.handler.costCalc.Calculate(
+		if cost, found := sh.handler.costCalc.CalculateSimple(
 			metrics.Provider,
 			metrics.Model,
 			metrics.PromptTokens,
@@ -154,7 +154,8 @@ func (sh *StreamingHandler) HandleStream(
 		); found {
 			metrics.EstimatedCostUSD = cost
 		} else {
-			slog.Warn("cost calculation failed - no pricing data",
+			slog.Warn("pricing_unknown: no pricing data for served model",
+				"event_type", "pricing_unknown",
 				"provider", metrics.Provider,
 				"model", metrics.Model,
 				"request_id", reqID,

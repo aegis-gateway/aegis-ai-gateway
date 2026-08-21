@@ -36,7 +36,7 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 **What to demo:**
-- Pick any model in the UI (aegis-fast, aegis-gpt4, aegis-reasoning) — each routes to a different provider
+- Pick any model in the UI (aegis-fast, aegis-balanced, aegis-reasoning) — each routes to a different provider
 - Try pasting an AWS key like `AKIAIOSFODNN7EXAMPLE` in a message — the gateway blocks it
 - Check cost tracking: `docker exec aegis-postgres psql -U aegis -d aegis -c "SELECT model_served, SUM(estimated_cost_usd) FROM usage_records GROUP BY model_served;"`
 - View Prometheus metrics: http://localhost:9090/metrics
@@ -51,9 +51,10 @@ See [demos/](demos/) for more examples (curl basics, streaming, cost tracking, s
 
 | Alias | Routes to | Classification |
 |-------|-----------|----------------|
-| `aegis-fast` | Claude Haiku → GPT-4o-mini | INTERNAL |
-| `aegis-gpt4` | GPT-4o → Azure GPT-4o → Claude Sonnet | CONFIDENTIAL |
-| `aegis-reasoning` | Claude Opus → o3 | CONFIDENTIAL |
+| `aegis-fast` | Claude Haiku 4.5 → GPT-5.6-luna | INTERNAL |
+| `aegis-balanced` | Claude Sonnet 5 → GPT-5.6-terra | CONFIDENTIAL |
+| `aegis-reasoning` | Claude Opus 5 → GPT-5.6-sol | CONFIDENTIAL |
+| `aegis-gpt4` | *(deprecated alias → aegis-balanced)* | CONFIDENTIAL |
 
 ## Development Setup
 

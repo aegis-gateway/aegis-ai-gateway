@@ -220,7 +220,7 @@ type mockCostCalculator struct {
 	found bool
 }
 
-func (m *mockCostCalculator) Calculate(provider, model string, promptTokens, completionTokens int) (float64, bool) {
+func (m *mockCostCalculator) CalculateSimple(provider, model string, promptTokens, completionTokens int) (float64, bool) {
 	return m.cost, m.found
 }
 

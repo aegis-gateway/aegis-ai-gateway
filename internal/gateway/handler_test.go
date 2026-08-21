@@ -284,43 +284,43 @@ func TestListModels_FilteredByAllowedModels(t *testing.T) {
 
 // TestCostCalculator_Integration tests cost calculator with handler.
 func TestCostCalculator_Integration(t *testing.T) {
-	modelsCfg := func() *config.ModelsConfig {
-		return &config.ModelsConfig{
-			Pricing: map[string]map[string]config.PriceEntry{
+	// Rates are USD per million tokens in the new pricing schema.
+	pricingCfg := func() *config.PricingConfig {
+		return &config.PricingConfig{
+			VerifiedAt: "2026-08-21",
+			Providers: map[string]config.ProviderPricing{
 				"openai": {
-					"gpt-4o": {
-						Input:  0.0025,
-						Output: 0.01,
+					Models: map[string]config.PriceEntry{
+						"gpt-5.6-sol": {Input: 5.00, CachedInput: 0.50, Output: 30.00, BatchMultiplier: 0.5},
 					},
 				},
 				"anthropic": {
-					"claude-sonnet-4-5-20250929": {
-						Input:  0.003,
-						Output: 0.015,
+					Models: map[string]config.PriceEntry{
+						"claude-sonnet-5": {Input: 2.00, CachedInput: 0.20, Output: 10.00, BatchMultiplier: 0.5},
 					},
 				},
 			},
 		}
 	}
 
-	calc := cost.NewCalculator(modelsCfg)
+	calc := cost.NewCalculator(pricingCfg)
 
-	// Test OpenAI cost calculation
-	cost1, found := calc.Calculate("openai", "gpt-4o", 1000, 500)
+	// Test OpenAI cost: 1M prompt + 0.5M completion → $5 + $15 = $20
+	cost1, found := calc.CalculateSimple("openai", "gpt-5.6-sol", 1_000_000, 500_000)
 	if !found {
-		t.Error("expected pricing to be found for gpt-4o")
+		t.Error("expected pricing to be found for gpt-5.6-sol")
 	}
-	expectedCost := 0.0025*1 + 0.01*0.5 // 0.0075
+	expectedCost := 5.00 + 15.00 // $5/M * 1M + $30/M * 0.5M
 	if abs(cost1-expectedCost) > 0.0001 {
 		t.Errorf("expected cost %f, got %f", expectedCost, cost1)
 	}
 
-	// Test Anthropic cost calculation
-	cost2, found := calc.Calculate("anthropic", "claude-sonnet-4-5-20250929", 2000, 1000)
+	// Test Anthropic cost: 2M prompt + 1M completion → $4 + $10 = $14
+	cost2, found := calc.CalculateSimple("anthropic", "claude-sonnet-5", 2_000_000, 1_000_000)
 	if !found {
-		t.Error("expected pricing to be found for claude-sonnet")
+		t.Error("expected pricing to be found for claude-sonnet-5")
 	}
-	expectedCost2 := 0.003*2 + 0.015*1 // 0.021
+	expectedCost2 := 4.00 + 10.00 // $2/M * 2M + $10/M * 1M
 	if abs(cost2-expectedCost2) > 0.0001 {
 		t.Errorf("expected cost %f, got %f", expectedCost2, cost2)
 	}

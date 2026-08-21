@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -149,6 +150,27 @@ func main() {
 	// Initialize metrics
 	metrics := telemetry.NewMetrics()
 
+	// Export aegis_pricing_age_days and warn if the snapshot is stale.
+	if pricingCfg := loader.Pricing(); pricingCfg != nil && pricingCfg.VerifiedAt != "" {
+		if verifiedAt, err := time.Parse("2006-01-02", pricingCfg.VerifiedAt); err == nil {
+			ageDays := time.Since(verifiedAt).Hours() / 24
+			metrics.PricingAgeDays.Set(ageDays)
+			threshold := cfg.Cost.PricingStalenessThresholdDays
+			if threshold <= 0 {
+				threshold = 90
+			}
+			if int(ageDays) >= threshold {
+				logger.Warn("pricing snapshot is stale",
+					"verified_at", pricingCfg.VerifiedAt,
+					"age_days", int(ageDays),
+					"threshold_days", threshold,
+				)
+			}
+		} else {
+			logger.Warn("could not parse pricing.yaml verified_at", "value", pricingCfg.VerifiedAt, "error", err)
+		}
+	}
+
 	// Start metrics server
 	metricsAddr := fmt.Sprintf(":%d", cfg.Telemetry.MetricsPort)
 	metricsMux := http.NewServeMux()
@@ -244,8 +266,8 @@ func main() {
 
 	// Build handler
 	keyStore := auth.NewCachedKeyStore(dbPool, rdb)
-	costCalc := cost.NewCalculator(func() *config.ModelsConfig {
-		return loader.Models()
+	costCalc := cost.NewCalculator(func() *config.PricingConfig {
+		return loader.Pricing()
 	})
 	// getPrice memoises each provider/model rate, so an fsnotify reload of
 	// models.yaml would otherwise keep costing requests at the old rate for
@@ -254,6 +276,20 @@ func main() {
 		costCalc.InvalidateCache()
 		logger.Info("pricing cache invalidated")
 	})
+	// Startup pricing validation: every routed model must have a pricing entry.
+	// This catches config drift early instead of silently charging zero for unknown models.
+	if missing := cost.ValidatePricingCoverage(loader.Models(), loader.Pricing()); len(missing) > 0 {
+		pairs := make([]string, len(missing))
+		for i, p := range missing {
+			pairs[i] = p.String()
+		}
+		logger.Error("startup validation failed: routed models have no pricing configuration",
+			"missing_pairs", strings.Join(pairs, ", "),
+		)
+		os.Exit(1)
+	}
+	logger.Info("pricing coverage validated: all routed models have pricing entries")
+
 	usageRecorder := storage.NewUsageRecorder(dbPool)
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()

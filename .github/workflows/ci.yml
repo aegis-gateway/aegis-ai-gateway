@@ -100,6 +100,97 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+  audit-conformance:
+    name: Audit Conformance
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aegis
+          POSTGRES_PASSWORD: aegis-dev
+          POSTGRES_DB: aegis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aegis"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_USER: aegis
+      DB_PASSWORD: aegis-dev
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      # CI-only value. The gateway refuses to start without one of >= 32 chars.
+      AEGIS_KEY_PEPPER: ci-only-pepper-not-a-production-secret-000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run migrations
+        run: go run ./cmd/migrate -direction up
+
+      - name: Issue an API key for the canary request
+        run: |
+          set -euo pipefail
+          go run ./cmd/keygen \
+            -org ci-org -team ci-team -name audit-conformance \
+            -env ci -classification INTERNAL -expires 1d | tee /tmp/keygen.out
+          key=$(grep -oE 'aegis-ci-[a-z0-9]{32}' /tmp/keygen.out | head -1)
+          if [ -z "$key" ]; then
+            echo "::error::could not parse an API key out of keygen output"
+            exit 1
+          fi
+          echo "::add-mask::$key"
+          echo "TEST_API_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Start the gateway
+        run: |
+          go run ./cmd/gateway > /tmp/gateway.log 2>&1 &
+          echo $! > /tmp/gateway.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/aegis/v1/health >/dev/null 2>&1; then
+              echo "gateway is up"; exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/gateway.pid)" 2>/dev/null; then
+              echo "::error::gateway exited before becoming healthy"; cat /tmp/gateway.log; exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::gateway did not become healthy in 60s"; cat /tmp/gateway.log; exit 1
+
+      # The canary test is behind the `integration` build tag, so `go test ./...`
+      # in the Test job never compiles it. It needs a live gateway and the audit
+      # database, which is why it gets its own job rather than an env var on that
+      # one.
+      - name: Zero-retention canary
+        run: go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1
+        env:
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+          TEST_SERVER_URL: http://localhost:8080
+
+      - name: Gateway logs
+        if: always()
+        run: cat /tmp/gateway.log || true
+
   build:
     name: Build
     runs-on: ubuntu-latest

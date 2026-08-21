@@ -158,38 +158,62 @@ models:
 
 Routing tries the `primary` route first, then each `fallback` in order, skipping any route whose ceiling is below the request's classification or whose provider's circuit breaker is open.
 
-### Pricing structure
+---
+
+## `configs/pricing.yaml`
+
+Holds all model pricing data, separate from routing. The cost calculator reads this file directly; `models.yaml` carries only routing aliases.
+
+### Why model IDs are pinned
+
+- **Anthropic** — From the 4.6 generation onwards, Anthropic no longer changes prices on dateless alias IDs (e.g. `claude-opus-5`). The ID you configure is the ID you pay for.
+- **OpenAI** — Tier-suffixed IDs like `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` are stable. **Do not use bare aliases** such as `gpt-5.6` or `daybreak-*` — these are floating pointers that Anthropic/OpenAI can remap to more expensive models at any time, breaking cost tracking.
+
+### Schema
 
 ```yaml
-pricing:
+verified_at: "YYYY-MM-DD"     # date you last checked rates against the provider page
+
+providers:
   <provider-name>:
-    <model-id>:
-      input: <USD per 1000 tokens>   # prompt token cost
-      output: <USD per 1000 tokens>  # completion token cost
+    source_url: "<provider pricing page URL>"
+    models:
+      <model-id>:
+        input: <USD per million tokens>        # standard (uncached) prompt tokens
+        cached_input: <USD per million>        # prompt tokens served from a provider-side cache
+        cache_write_5m: <USD per million>      # cost to write a 5-minute cache entry (Anthropic: ~12.5 % of input)
+        output: <USD per million tokens>       # completion tokens
+        batch_multiplier: <float>              # multiply total cost when request.is_batch=true (usually 0.5)
+        regional_uplift: <float>               # fractional surcharge for EU data-residency routes (e.g. 0.10 = +10%)
+        long_context:                          # optional — omit if the model has no tiered pricing
+          threshold_tokens: <int>              # input token count at which long-context rates apply
+          input: <USD per million>
+          cached_input: <USD per million>
+          cache_write_5m: <USD per million>
+          output: <USD per million>
 ```
 
-Cost estimates shown in `usage_records.estimated_cost_usd` are calculated from these values. If a model/provider combination has no pricing entry, cost is recorded as `0` and a warning is logged.
+**Field notes**
+
+- `cache_write_5m` — Approximate rate for writing a 5-minute sliding-window cache entry. Anthropic charges roughly 12.5 % of the standard input rate; OpenAI values vary by model tier.
+- `long_context` — When provided, the cost calculator compares `prompt_tokens + cached_tokens` against `threshold_tokens` and upgrades to long-context rates if the threshold is met.
+- `regional_uplift` — Applied to models released on or after 2026-03-05 that are eligible for EU data-residency. The cost calculator does not apply this automatically today; it is stored for future billing code to consume.
+- `batch_multiplier` — Applied when the request carries the batch flag. Both Anthropic and OpenAI charge 50 % of standard rates for batch jobs (multiplier = `0.5`).
 
 ### Keeping pricing current
 
-`configs/models.yaml` contains **hardcoded per-token pricing** that goes stale as providers adjust their rates. Review and update the `pricing:` block at least quarterly, or whenever a provider announces a price change.
+Edit `configs/pricing.yaml` and update the `verified_at` field whenever rates change. The gateway hot-reloads the file on disk change (fsnotify) and clears the calculator cache automatically — no restart needed.
+
+At startup, the gateway reads `verified_at`, exports the age as the `aegis_pricing_age_days` Prometheus gauge, and logs a **warning** if the snapshot is older than `cost.pricing_staleness_threshold_days` (default: 90 days, configurable via `PRICING_STALENESS_THRESHOLD_DAYS`).
 
 Provider pricing pages:
 
-- **OpenAI** — <https://openai.com/api/pricing/>
 - **Anthropic** — <https://www.anthropic.com/pricing>
-- **Azure OpenAI** — <https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/>
-
-After updating `models.yaml`, the gateway picks the new rates up on its own — no
-restart and no signal. `config.Loader` watches the config directory with fsnotify,
-and the reload clears the cost calculator's price cache so subsequent requests are
-costed at the new rates.
+- **OpenAI** — <https://openai.com/api/pricing>
 
 > Do **not** send `SIGHUP`. `cmd/gateway/main.go` handles `SIGINT` and `SIGTERM`
 > only, so `SIGHUP` keeps its default disposition and **terminates the gateway**.
 > See [POLICIES.md](POLICIES.md) for the same warning about policy reloads.
-
-The `# Pricing as of <date>` comment at the top of the `pricing:` block records when rates were last verified. Update it with each refresh.
 
 ---
 

@@ -22,55 +22,98 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
 
+// RequestDetails carries the token breakdown and request flags needed to
+// compute cost using the richer pricing schema in pricing.yaml.
+type RequestDetails struct {
+	Provider string
+	Model    string
+
+	// Token counts
+	PromptTokens     int
+	CachedTokens     int // subset of PromptTokens served from cache
+	CompletionTokens int
+
+	// Flags
+	IsBatch bool // apply batch_multiplier when true
+}
+
 // Calculator provides cost estimation based on model pricing configuration.
 type Calculator struct {
 	mu         sync.RWMutex
-	modelsCfg  func() *config.ModelsConfig
-	priceCache map[string]ModelPrice // cache for faster lookups
+	pricingCfg func() *config.PricingConfig
+	priceCache map[string]config.PriceEntry
 }
 
-// ModelPrice represents the pricing for a specific provider/model combination.
+// ModelPrice represents the simplified per-token pricing for a model
+// (returned for debugging/admin use via GetModelPrice).
 type ModelPrice struct {
 	InputPerToken  float64
 	OutputPerToken float64
 }
 
 // NewCalculator creates a new cost calculator.
-func NewCalculator(modelsCfg func() *config.ModelsConfig) *Calculator {
+func NewCalculator(pricingCfg func() *config.PricingConfig) *Calculator {
 	return &Calculator{
-		modelsCfg:  modelsCfg,
-		priceCache: make(map[string]ModelPrice),
+		pricingCfg: pricingCfg,
+		priceCache: make(map[string]config.PriceEntry),
 	}
 }
 
 // Calculate computes the estimated cost in USD for a request.
-// Returns the cost and a boolean indicating if pricing was found.
-func (c *Calculator) Calculate(provider, model string, promptTokens, completionTokens int) (float64, bool) {
-	if promptTokens == 0 && completionTokens == 0 {
-		return 0.0, true // valid but free
+// It applies cached_input rates, long_context tiers, and batch_multiplier as appropriate.
+// Returns the cost and a boolean indicating whether pricing was found.
+func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
+	if details.PromptTokens == 0 && details.CompletionTokens == 0 {
+		return 0.0, true
 	}
 
-	price, found := c.getPrice(provider, model)
+	entry, found := c.getPrice(details.Provider, details.Model)
 	if !found {
 		slog.Warn("no pricing found for model",
-			"provider", provider,
-			"model", model,
+			"provider", details.Provider,
+			"model", details.Model,
 		)
 		return 0.0, false
 	}
 
-	// Cost = (input_tokens / 1000) * input_price + (output_tokens / 1000) * output_price
-	// Pricing in config is per 1000 tokens
-	inputCost := (float64(promptTokens) / 1000.0) * price.InputPerToken
-	outputCost := (float64(completionTokens) / 1000.0) * price.OutputPerToken
-	totalCost := inputCost + outputCost
+	// Select rate tier: long_context when total input exceeds the threshold.
+	inputRate := entry.Input
+	cachedInputRate := entry.CachedInput
+	outputRate := entry.Output
+
+	totalInput := details.PromptTokens + details.CachedTokens
+	if entry.LongContext != nil && totalInput >= entry.LongContext.ThresholdTokens {
+		inputRate = entry.LongContext.Input
+		cachedInputRate = entry.LongContext.CachedInput
+		outputRate = entry.LongContext.Output
+	}
+
+	// Uncached prompt tokens = total prompt minus cached tokens.
+	uncachedPrompt := details.PromptTokens - details.CachedTokens
+	if uncachedPrompt < 0 {
+		uncachedPrompt = 0
+	}
+
+	// Rates are USD per million tokens.
+	const perMillion = 1_000_000.0
+	inputCost := (float64(uncachedPrompt) / perMillion) * inputRate
+	cachedCost := (float64(details.CachedTokens) / perMillion) * cachedInputRate
+	outputCost := (float64(details.CompletionTokens) / perMillion) * outputRate
+	totalCost := inputCost + cachedCost + outputCost
+
+	if details.IsBatch && entry.BatchMultiplier > 0 {
+		totalCost *= entry.BatchMultiplier
+	}
 
 	slog.Debug("cost calculated",
-		"provider", provider,
-		"model", model,
-		"prompt_tokens", promptTokens,
-		"completion_tokens", completionTokens,
+		"provider", details.Provider,
+		"model", details.Model,
+		"prompt_tokens", details.PromptTokens,
+		"cached_tokens", details.CachedTokens,
+		"completion_tokens", details.CompletionTokens,
+		"is_batch", details.IsBatch,
 		"input_cost", inputCost,
+		"cached_cost", cachedCost,
 		"output_cost", outputCost,
 		"total_cost", totalCost,
 	)
@@ -78,56 +121,126 @@ func (c *Calculator) Calculate(provider, model string, promptTokens, completionT
 	return totalCost, true
 }
 
-// getPrice retrieves pricing from cache or config.
-func (c *Calculator) getPrice(provider, model string) (ModelPrice, bool) {
+// CalculateSimple is a convenience wrapper for callers that only have raw token
+// counts (no cache breakdown, not a batch job).
+func (c *Calculator) CalculateSimple(provider, model string, promptTokens, completionTokens int) (float64, bool) {
+	return c.Calculate(RequestDetails{
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+	})
+}
+
+// getPrice retrieves a PriceEntry from cache or from the live pricing config.
+func (c *Calculator) getPrice(provider, model string) (config.PriceEntry, bool) {
 	cacheKey := fmt.Sprintf("%s:%s", provider, model)
 
-	// Check cache first
 	c.mu.RLock()
-	if price, found := c.priceCache[cacheKey]; found {
+	if entry, found := c.priceCache[cacheKey]; found {
 		c.mu.RUnlock()
-		return price, true
+		return entry, true
 	}
 	c.mu.RUnlock()
 
-	// Load from config
-	cfg := c.modelsCfg()
-	if cfg == nil || cfg.Pricing == nil {
-		return ModelPrice{}, false
+	cfg := c.pricingCfg()
+	if cfg == nil || cfg.Providers == nil {
+		return config.PriceEntry{}, false
 	}
 
-	providerPricing, ok := cfg.Pricing[provider]
+	providerPricing, ok := cfg.Providers[provider]
 	if !ok {
-		return ModelPrice{}, false
+		return config.PriceEntry{}, false
 	}
 
-	priceEntry, ok := providerPricing[model]
+	entry, ok := providerPricing.Models[model]
 	if !ok {
-		return ModelPrice{}, false
+		return config.PriceEntry{}, false
 	}
 
-	price := ModelPrice{
-		InputPerToken:  priceEntry.Input,
-		OutputPerToken: priceEntry.Output,
-	}
-
-	// Cache it
 	c.mu.Lock()
-	c.priceCache[cacheKey] = price
+	c.priceCache[cacheKey] = entry
 	c.mu.Unlock()
 
-	return price, true
+	return entry, true
 }
 
-// InvalidateCache clears the pricing cache. Useful when config is reloaded.
+// InvalidateCache clears the pricing cache. Call after config reload.
 func (c *Calculator) InvalidateCache() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.priceCache = make(map[string]ModelPrice)
+	c.priceCache = make(map[string]config.PriceEntry)
 	slog.Info("cost calculator cache invalidated")
 }
 
-// GetModelPrice returns the pricing for a specific provider/model (for debugging/admin).
+// GetModelPrice returns the simplified per-token pricing for a provider/model
+// (for debugging/admin endpoints). For accurate cost estimation, use Calculate.
 func (c *Calculator) GetModelPrice(provider, model string) (ModelPrice, bool) {
-	return c.getPrice(provider, model)
+	entry, found := c.getPrice(provider, model)
+	if !found {
+		return ModelPrice{}, false
+	}
+	// Per-token from per-million rates.
+	return ModelPrice{
+		InputPerToken:  entry.Input / 1_000_000.0,
+		OutputPerToken: entry.Output / 1_000_000.0,
+	}, true
+}
+
+// HasPricing reports whether the given provider/model has a pricing entry.
+// Use this for pre-dispatch checks rather than GetModelPrice when only
+// presence matters.
+func (c *Calculator) HasPricing(provider, model string) bool {
+	_, found := c.getPrice(provider, model)
+	return found
+}
+
+// MissingPricingPair describes a provider/model combination that lacks a pricing entry.
+type MissingPricingPair struct {
+	Provider string
+	Model    string
+}
+
+func (m MissingPricingPair) String() string {
+	return m.Provider + "/" + m.Model
+}
+
+// ValidatePricingCoverage checks that every provider/model reachable through
+// modelsCfg routing (primary + all fallbacks) has a corresponding pricing entry
+// in pricingCfg. Returns all missing pairs so the caller can fail startup with
+// a clear message.
+func ValidatePricingCoverage(modelsCfg *config.ModelsConfig, pricingCfg *config.PricingConfig) []MissingPricingPair {
+	if modelsCfg == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var missing []MissingPricingPair
+
+	checkRoute := func(provider, model string) {
+		key := fmt.Sprintf("%s:%s", provider, model)
+		if _, already := seen[key]; already {
+			return
+		}
+		seen[key] = struct{}{}
+
+		var hasPricing bool
+		if pricingCfg != nil && pricingCfg.Providers != nil {
+			if provPricing, ok := pricingCfg.Providers[provider]; ok {
+				_, hasPricing = provPricing.Models[model]
+			}
+		}
+		if !hasPricing {
+			missing = append(missing, MissingPricingPair{Provider: provider, Model: model})
+		}
+	}
+
+	for _, mapping := range modelsCfg.Models {
+		checkRoute(mapping.Primary.Provider, mapping.Primary.Model)
+		for _, fb := range mapping.Fallback {
+			checkRoute(fb.Provider, fb.Model)
+		}
+	}
+
+	return missing
 }
