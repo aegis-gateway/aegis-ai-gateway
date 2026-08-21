@@ -40,9 +40,20 @@ var sqlColumnDeclPattern = regexp.MustCompile(`^\s+(\w+)\s+\w`)
 var auditTablePattern = regexp.MustCompile(
 	`(?i)\b(CREATE\s+TABLE|ALTER\s+TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?(audit_\w+)`)
 
-// alterAddColumnPattern extracts the column name from an ADD COLUMN clause.
+// alterAddColumnPattern extracts the column name from an ALTER TABLE ... ADD
+// clause. PostgreSQL treats COLUMN as optional — "ALTER TABLE t ADD payload
+// TEXT" is valid DDL — so requiring the keyword would let exactly the column
+// this test guards against slip through.
 var alterAddColumnPattern = regexp.MustCompile(
-	`(?i)\bADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)`)
+	`(?i)\bADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(\w+)`)
+
+// addNonColumnKeywords are the ADD forms that introduce table constraints
+// rather than columns. Without COLUMN required, the pattern above also matches
+// these, and their first word would otherwise be treated as a column name.
+var addNonColumnKeywords = map[string]bool{
+	"constraint": true, "primary": true, "foreign": true,
+	"unique": true, "check": true, "exclude": true,
+}
 
 // TestNoPayload_SchemaIntrospection scans *every* up migration for columns added
 // to an audit table and fails if any name matches a payload-indicative word.
@@ -93,6 +104,9 @@ func TestNoPayload_SchemaIntrospection(t *testing.T) {
 				}
 			} else {
 				for _, c := range alterAddColumnPattern.FindAllStringSubmatch(stmt, -1) {
+					if addNonColumnKeywords[strings.ToLower(c[1])] {
+						continue
+					}
 					cols = append(cols, c[1])
 				}
 			}
