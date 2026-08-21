@@ -355,3 +355,20 @@ the gateway from starting.
 ### Pepper rotation warning
 
 **Do not rotate `AEGIS_KEY_PEPPER` after deployment.** All v2 keys are indexed by their HMAC hash; changing the pepper means the gateway can no longer look them up. If rotation is necessary, re-issue all active v2 keys before changing the pepper.
+
+---
+
+## Audit retention
+
+```yaml
+audit:
+  retention_days: 365
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `audit.retention_days` | int | `365` | Minimum number of days to keep rows in `audit_logs` and `audit_events`. The `aegis-migrate purge` subcommand respects this floor when computing the `--before` date. |
+
+The default of 365 days comfortably exceeds a six-month regulatory floor. Adjust upwards to meet longer data-retention obligations; do not set below 180 without reviewing applicable compliance requirements.
+
+The `aegis_audit_oldest_event_age_days` Prometheus gauge tracks the age of the oldest surviving `audit_events` row. A value approaching `retention_days` on a deployment without an automated purge schedule is an operational indicator that a purge is overdue.

@@ -185,4 +185,75 @@ docker compose -f deploy/docker-compose.yaml up -d
 docker compose -f deploy/docker-compose.yaml exec gateway ./migrate up
 ```
 
+---
+
+## Audit log retention and purge
+
+AEGIS accumulates rows in `audit_logs` and `audit_events` indefinitely until an
+operator explicitly purges old data. The `aegis-migrate purge` subcommand
+provides a safe, auditable way to delete rows outside the retention window.
+
+### Retention policy
+
+Configure the minimum retention window in `configs/gateway.yaml`:
+
+```yaml
+audit:
+  retention_days: 365  # six-month floor; adjust to meet your compliance requirements
+```
+
+### Purge subcommand
+
+```
+aegis-migrate purge [flags]
+
+Flags:
+  --before DATE      (required) delete rows with created_at < DATE (ISO 8601)
+  --dry-run          print counts and ID ranges without deleting; writes a
+                     dry_run=true row to audit_purges for traceability
+  --table TABLE      audit_logs | audit_events | both (default: both)
+  --db-url URL       database URL (overrides DATABASE_URL env)
+```
+
+Every purge run — including dry runs — writes a row to `audit_purges`. The
+`audit_purges` table is never itself purged; it provides a permanent record
+that a purge occurred.
+
+### Recommended seal → purge → seal sequence
+
+For full attestation integrity, run `aegis-migrate seal` before and after a purge:
+
+```bash
+# 1. Seal all outstanding events up to the purge boundary.
+aegis-migrate seal
+
+# 2. Dry-run first to verify what will be deleted.
+aegis-migrate purge --before 2024-01-01 --dry-run
+
+# 3. Execute the purge.
+aegis-migrate purge --before 2024-01-01
+
+# 4. Seal again to create a checkpoint that references post-purge state.
+aegis-migrate seal
+```
+
+Purging events that lie beyond the last checkpoint's `range_end` is allowed but
+triggers a warning:
+
+```
+Warning: unsealed events in purge window (N rows beyond last checkpoint).
+Run 'aegis-migrate seal' first for full attestation.
+```
+
+Heed this warning in compliance-sensitive deployments.
+
+### Monitoring purge health
+
+The `aegis_audit_oldest_event_age_days` Prometheus gauge is updated every 5 minutes
+by the gateway. Alert when this value exceeds `retention_days` to detect a missed purge:
+
+```promql
+aegis_audit_oldest_event_age_days > 400  # alert if oldest event is > 400 days
+```
+
 Always check [CHANGELOG.md](../CHANGELOG.md) before upgrading between minor versions.

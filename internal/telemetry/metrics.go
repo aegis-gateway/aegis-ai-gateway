@@ -57,6 +57,17 @@ type Metrics struct {
 	StreamingTokensPerSecond  *prometheus.HistogramVec
 	StreamingDurationMs       *prometheus.HistogramVec
 	StreamingErrorTotal       *prometheus.CounterVec
+
+	// Audit integrity metrics (refreshed every 5 minutes by the gateway).
+	// AuditLastSealAgeSeconds is seconds since the most recent checkpoint's sealed_at.
+	// AuditUnsealedEvents is the count of audit_events not yet covered by any checkpoint.
+	AuditLastSealAgeSeconds prometheus.Gauge
+	AuditUnsealedEvents     prometheus.Gauge
+
+	// AuditOldestEventAgeDays is the age in days of the oldest row in audit_events.
+	// A large value on a deployment with retention configured indicates a purge is overdue.
+	// Set to -1 when the table is empty.
+	AuditOldestEventAgeDays prometheus.Gauge
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -177,6 +188,24 @@ func NewMetrics() *Metrics {
 			Name: "aegis_streaming_error_total",
 			Help: "Total number of streaming errors.",
 		}, []string{"provider", "error_type"}),
+
+		AuditLastSealAgeSeconds: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_audit_last_seal_age_seconds",
+			Help: "Seconds since the most recent audit checkpoint was written. " +
+				"A large value indicates the sealer is not running.",
+		}),
+
+		AuditUnsealedEvents: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_audit_unsealed_events",
+			Help: "Count of audit_events rows not yet covered by any checkpoint.",
+		}),
+
+		AuditOldestEventAgeDays: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "aegis_audit_oldest_event_age_days",
+			Help: "Age in days of the oldest row in audit_events. " +
+				"A large value on a deployment with retention configured indicates a purge is overdue. " +
+				"Set to -1 when the table is empty.",
+		}),
 	}
 }
 
