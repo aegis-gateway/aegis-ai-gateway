@@ -1,6 +1,6 @@
 # AEGIS AI Gateway — Demos
 
-Self-contained, runnable demos that showcase gateway features. Each demo lives in its own directory with a `run.sh` and a `docker-compose.yaml`.
+Self-contained, runnable demos that showcase gateway features. Each demo lives in its own directory with a `run.sh`. Demos that spin up additional services (databases, UI, policy servers) also include a `docker-compose.yaml`; lightweight curl/script demos do not.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ demos/
 
 ## Writing a new demo
 
-1. Create `demos/NN-slug/` with a `docker-compose.yaml`, `run.sh`, and `README.md`
+1. Create `demos/NN-slug/` with a `run.sh` and `README.md`; add a `docker-compose.yaml` only if the demo requires additional services
 2. Use `../shared/.env.example` as the env template — `run.sh` copies it on first run
 3. Use `../shared/wait-for-gateway.sh` to poll for gateway readiness
 4. Build the gateway from repo root: `build: { context: ../.. , dockerfile: Dockerfile }`
