@@ -216,7 +216,7 @@ Add to `internal/telemetry/`:
 
 | Gauge | Meaning |
 |-------|---------|
-| `aegis_audit_last_seal_age_seconds` | Seconds since the most recent checkpoint was written |
+| `aegis_audit_last_seal_age_seconds` | Seconds since the most recent checkpoint was written. `+Inf` when no checkpoint exists yet, so a single `> threshold` alert covers both a stalled sealer and one that has never run |
 | `aegis_audit_unsealed_events` | Count of events not yet covered by any checkpoint |
 
 An unscheduled sealer is visible on a dashboard rather than silent until a disk-fills or an auditor asks. Both gauges use the same pattern as `aegis_pricing_age_days`.

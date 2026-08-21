@@ -17,6 +17,7 @@ package telemetry
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,14 +63,16 @@ func (m *Metrics) refreshAuditMetrics(ctx context.Context, db *pgxpool.Pool) {
 		m.AuditLastSealAgeSeconds.Set(age)
 	} else {
 		// Nothing has ever been sealed. Leaving the gauge unset leaves it at
-		// Prometheus's default of 0, which reads as "sealed a moment ago" —
-		// so a "seal is stale or missing" alert can never fire before the
-		// first checkpoint, which is exactly when it should.
+		// Prometheus's default of 0, which reads as "sealed a moment ago" — so
+		// a "seal is stale or missing" alert can never fire before the first
+		// checkpoint, which is exactly when it should.
 		//
-		// -1 is a sentinel meaning "never sealed": it cannot be confused with
-		// any real age, and an alert on `< 0 or > threshold` catches both the
-		// never-sealed and the gone-stale cases.
-		m.AuditLastSealAgeSeconds.Set(-1)
+		// +Inf rather than a negative sentinel: the published contract is that
+		// a large value means unhealthy, and +Inf satisfies it for any
+		// threshold without every operator having to add a `< 0` branch to an
+		// alert they have already written. It is also literally true — no seal
+		// has ever happened, so the age is unbounded.
+		m.AuditLastSealAgeSeconds.Set(math.Inf(1))
 	}
 
 	var unsealedCount int64

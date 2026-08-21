@@ -21,27 +21,27 @@ import (
 
 // Metrics holds all Prometheus metrics for the AEGIS gateway.
 type Metrics struct {
-	RequestTotal      *prometheus.CounterVec
-	RequestDurationMs *prometheus.HistogramVec
-	GatewayOverheadMs *prometheus.HistogramVec
-	TokensTotal       *prometheus.CounterVec
-	CostUSDTotal      *prometheus.CounterVec
-	FilterActionTotal *prometheus.CounterVec
-	RateLimitHitTotal *prometheus.CounterVec
-	DBPoolConns       *prometheus.GaugeVec
+	RequestTotal       *prometheus.CounterVec
+	RequestDurationMs  *prometheus.HistogramVec
+	GatewayOverheadMs  *prometheus.HistogramVec
+	TokensTotal        *prometheus.CounterVec
+	CostUSDTotal       *prometheus.CounterVec
+	FilterActionTotal  *prometheus.CounterVec
+	RateLimitHitTotal  *prometheus.CounterVec
+	DBPoolConns        *prometheus.GaugeVec
 	DBPoolWaitDuration *prometheus.HistogramVec
-	
+
 	// Retry metrics
 	RetryAttemptTotal *prometheus.CounterVec
 	RetrySuccessTotal *prometheus.CounterVec
 	RetryFailureTotal *prometheus.CounterVec
-	
+
 	// Context cancellation metrics
 	CancellationTotal *prometheus.CounterVec
-	
+
 	// Validation metrics
 	ValidationFailureTotal *prometheus.CounterVec
-	
+
 	// Policy reload metrics
 	PolicyReloadTotal *prometheus.CounterVec
 
@@ -52,7 +52,7 @@ type Metrics struct {
 	PricingAgeDays prometheus.Gauge
 
 	// Streaming metrics
-	StreamingChunkTotal     *prometheus.CounterVec
+	StreamingChunkTotal       *prometheus.CounterVec
 	StreamingTimeToFirstToken *prometheus.HistogramVec
 	StreamingTokensPerSecond  *prometheus.HistogramVec
 	StreamingDurationMs       *prometheus.HistogramVec
@@ -120,32 +120,32 @@ func NewMetrics() *Metrics {
 			Help:    "Time spent waiting for a database connection in milliseconds.",
 			Buckets: []float64{1, 2, 5, 10, 25, 50, 100, 250, 500, 1000},
 		}, []string{}),
-		
+
 		RetryAttemptTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_retry_attempt_total",
 			Help: "Total number of retry attempts.",
 		}, []string{"provider", "attempt"}),
-		
+
 		RetrySuccessTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_retry_success_total",
 			Help: "Total number of successful retries.",
 		}, []string{"provider", "attempt"}),
-		
+
 		RetryFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_retry_failure_total",
 			Help: "Total number of failed retries.",
 		}, []string{"provider", "reason"}),
-		
+
 		CancellationTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_cancellation_total",
 			Help: "Total number of cancelled requests.",
 		}, []string{"provider", "stage"}),
-		
+
 		ValidationFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_validation_failure_total",
 			Help: "Total number of validation failures.",
 		}, []string{"field"}),
-		
+
 		PolicyReloadTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_policy_reload_total",
 			Help: "Total number of policy reload attempts.",
@@ -165,25 +165,25 @@ func NewMetrics() *Metrics {
 			Name: "aegis_streaming_chunk_total",
 			Help: "Total number of streaming chunks sent.",
 		}, []string{"provider", "model"}),
-		
+
 		StreamingTimeToFirstToken: promauto.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aegis_streaming_time_to_first_token_ms",
 			Help:    "Time to first token in milliseconds for streaming requests.",
 			Buckets: []float64{50, 100, 250, 500, 1000, 2000, 5000, 10000},
 		}, []string{"provider", "model"}),
-		
+
 		StreamingTokensPerSecond: promauto.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aegis_streaming_tokens_per_second",
 			Help:    "Tokens per second during streaming.",
 			Buckets: []float64{1, 5, 10, 20, 50, 100, 200, 500, 1000},
 		}, []string{"provider", "model"}),
-		
+
 		StreamingDurationMs: promauto.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "aegis_streaming_duration_ms",
 			Help:    "Total duration of streaming requests in milliseconds.",
 			Buckets: []float64{1000, 5000, 10000, 30000, 60000, 120000, 300000},
 		}, []string{"provider", "model"}),
-		
+
 		StreamingErrorTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_streaming_error_total",
 			Help: "Total number of streaming errors.",
@@ -192,7 +192,9 @@ func NewMetrics() *Metrics {
 		AuditLastSealAgeSeconds: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "aegis_audit_last_seal_age_seconds",
 			Help: "Seconds since the most recent audit checkpoint was written. " +
-				"A large value indicates the sealer is not running.",
+				"A large value indicates the sealer is not running; +Inf means " +
+				"nothing has ever been sealed. Alert on a threshold — both " +
+				"states exceed it.",
 		}),
 
 		AuditUnsealedEvents: promauto.NewGauge(prometheus.GaugeOpts{
@@ -336,15 +338,15 @@ func (m *Metrics) RecordStreamingMetrics(labels StreamingLabels) {
 	m.StreamingChunkTotal.WithLabelValues(
 		labels.Provider, labels.Model,
 	).Add(float64(labels.ChunkCount))
-	
+
 	m.StreamingTimeToFirstToken.WithLabelValues(
 		labels.Provider, labels.Model,
 	).Observe(labels.TimeToFirstTokenMs)
-	
+
 	m.StreamingTokensPerSecond.WithLabelValues(
 		labels.Provider, labels.Model,
 	).Observe(labels.TokensPerSecond)
-	
+
 	m.StreamingDurationMs.WithLabelValues(
 		labels.Provider, labels.Model,
 	).Observe(labels.StreamDurationMs)
