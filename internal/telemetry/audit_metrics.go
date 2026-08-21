@@ -58,22 +58,7 @@ func (m *Metrics) refreshAuditMetrics(ctx context.Context, db *pgxpool.Pool) {
 		return
 	}
 
-	if lastSealedAt != nil {
-		age := time.Since(*lastSealedAt).Seconds()
-		m.AuditLastSealAgeSeconds.Set(age)
-	} else {
-		// Nothing has ever been sealed. Leaving the gauge unset leaves it at
-		// Prometheus's default of 0, which reads as "sealed a moment ago" — so
-		// a "seal is stale or missing" alert can never fire before the first
-		// checkpoint, which is exactly when it should.
-		//
-		// +Inf rather than a negative sentinel: the published contract is that
-		// a large value means unhealthy, and +Inf satisfies it for any
-		// threshold without every operator having to add a `< 0` branch to an
-		// alert they have already written. It is also literally true — no seal
-		// has ever happened, so the age is unbounded.
-		m.AuditLastSealAgeSeconds.Set(math.Inf(1))
-	}
+	m.AuditLastSealAgeSeconds.Set(sealAgeSeconds(lastSealedAt, time.Now()))
 
 	var unsealedCount int64
 	if err := db.QueryRow(rctx, `
@@ -83,4 +68,24 @@ func (m *Metrics) refreshAuditMetrics(ctx context.Context, db *pgxpool.Pool) {
 		return
 	}
 	m.AuditUnsealedEvents.Set(float64(unsealedCount))
+}
+
+// sealAgeSeconds converts the most recent seal time into the value published
+// as aegis_audit_last_seal_age_seconds.
+//
+// The never-sealed case is the interesting one. Leaving the gauge unset leaves
+// it at Prometheus's default of 0, which reads as "sealed a moment ago", so a
+// stale-seal alert can never fire before the first checkpoint — exactly when it
+// should. A negative sentinel is no better: the published contract, in the
+// metric help and docs/AUDIT-INTEGRITY.md, tells operators to alert on
+// `> threshold`, and a negative value leaves that false too.
+//
+// +Inf satisfies the documented contract at any threshold without anyone
+// rewriting an alert, and is literally true: no seal has occurred, so the age
+// is unbounded.
+func sealAgeSeconds(lastSealedAt *time.Time, now time.Time) float64 {
+	if lastSealedAt == nil {
+		return math.Inf(1)
+	}
+	return now.Sub(*lastSealedAt).Seconds()
 }
