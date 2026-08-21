@@ -335,9 +335,17 @@ func runPurge(args []string) {
 	// documented as a minimum that purge honours; without this check the flag
 	// could delete rows well inside the window the policy promises to keep,
 	// and the operator would have no indication anything was wrong.
-	if cfg, cfgErr := loadPurgeConfig(*configDir); cfgErr != nil {
-		log.Printf("purge: warning: could not load audit config (%v); retention floor not enforced", cfgErr)
-	} else if cfg.Audit.RetentionDays > 0 {
+	cfg, cfgErr := loadPurgeConfig(*configDir)
+	if cfgErr != nil {
+		// Fall back to the built-in default rather than dropping the floor. A
+		// wrong --config path or an unexpected cwd must not be the difference
+		// between honouring the retention policy and deleting inside it.
+		cfg = config.DefaultConfig()
+		log.Printf("purge: warning: could not load %s/gateway.yaml (%v); "+
+			"enforcing the built-in default retention floor of %d days",
+			*configDir, cfgErr, cfg.Audit.RetentionDays)
+	}
+	if cfg.Audit.RetentionDays > 0 {
 		floor := time.Now().UTC().AddDate(0, 0, -cfg.Audit.RetentionDays)
 		if before.After(floor) {
 			log.Fatalf("purge: --before %s is inside the configured retention window "+

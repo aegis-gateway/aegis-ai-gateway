@@ -220,7 +220,8 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 			var purgeID int64
 			err := conn.QueryRow(ctx, `
 				SELECT id FROM audit_purges
-				WHERE event_id_min <= $1 AND event_id_max >= $2
+				WHERE NOT dry_run
+				  AND event_id_min <= $1 AND event_id_max >= $2
 				LIMIT 1
 			`, cp.RangeEnd, cp.RangeStart).Scan(&purgeID)
 			if err == nil {

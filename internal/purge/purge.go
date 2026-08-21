@@ -18,7 +18,9 @@ package purge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -222,8 +224,16 @@ func overlappingCheckpoints(ctx context.Context, pool *pgxpool.Pool, idMin, idMa
 		idMin, idMax,
 	)
 	if err != nil {
-		// Table does not exist yet — treat as empty.
-		return []int64{}, nil
+		// Only a genuinely absent table is benign — that is a deployment that
+		// has not run migration 008 yet. Any other failure (connection lost,
+		// permission denied) must surface: returning an empty list would write
+		// "no checkpoints affected" permanently into audit_purges, which is the
+		// record someone later relies on to explain a gap in the chain.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
+			return []int64{}, nil
+		}
+		return nil, fmt.Errorf("query overlapping checkpoints: %w", err)
 	}
 	defer rows.Close()
 

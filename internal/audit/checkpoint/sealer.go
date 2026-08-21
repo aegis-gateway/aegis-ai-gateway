@@ -155,7 +155,51 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		return false, nil
 	}
 
-	// Compute RFC 6962 leaf hashes and Merkle root.
+	// Establish the contiguous run BEFORE hashing anything.
+	//
+	// BIGSERIAL hands out an id before the inserting transaction commits, so a
+	// transaction holding id N can still be in flight while N+1 commits and
+	// becomes visible. Sealing to the highest *visible* id would checkpoint
+	// N+1; once N commits it sits below effectiveStart forever and is silently
+	// excluded from the chain — a valid audit event, permanently unattested.
+	// The timestamp lag does not prevent this: `timestamp` defaults to the
+	// transaction's start time, so a long transaction carries an old timestamp
+	// and still commits late.
+	//
+	// Two conditions have to hold, and both must be checked here rather than
+	// after the Merkle root is built, or the checkpoint would attest a root
+	// computed over a different set of events than the range it claims.
+
+	// 1. The batch must begin exactly where the last checkpoint ended.
+	//    Otherwise a hole sits between the two and this run would seal past it,
+	//    which is the same silent exclusion in a different place.
+	if events[0].ID != effectiveStart+1 {
+		slog.Warn("sealing paused: a gap separates the last checkpoint from the next visible event",
+			"last_sealed_event_id", effectiveStart,
+			"next_visible_event_id", events[0].ID,
+			"reason", "an in-flight transaction may still commit into the gap")
+		return false, nil
+	}
+
+	// 2. Stop at the first gap inside the batch.
+	for i := 1; i < len(events); i++ {
+		if events[i].ID != events[i-1].ID+1 {
+			slog.Warn("sealing stopped at an id gap; events beyond it stay unsealed until it resolves",
+				"gap_after_event_id", events[i-1].ID,
+				"next_visible_event_id", events[i].ID,
+				"reason", "an in-flight transaction may still commit into the gap")
+			events = events[:i]
+			break
+		}
+	}
+
+	// Stopping at a gap is conservative: a hole left by a rolled-back insert
+	// never fills, so sealing stalls until an operator resolves it. For a
+	// tamper-evidence feature a visible stall beats a silent hole in the chain,
+	// but a permanent gap needs a decision this code does not make.
+
+	// Compute RFC 6962 leaf hashes and Merkle root over the events actually
+	// being sealed, so the root always matches the committed range.
 	leaves := make([][]byte, len(events))
 	for i, ev := range events {
 		lh, err := EventLeafHash(ev)
@@ -169,34 +213,6 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	rangeStart := events[0].ID
 	rangeEnd := events[len(events)-1].ID
 
-	// Only seal a contiguous run.
-	//
-	// BIGSERIAL hands out an id before the inserting transaction commits, so a
-	// transaction holding id N can still be in flight while N+1 commits and
-	// becomes visible. Sealing to the highest *visible* id would checkpoint
-	// N+1; once N commits it sits below effectiveStart forever and is silently
-	// excluded from the chain — a valid audit event, permanently unattested.
-	// The timestamp lag does not prevent this: `timestamp` defaults to the
-	// transaction's start time, so a long transaction carries an old timestamp
-	// and still commits late.
-	//
-	// Stopping at the first gap is conservative: a hole may be a rolled-back
-	// insert that will never be filled, in which case sealing stalls until it
-	// is resolved. That is the correct direction to fail for a tamper-evidence
-	// feature — a visible stall beats a silent hole in the chain — but a
-	// permanent gap needs an operator decision, so say so loudly.
-	for i := 1; i < len(events); i++ {
-		if events[i].ID != events[i-1].ID+1 {
-			gapAfter := events[i-1].ID
-			events = events[:i]
-			rangeEnd = gapAfter
-			slog.Warn("sealing stopped at an id gap; events beyond it stay unsealed until it resolves",
-				"gap_after_event_id", gapAfter,
-				"next_visible_event_id", events[len(events)-1].ID+1,
-				"reason", "an in-flight transaction may still commit into the gap")
-			break
-		}
-	}
 	eventCount := int32(len(events))
 	sealedAt := time.Now().UTC()
 
@@ -266,26 +282,30 @@ func readPrevCheckpointHash(ctx context.Context, conn *pgx.Conn) ([]byte, int64,
 	return prevHash, prevID, nil
 }
 
-// computeCheckpointHash returns SHA-256 over the following length-prefixed input:
+// computeCheckpointHash returns SHA-256 over the 96-byte input defined in
+// docs/AUDIT-INTEGRITY.md §3:
 //
-//	merkle_root (32 bytes)
-//	|| uint32_le(len(prev_checkpoint_hash))   // 0 for genesis, 32 for non-genesis
-//	|| prev_checkpoint_hash (0 or 32 bytes)
-//	|| uint64_le(range_start)
-//	|| uint64_le(range_end)
-//	|| uint32_le(event_count)
-//	|| uint32_le(hash_schema_version)
-//	|| int64_le(sealed_at_unix_microseconds)
+//	merkle_root            (32 bytes)
+//	|| prev_checkpoint_hash (32 bytes; the genesis constant of 32 zero bytes
+//	                         for the first checkpoint)
+//	|| uint64_le(range_start)            (8)
+//	|| uint64_le(range_end)              (8)
+//	|| uint32_le(event_count)            (4)
+//	|| uint32_le(hash_schema_version)    (4)
+//	|| int64_le(sealed_at_unix_micros)   (8)
 //
-// The uint32 length prefix lets verifiers distinguish a genesis checkpoint
-// (empty/nil prevHash) from a non-genesis checkpoint whose hash happens to be
-// 32 zero bytes, preventing an otherwise identical hash input.
+// The published spec is the contract for independent verifiers — the whole
+// point of using RFC 6962 here is that someone can check a checkpoint without
+// reading this file. An earlier version prefixed prev_checkpoint_hash with its
+// uint32 length, producing a 100-byte input that no spec-following verifier
+// would reproduce. The prefix also distinguished nothing: genesis is defined as
+// 32 zero bytes rather than an empty value, so the length was always 32.
+//
+// Callers must pass the 32-byte genesis constant for the first checkpoint,
+// never nil, or the input length changes and the hash leaves the spec again.
 func computeCheckpointHash(merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) []byte {
 	h := sha256.New()
 	h.Write(merkleRoot)
-	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(prevHash)))
-	h.Write(lenBuf[:])
 	h.Write(prevHash)
 	var scalars [32]byte
 	binary.LittleEndian.PutUint64(scalars[0:8], uint64(rangeStart))
