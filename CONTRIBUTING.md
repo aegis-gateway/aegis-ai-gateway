@@ -54,6 +54,15 @@ Discuss the approach before opening a large PR — it saves everyone time.
 4. Open a PR against `main` using the PR template.
 5. A maintainer will review and provide feedback.
 
+### Accuracy checklist for security-sensitive packages
+
+If your PR touches `internal/auth/`, `internal/filter/`, or `internal/audit/`, you **must** verify before merging:
+
+- [ ] `.github/SECURITY.md` still accurately describes the key-hashing scheme, filter behaviour, and audit logging
+- [ ] The feature list in `README.md` still matches what the code actually does
+
+This check exists because documentation drift in these packages has occurred more than once and can mislead operators into misconfiguring production deployments.
+
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

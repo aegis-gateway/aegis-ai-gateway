@@ -45,7 +45,9 @@ AEGIS includes several built-in security layers applied to **inbound requests**:
 - **Classification gating** (`internal/router`) — requests are gated based on the API key's assigned classification level before routing
 - **OPA policy evaluation** (`internal/filter/policy`) — every request is evaluated against Rego policies; allow/deny decisions are logged
 - **Audit logging** (`internal/audit`) — all requests and policy decisions are written to `audit_logs` and `audit_events`
-- **API key hashing** (`internal/auth`) — keys are stored as SHA-256 hashes, never in plaintext
+- **API key hashing** (`internal/auth`) — keys are never stored in plaintext; the scheme is versioned:
+  - **`hash_version=2` (default for new keys):** HMAC-SHA256 with a server-side pepper (`AEGIS_KEY_PEPPER`, minimum 32 characters). The gateway refuses to start if the pepper is unset or shorter than 32 characters.
+  - **`hash_version=1` (legacy):** plain SHA-256, retained for backward compatibility with keys created before the pepper scheme. Legacy keys are still verified correctly.
 
 **Note:** Response-side egress scanning (checking provider responses for credential leakage) is not yet implemented. A tracking issue covers the design. Until it lands, treat AEGIS as an inbound governance layer.
 
