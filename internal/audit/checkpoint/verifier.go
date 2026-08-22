@@ -311,6 +311,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 		&cp.ID, &cp.RangeStart, &cp.RangeEnd, &cp.EventCount, &cp.MerkleRoot,
 		&cp.PrevCheckpointID, &cp.PrevCheckpointHash, &cp.CheckpointHash,
 		&cp.HashSchemaVersion, &cp.SealedAt, &cp.SealerVersion, &cp.CanonicalizationSpec,
+		&cp.CoveredFrom, &cp.CoveredTo,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("verify: event %d is not yet sealed into any checkpoint", eventID)

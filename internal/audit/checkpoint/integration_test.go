@@ -16,6 +16,7 @@ package checkpoint_test
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"sync"
 	"testing"
@@ -221,4 +222,75 @@ func TestCheckpointIntegration_ConcurrentSeal(t *testing.T) {
 		t.Fatalf("chain anomalies after concurrent seal: %v", result.Anomalies)
 	}
 	t.Logf("concurrent seal: %d checkpoints, success=%d, lock_blocked=%d", count, successCount, lockErrCount)
+}
+
+// TestCheckpointIntegration_InclusionProof exercises `verify-chain --event E`
+// against a real database.
+//
+// The proof path was the one caller of audit_checkpoints that migration 009
+// broke: buildInclusionProof was updated to select covered_from and covered_to
+// but not to scan them, so every lookup failed on a column/destination count
+// mismatch. Nothing caught it, because the only inclusion-proof test in the
+// package operates on in-memory leaves and never opens a connection. The
+// column list and the scan destinations only disagree in front of Postgres, so
+// this test has to reach it.
+func TestCheckpointIntegration_InclusionProof(t *testing.T) {
+	db := testDB(t)
+	resetCheckpoints(t, db)
+
+	// Five events, so the tree has an odd level and the proof is not trivial.
+	past := time.Now().UTC().Add(-10 * time.Minute)
+	ids := make([]int64, 0, 5)
+	for i := 0; i < 5; i++ {
+		ids = append(ids, insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second)))
+	}
+
+	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
+		t.Fatalf("RunSeal: %v", err)
+	}
+
+	var storedRoot []byte
+	var storedID int64
+	err := db.QueryRow(context.Background(),
+		"SELECT id, merkle_root FROM audit_checkpoints ORDER BY id ASC LIMIT 1").
+		Scan(&storedID, &storedRoot)
+	if err != nil {
+		t.Fatalf("read sealed checkpoint: %v", err)
+	}
+
+	// Every covered event must yield a proof, not just the first.
+	for _, eventID := range ids {
+		_, proof, err := checkpoint.RunVerify(context.Background(), db,
+			checkpoint.VerifyOptions{EventID: eventID})
+		if err != nil {
+			t.Fatalf("RunVerify --event %d: %v", eventID, err)
+		}
+		if proof == nil {
+			t.Fatalf("RunVerify --event %d returned no proof", eventID)
+		}
+		if proof.EventID != eventID {
+			t.Errorf("proof is for event %d, asked for %d", proof.EventID, eventID)
+		}
+		if proof.CheckpointID != storedID {
+			t.Errorf("event %d: proof names checkpoint %d, event was sealed into %d",
+				eventID, proof.CheckpointID, storedID)
+		}
+		if got, want := proof.MerkleRoot, hex.EncodeToString(storedRoot); got != want {
+			t.Errorf("event %d: proof root %s does not match the sealed root %s",
+				eventID, got, want)
+		}
+		if proof.LeafIndex < 0 || proof.LeafIndex >= len(ids) {
+			t.Errorf("event %d: leaf index %d is outside the covered range",
+				eventID, proof.LeafIndex)
+		}
+	}
+
+	// An event that exists but was never sealed has no proof, and that is an
+	// error rather than an empty one.
+	unsealed := insertTestEvent(t, db, time.Now().UTC())
+	if _, _, err := checkpoint.RunVerify(context.Background(), db,
+		checkpoint.VerifyOptions{EventID: unsealed}); err == nil {
+		t.Error("expected an error for an unsealed event, got a proof")
+	}
 }
