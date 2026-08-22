@@ -63,7 +63,14 @@ func testDB(t *testing.T) *pgxpool.Pool {
 func resetCheckpoints(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := db.Exec(ctx, "TRUNCATE audit_events, audit_checkpoints RESTART IDENTITY CASCADE")
+	// audit_purges as well, and not as an afterthought. verify-chain --full
+	// consults it to decide whether a range is attested-but-unverifiable, so a
+	// purge row left behind by one test makes a later test's healthy chain
+	// report an anomaly. That is the same class of cross-test contamination
+	// the search_path fix addressed for internal/purge, arriving by a
+	// different route.
+	_, err := db.Exec(ctx,
+		"TRUNCATE audit_events, audit_checkpoints, audit_purges RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate the audit tables: %v", err)
 	}
@@ -90,7 +97,7 @@ func TestCheckpointIntegration_SealEmpty(t *testing.T) {
 	resetCheckpoints(t, db)
 
 	opts := checkpoint.SealOptions{
-		LagSeconds: 0,
+		LagSeconds: checkpoint.SealLag(0),
 		BatchSize:  100,
 	}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
@@ -115,7 +122,7 @@ func TestCheckpointIntegration_SealAndVerify(t *testing.T) {
 		insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}
@@ -156,7 +163,7 @@ func TestCheckpointIntegration_TamperDetection(t *testing.T) {
 		}
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}
@@ -188,7 +195,7 @@ func TestCheckpointIntegration_ConcurrentSeal(t *testing.T) {
 		insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -251,7 +258,7 @@ func TestCheckpointIntegration_InclusionProof(t *testing.T) {
 		ids = append(ids, insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second)))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}

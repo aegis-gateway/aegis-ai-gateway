@@ -99,12 +99,12 @@ func (h *Handler) parseAndValidate(r *http.Request, reqID string, authInfo *auth
 		auditLogger: h.auditLogger,
 		metrics:     h.metrics,
 	}
-	
+
 	parsed, err := processor.ParseAndValidateRequest(r, reqID, authInfo)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &ParsedRequestWithModel{
 		ParsedRequest: parsed,
 		OriginalModel: parsed.AegisRequest.Model,
@@ -118,7 +118,7 @@ func (h *Handler) runContentFilters(r *http.Request, parsedReq *ParsedRequestWit
 		auditLogger: h.auditLogger,
 		metrics:     h.metrics,
 	}
-	
+
 	_, err := processor.RunFilters(r, parsedReq.AegisRequest, authInfo)
 	return err
 }
@@ -160,7 +160,7 @@ func (h *Handler) routeRequest(ctx interface{ Done() <-chan struct{} }, parsedRe
 		healthTracker: h.healthTracker,
 		modelsCfg:     h.modelsCfg,
 	}
-	
+
 	// Convert ctx to context.Context using type assertion
 	routeResult, err := processor.RouteToProvider(ctx.(interface {
 		Done() <-chan struct{}
@@ -171,7 +171,7 @@ func (h *Handler) routeRequest(ctx interface{ Done() <-chan struct{} }, parsedRe
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &RouteResultWithModel{
 		RouteResult:   routeResult,
 		OriginalModel: parsedReq.OriginalModel,
@@ -222,7 +222,7 @@ func (h *Handler) executeNonStreamingRequest(
 		healthTracker: h.healthTracker,
 		retryExecutor: h.retryExecutor,
 	}
-	
+
 	// Execute provider request
 	providerResp, err := executor.ExecuteProviderRequest(
 		ctx.(interface {
@@ -238,7 +238,7 @@ func (h *Handler) executeNonStreamingRequest(
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Transform response
 	return executor.TransformProviderResponse(
 		ctx.(interface {

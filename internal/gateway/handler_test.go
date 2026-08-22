@@ -64,7 +64,7 @@ func TestChatCompletions_RequiresAuth(t *testing.T) {
 
 	reqBody := `{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(reqBody))
-	
+
 	w := httptest.NewRecorder()
 	w.Header().Set("X-Request-ID", "test-123")
 
@@ -330,7 +330,7 @@ func TestCostCalculator_Integration(t *testing.T) {
 func TestMetricsIntegration(t *testing.T) {
 	// This is a unit test for the metrics flow, not a full integration test
 	// Real integration tests would require a running provider
-	
+
 	labels := telemetry.RequestLabels{
 		Org:              "org-1",
 		Team:             "team-1",
@@ -437,7 +437,7 @@ func TestAegisResponseFormat(t *testing.T) {
 // TestAegisHeaders tests parsing of AEGIS-specific headers.
 func TestAegisHeaders(t *testing.T) {
 	headers := map[string]string{
-		"X-Aegis-Project":        "my-project",
+		"X-Aegis-Project":         "my-project",
 		"X-Aegis-Prefer-Provider": "openai",
 		"X-Aegis-Trace-Context":   "trace-123-456",
 	}

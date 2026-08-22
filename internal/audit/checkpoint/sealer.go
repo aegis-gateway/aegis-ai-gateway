@@ -47,19 +47,49 @@ type SealOptions struct {
 	SinceEvent int64
 	// BatchSize is the max events per checkpoint (default 10000).
 	BatchSize int
-	// LagSeconds is the safety window: only seal events older than this (default 300).
+	// LagSeconds is the safety window: only seal events older than this.
 	// Prevents sealing events still in-flight under concurrent load (BIGSERIAL gap issue).
-	LagSeconds int
+	//
+	// A pointer so that unset is distinguishable from deliberately zero. Nil
+	// means DefaultLagSeconds; [SealLag] wraps an explicit value, including
+	// zero for a caller that genuinely wants none.
+	//
+	// It is not a plain int because the zero value of one is the dangerous
+	// setting. Sealing with no lag can exclude an in-flight event from the
+	// chain permanently, and since seal state now feeds a control plane it
+	// would also make a healthy gateway report gap states. A field whose
+	// default is the hazardous option is a field that will eventually be left
+	// unset by someone who did not know.
+	LagSeconds *int
 }
+
+// DefaultLagSeconds is the window used when SealOptions.LagSeconds is unset.
+//
+// 300, matching `aegis-migrate seal -lag-seconds` and the five minute default
+// documented in docs/AUDIT-INTEGRITY.md section 6. Defined here so the CLI, the
+// specification and a programmatic caller cannot drift apart.
+const DefaultLagSeconds = 300
+
+// SealLag returns a pointer to n, for setting SealOptions.LagSeconds
+// explicitly. Use SealLag(0) to seal with no lag, which is a deliberate choice
+// and not a default.
+func SealLag(n int) *int { return &n }
 
 func (o *SealOptions) applyDefaults() {
 	if o.BatchSize <= 0 {
 		o.BatchSize = 10000
 	}
-	if o.LagSeconds < 0 {
-		o.LagSeconds = 0
+	if o.LagSeconds == nil {
+		o.LagSeconds = SealLag(DefaultLagSeconds)
+	}
+	if *o.LagSeconds < 0 {
+		o.LagSeconds = SealLag(0)
 	}
 }
+
+// lagSeconds returns the resolved window. applyDefaults runs first, so it is
+// never nil by the time this is called.
+func (o *SealOptions) lagSeconds() int { return *o.LagSeconds }
 
 // RunSeal acquires the single-writer advisory lock and seals all outstanding events
 // in batches until caught up. See docs/AUDIT-INTEGRITY.md §6 for the full algorithm.
@@ -144,7 +174,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	}
 
 	// Visibility watermark: only seal events older than LagSeconds.
-	watermark := time.Now().UTC().Add(-time.Duration(s.opts.LagSeconds) * time.Second)
+	watermark := time.Now().UTC().Add(-time.Duration(s.opts.lagSeconds()) * time.Second)
 
 	// Load up to BatchSize eligible events.
 	rows, err := conn.Query(ctx, `
@@ -280,8 +310,8 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		    (range_start, range_end, event_count, merkle_root,
 		     prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
 		     hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
-		     covered_from, covered_to)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11)
+		     covered_from, covered_to, covered_range_source)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11,'sealed')
 	`, rangeStart, rangeEnd, eventCount, merkleRoot,
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,

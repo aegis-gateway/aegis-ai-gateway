@@ -27,18 +27,27 @@ import "fmt"
 type SealState string
 
 const (
-	// SealStateCurrent means every event old enough to seal has been sealed.
-	SealStateCurrent SealState = "current"
+	// SealStateAdvancing means nothing is blocking the sealer. Either
+	// everything old enough to seal has been sealed, or what remains is
+	// contiguous with the last checkpoint and will be sealed on the next run.
+	SealStateAdvancing SealState = "advancing"
 
-	// SealStatePausedAtGap means sealing has stopped because a gap in audit
-	// event IDs separates the last checkpoint from the next visible event.
+	// SealStateWaitingOnGap means a gap in audit event IDs exists, but the
+	// events beyond it are still inside the seal lag window, so the sealer has
+	// not yet attempted to seal past it and the gap may still fill on its own.
 	//
-	// The gateway's sealer stops rather than sealing past the gap, because an
-	// in-flight transaction may still commit into it and sealing past it would
-	// exclude that event from the chain permanently. A gap left by a
-	// rolled-back insert never fills, so this state persists until an operator
-	// resolves it. It is a deliberate stall, and reporting it is what stops it
-	// being mistaken for a gateway that has gone quiet.
+	// This is the state that must not be confused with a stall. BIGSERIAL hands
+	// out an ID at insert and the row becomes visible at commit, so a
+	// transaction in flight leaves exactly this shape and then resolves it. The
+	// lag window exists to let that happen. Reporting a healthy gateway as
+	// paused during it would train an operator to ignore the signal, which is
+	// worse than not having one.
+	SealStateWaitingOnGap SealState = "waiting_on_gap"
+
+	// SealStatePausedAtGap means the gap persisted past the lag window. The
+	// sealer has attempted to seal and stopped, and will make no further
+	// progress until an operator resolves it: a gap left by a rolled-back
+	// insert never fills.
 	SealStatePausedAtGap SealState = "paused_at_gap"
 
 	// SealStateNeverSealed means the gateway holds audit events but no
@@ -46,10 +55,20 @@ const (
 	SealStateNeverSealed SealState = "never_sealed"
 
 	// SealStateEmpty means the gateway holds no audit events at all, so there
-	// is nothing to seal. Distinct from Current: one has attested everything,
-	// the other has had nothing to attest.
+	// is nothing to seal. Distinct from Advancing: one has attested
+	// everything, the other has had nothing to attest.
 	SealStateEmpty SealState = "empty"
 )
+
+// DefaultSealLagSeconds is the lag window a gateway uses unless configured
+// otherwise, and the value this protocol documents as the reference.
+//
+// It is 300 because that is what the sealer's own default is: aegis-migrate
+// seal takes -lag-seconds 300, and docs/AUDIT-INTEGRITY.md section 6 specifies
+// audit.seal_lag_seconds with a five minute default. The number is not chosen
+// here; it is read from the component whose behaviour it describes, which is
+// the only way the two can be relied on to agree.
+const DefaultSealLagSeconds int64 = 300
 
 // GatewayStatusReport is a gateway's account of its own sealing.
 //
@@ -82,11 +101,40 @@ type GatewayStatusReport struct {
 	// situations wearing the same label.
 	UnsealedEventCount int64 `json:"unsealed_event_count"`
 
-	// GapAfterEventID and NextVisibleEventID locate a gap. Both are set only
-	// for [SealStatePausedAtGap], and they are the two numbers an operator
-	// needs in order to go and look at what is missing.
-	GapAfterEventID    *int64 `json:"gap_after_event_id,omitempty"`
-	NextVisibleEventID *int64 `json:"next_visible_event_id,omitempty"`
+	// LastSealedEventID is the highest audit event ID covered by a checkpoint,
+	// or zero when none has been sealed. Required.
+	LastSealedEventID int64 `json:"last_sealed_event_id"`
+
+	// FirstUnsealedEventID is the lowest audit event ID beyond the last
+	// checkpoint, nil when nothing is unsealed. Required whenever
+	// UnsealedEventCount is non-zero.
+	//
+	// Together with LastSealedEventID it locates a gap exactly: the missing IDs
+	// are the interval between them. These are the two numbers an operator
+	// needs in order to go and look, and they are reported in every state
+	// rather than only when paused, because "how far behind is this gateway"
+	// is a question worth answering while it is still healthy.
+	FirstUnsealedEventID *int64 `json:"first_unsealed_event_id"`
+
+	// GapAgeSeconds is how long the gap has existed, nil when there is no gap.
+	//
+	// Required whenever a gap exists, and deliberately independent of any
+	// threshold. A consumer can reason about an age without agreeing with the
+	// gateway about what counts as too long, which matters because
+	// SealLagSeconds is the gateway's own declaration and may itself be
+	// misconfigured. An age is objective; a state is a judgement made against
+	// a number someone chose.
+	GapAgeSeconds *int64 `json:"gap_age_seconds"`
+
+	// SealLagSeconds is the lag window this gateway is running with: the age an
+	// event must reach before the sealer will seal it.
+	//
+	// It is declared by the gateway and stored as declared. A control plane
+	// must not hold a threshold describing a system it does not operate, and
+	// must not synthesise a state it was not told: SealState is the gateway's
+	// judgement, this is the number it judged against, and both travel
+	// together so a reader can check one against the other.
+	SealLagSeconds int64 `json:"seal_lag_seconds"`
 
 	// GatewayVersion is the build version reporting this.
 	GatewayVersion string `json:"gateway_version"`
@@ -101,9 +149,16 @@ func (r *GatewayStatusReport) Validate() error {
 		return fmt.Errorf("reported_at is required")
 	}
 	switch r.SealState {
-	case SealStateCurrent, SealStatePausedAtGap, SealStateNeverSealed, SealStateEmpty:
+	case SealStateAdvancing, SealStateWaitingOnGap, SealStatePausedAtGap,
+		SealStateNeverSealed, SealStateEmpty:
 	default:
 		return fmt.Errorf("seal_state %q is not a known state", r.SealState)
+	}
+	if r.SealLagSeconds < 0 {
+		return fmt.Errorf("seal_lag_seconds must not be negative, got %d", r.SealLagSeconds)
+	}
+	if r.LastSealedEventID < 0 {
+		return fmt.Errorf("last_sealed_event_id must not be negative, got %d", r.LastSealedEventID)
 	}
 	if r.UnsealedEventCount < 0 {
 		return fmt.Errorf("unsealed_event_count must not be negative, got %d", r.UnsealedEventCount)
@@ -115,23 +170,38 @@ func (r *GatewayStatusReport) Validate() error {
 		return fmt.Errorf("last_checkpoint_id must be positive when present, got %d", *r.LastCheckpointID)
 	}
 
-	// A gap is only meaningful with both of its bounds, and only in the state
-	// that has one. Accepting a stray bound would let a report describe a gap
-	// while claiming to be current.
-	hasGapBounds := r.GapAfterEventID != nil || r.NextVisibleEventID != nil
-	if r.SealState == SealStatePausedAtGap {
-		if r.GapAfterEventID == nil || r.NextVisibleEventID == nil {
+	// A gap state must carry the numbers that describe the gap, and a
+	// non-gap state must not claim one. Without both halves a report could
+	// describe a gap while calling itself healthy, or call itself paused
+	// while naming nothing an operator could act on.
+	if r.HasGap() {
+		if r.FirstUnsealedEventID == nil {
+			return fmt.Errorf("seal_state is %q, so first_unsealed_event_id is required", r.SealState)
+		}
+		if *r.FirstUnsealedEventID <= r.LastSealedEventID+1 {
 			return fmt.Errorf(
-				"seal_state is %q, so gap_after_event_id and next_visible_event_id are both required",
-				SealStatePausedAtGap)
+				"seal_state is %q but first_unsealed_event_id %d follows last_sealed_event_id %d "+
+					"with no gap between them",
+				r.SealState, *r.FirstUnsealedEventID, r.LastSealedEventID)
 		}
-		if *r.NextVisibleEventID <= *r.GapAfterEventID {
-			return fmt.Errorf("next_visible_event_id %d does not follow gap_after_event_id %d",
-				*r.NextVisibleEventID, *r.GapAfterEventID)
+		if r.GapAgeSeconds == nil {
+			return fmt.Errorf("seal_state is %q, so gap_age_seconds is required", r.SealState)
 		}
-	} else if hasGapBounds {
-		return fmt.Errorf("gap bounds were sent with seal_state %q, which describes no gap",
+		if *r.GapAgeSeconds < 0 {
+			return fmt.Errorf("gap_age_seconds must not be negative, got %d", *r.GapAgeSeconds)
+		}
+	} else if r.GapAgeSeconds != nil {
+		return fmt.Errorf("gap_age_seconds was sent with seal_state %q, which describes no gap",
 			r.SealState)
+	}
+
+	if r.UnsealedEventCount > 0 && r.FirstUnsealedEventID == nil {
+		return fmt.Errorf("%d events are unsealed, so first_unsealed_event_id is required",
+			r.UnsealedEventCount)
+	}
+	if r.UnsealedEventCount == 0 && r.FirstUnsealedEventID != nil {
+		return fmt.Errorf("first_unsealed_event_id %d was sent with no unsealed events",
+			*r.FirstUnsealedEventID)
 	}
 
 	if r.SealState == SealStateEmpty && r.UnsealedEventCount != 0 {
@@ -139,6 +209,11 @@ func (r *GatewayStatusReport) Validate() error {
 			SealStateEmpty, r.UnsealedEventCount)
 	}
 	return validateLabel("gateway_version", r.GatewayVersion, MaxVersionLen)
+}
+
+// HasGap reports whether this state describes a gap in audit event IDs.
+func (r *GatewayStatusReport) HasGap() bool {
+	return r.SealState == SealStateWaitingOnGap || r.SealState == SealStatePausedAtGap
 }
 
 // GatewayStatusResponse acknowledges a status report.

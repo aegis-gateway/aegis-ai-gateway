@@ -225,7 +225,7 @@ func TestMetrics_NewMetrics_DBPool(t *testing.T) {
 	// Note: This test can't use the actual NewMetrics() because it would
 	// register with the default registry and conflict with other tests.
 	// Instead, we verify the structure matches expectations.
-	
+
 	dbPoolConns := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "test_check_aegis_db_pool_conns",
 		Help: "Test check",
@@ -238,7 +238,7 @@ func TestMetrics_NewMetrics_DBPool(t *testing.T) {
 	}, []string{})
 
 	m := &Metrics{
-		DBPoolConns:       dbPoolConns,
+		DBPoolConns:        dbPoolConns,
 		DBPoolWaitDuration: dbPoolWait,
 	}
 
@@ -253,11 +253,11 @@ func TestMetrics_NewMetrics_DBPool(t *testing.T) {
 // TestRecordDBPoolStats_DifferentPoolSizes tests various pool configurations.
 func TestRecordDBPoolStats_DifferentPoolSizes(t *testing.T) {
 	tests := []struct {
-		name         string
-		acquired     int32
-		idle         int32
-		max          int32
-		total        int32
+		name     string
+		acquired int32
+		idle     int32
+		max      int32
+		total    int32
 	}{
 		{"Small pool", 2, 3, 5, 5},
 		{"Medium pool", 10, 15, 25, 25},

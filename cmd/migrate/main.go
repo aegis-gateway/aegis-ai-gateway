@@ -147,7 +147,7 @@ func runSeal(args []string) {
 	fs := flag.NewFlagSet("seal", flag.ExitOnError)
 	sinceEvent := fs.Int64("since-event", 0, "start from event ID N (0 = all history)")
 	batchSize := fs.Int("batch-size", 10000, "events per checkpoint")
-	lagSeconds := fs.Int("lag-seconds", 300, "safety window: only seal events older than this many seconds")
+	lagSeconds := fs.Int("lag-seconds", checkpoint.DefaultLagSeconds, "safety window: only seal events older than this many seconds")
 	dbURL := fs.String("db-url", "", "database URL (overrides env)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate seal [flags]")
@@ -172,7 +172,7 @@ func runSeal(args []string) {
 	opts := checkpoint.SealOptions{
 		SinceEvent: *sinceEvent,
 		BatchSize:  *batchSize,
-		LagSeconds: *lagSeconds,
+		LagSeconds: checkpoint.SealLag(*lagSeconds),
 	}
 
 	if err := checkpoint.RunSeal(ctx, pool, opts); err != nil {

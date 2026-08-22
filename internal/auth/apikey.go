@@ -103,17 +103,17 @@ func randomString(n int) (string, error) {
 
 // KeyMetadata holds the cached metadata for an API key.
 type KeyMetadata struct {
-	ID                   string              `json:"id"`
-	OrganizationID       string              `json:"organization_id"`
-	TeamID               string              `json:"team_id"`
-	UserID               string              `json:"user_id,omitempty"`
-	Name                 string              `json:"name"`
+	ID                   string               `json:"id"`
+	OrganizationID       string               `json:"organization_id"`
+	TeamID               string               `json:"team_id"`
+	UserID               string               `json:"user_id,omitempty"`
+	Name                 string               `json:"name"`
 	MaxClassification    types.Classification `json:"max_classification"`
-	AllowedModels        []string            `json:"allowed_models"`
-	RPMLimit             *int                `json:"rpm_limit,omitempty"`
-	TPMLimit             *int                `json:"tpm_limit,omitempty"`
-	DailySpendLimitCents *int                `json:"daily_spend_limit_cents,omitempty"`
-	ExpiresAt            time.Time           `json:"expires_at"`
+	AllowedModels        []string             `json:"allowed_models"`
+	RPMLimit             *int                 `json:"rpm_limit,omitempty"`
+	TPMLimit             *int                 `json:"tpm_limit,omitempty"`
+	DailySpendLimitCents *int                 `json:"daily_spend_limit_cents,omitempty"`
+	ExpiresAt            time.Time            `json:"expires_at"`
 }
 
 func (km *KeyMetadata) MarshalJSON() ([]byte, error) {

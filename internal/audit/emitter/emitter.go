@@ -50,6 +50,26 @@ type Options struct {
 
 	// Timeout bounds a single HTTP request.
 	Timeout time.Duration
+
+	// SealLagSeconds is the lag window this gateway's sealer runs with. It is
+	// reported to the control plane as a declaration, and the sealing state is
+	// judged against it here rather than there: the control plane does not
+	// operate this database and must not hold a threshold describing it.
+	//
+	// Zero means the protocol's documented default, which is the sealer's own.
+	// A gateway running a non-default window must pass the same value it runs
+	// the sealer with, or it will report a state judged against a window it is
+	// not using.
+	SealLagSeconds int64
+}
+
+// sealLagSeconds resolves the configured window, falling back to the default
+// the protocol documents.
+func (o Options) sealLagSeconds() int64 {
+	if o.SealLagSeconds > 0 {
+		return o.SealLagSeconds
+	}
+	return controlplanev1.DefaultSealLagSeconds
 }
 
 // Result summarises a run.
@@ -98,7 +118,7 @@ func Run(ctx context.Context, db *pgxpool.Pool, opts Options) (*Result, error) {
 	// discontinuity stops it, and a gateway paused at a gap has nothing to
 	// submit at all. Reporting first means the control plane learns why a
 	// gateway is quiet even when the reason is that this run failed.
-	if err := reportStatus(ctx, db, client, state.GatewayID, result); err != nil {
+	if err := reportStatus(ctx, db, client, state.GatewayID, opts.sealLagSeconds(), result); err != nil {
 		// A failed status report must not stop checkpoint submission.
 		// Checkpoints are the evidence; the status is context for it, and
 		// losing the context is not a reason to withhold the evidence.
@@ -152,8 +172,8 @@ func Run(ctx context.Context, db *pgxpool.Pool, opts Options) (*Result, error) {
 }
 
 // reportStatus reads this gateway's sealing state and sends it.
-func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gatewayID string, result *Result) error {
-	status, err := checkpoint.ReadSealStatus(ctx, db)
+func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gatewayID string, lagSeconds int64, result *Result) error {
+	status, err := checkpoint.ReadSealStatus(ctx, db, lagSeconds)
 	if err != nil {
 		return fmt.Errorf("reading the sealing status: %w", err)
 	}
@@ -166,9 +186,21 @@ func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gateway
 	if status.State == controlplanev1.SealStatePausedAtGap {
 		slog.Warn("control plane: reported that sealing is paused at an event id gap",
 			"gateway_id", gatewayID,
-			"gap_after_event_id", *status.GapAfterEventID,
-			"next_visible_event_id", *status.NextVisibleEventID,
+			"last_sealed_event_id", status.LastSealedEventID,
+			"first_unsealed_event_id", *status.FirstUnsealedEventID,
+			"gap_age_seconds", int64(status.GapAge.Seconds()),
+			"seal_lag_seconds", status.LagSeconds,
 			"unsealed_event_count", status.UnsealedEventCount)
+	} else if status.State == controlplanev1.SealStateWaitingOnGap {
+		// Info, not warn. A gap inside the lag window is the sealer working as
+		// designed, and warning here is what would teach an operator to ignore
+		// the warning that matters.
+		slog.Info("control plane: reported a gap still inside the seal lag window",
+			"gateway_id", gatewayID,
+			"last_sealed_event_id", status.LastSealedEventID,
+			"first_unsealed_event_id", *status.FirstUnsealedEventID,
+			"gap_age_seconds", int64(status.GapAge.Seconds()),
+			"seal_lag_seconds", status.LagSeconds)
 	} else {
 		slog.Info("control plane: reported sealing status",
 			"gateway_id", gatewayID,
@@ -295,7 +327,7 @@ func loadCheckpointsAfter(ctx context.Context, db *pgxpool.Pool, gatewayID strin
 		SELECT id, range_start, range_end, event_count, merkle_root,
 		       prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
 		       hash_schema_version, canonicalization_spec, sealed_at, sealer_version,
-		       covered_from, covered_to
+		       covered_from, covered_to, covered_range_source
 		FROM audit_checkpoints
 		WHERE id > $1
 		ORDER BY id ASC
@@ -316,20 +348,23 @@ func loadCheckpointsAfter(ctx context.Context, db *pgxpool.Pool, gatewayID strin
 			canonSpec, sealerVersion      string
 			sealedAt                      time.Time
 			coveredFrom, coveredTo        *time.Time
+			coveredRangeSource            *string
 		)
 		if err := rows.Scan(
 			&id, &rangeStart, &rangeEnd, &eventCount, &merkleRoot,
 			&prevCheckpointID, &prevHash, &cpHash,
 			&hashSchemaVersion, &canonSpec, &sealedAt, &sealerVersion,
-			&coveredFrom, &coveredTo,
+			&coveredFrom, &coveredTo, &coveredRangeSource,
 		); err != nil {
 			return nil, fmt.Errorf("scanning a checkpoint: %w", err)
 		}
 
-		if coveredFrom == nil || coveredTo == nil {
+		if coveredFrom == nil || coveredTo == nil || coveredRangeSource == nil {
 			return nil, fmt.Errorf(
-				"%w: checkpoint %d covers events %d to %d, which were purged before migration 009 "+
-					"backfilled the interval, so it cannot be submitted under protocol version 1",
+				"%w: checkpoint %d covers events %d to %d and has no proven covered time range, "+
+					"so it cannot be submitted under protocol version 1. Either its events were "+
+					"purged before migration 009 backfilled the interval, or migration 011 could "+
+					"not prove the backfilled interval complete and discarded it",
 				ErrCoveredRangeUnknown, id, rangeStart, rangeEnd)
 		}
 
@@ -351,6 +386,7 @@ func loadCheckpointsAfter(ctx context.Context, db *pgxpool.Pool, gatewayID strin
 			GatewayVersion:       GatewayVersion,
 			CoveredFrom:          controlplanev1.NewTimestamp(*coveredFrom),
 			CoveredTo:            controlplanev1.NewTimestamp(*coveredTo),
+			CoveredRangeSource:   controlplanev1.CoverageSource(*coveredRangeSource),
 		})
 	}
 	return out, rows.Err()

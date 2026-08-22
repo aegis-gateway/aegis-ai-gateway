@@ -29,7 +29,9 @@ import (
 
 // RequestProcessor handles request parsing, validation, and enrichment.
 type RequestProcessor struct {
-	validator   interface{ Validate(*types.AegisRequest) error }
+	validator interface {
+		Validate(*types.AegisRequest) error
+	}
 	auditLogger AuditLogger
 	metrics     interface{ RecordFilterAction(string, string) }
 }
@@ -136,7 +138,7 @@ func (fp *FilterProcessor) RunFilters(
 	}
 
 	results, blocked := fp.filterChain.Run(r.Context(), aegisReq)
-	
+
 	if blocked != nil {
 		slog.Warn("request blocked by filter",
 			"request_id", aegisReq.RequestID,
@@ -145,7 +147,7 @@ func (fp *FilterProcessor) RunFilters(
 			"score", blocked.Score,
 			"org_id", authInfo.OrganizationID,
 		)
-		
+
 		if fp.auditLogger != nil {
 			fp.auditLogger.LogFilterBlock(
 				aegisReq.RequestID,
@@ -157,11 +159,11 @@ func (fp *FilterProcessor) RunFilters(
 				r.RemoteAddr,
 			)
 		}
-		
+
 		if fp.metrics != nil {
 			fp.metrics.RecordFilterAction(blocked.FilterName, string(blocked.Action))
 		}
-		
+
 		return nil, httputil.NewHTTPError(http.StatusForbidden, blocked.Message)
 	}
 
@@ -190,7 +192,7 @@ func (rb *ResponseBuilder) BuildResponse(
 	reqID string,
 ) {
 	aegisResp.RequestID = reqID
-	
+
 	// Calculate cost using actual provider and model served
 	if rb.costCalc != nil && (aegisResp.Usage.PromptTokens > 0 || aegisResp.Usage.CompletionTokens > 0) {
 		if cost, found := rb.costCalc.CalculateSimple(

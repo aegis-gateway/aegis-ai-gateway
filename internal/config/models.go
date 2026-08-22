@@ -46,13 +46,13 @@ type ProviderPricing struct {
 
 type PriceEntry struct {
 	// Rates are USD per million tokens.
-	Input          float64           `yaml:"input"`
-	CachedInput    float64           `yaml:"cached_input"`
-	CacheWrite5m   float64           `yaml:"cache_write_5m"`
-	Output         float64           `yaml:"output"`
-	BatchMultiplier float64          `yaml:"batch_multiplier"`
-	RegionalUplift float64           `yaml:"regional_uplift,omitempty"`
-	LongContext    *LongContextPricing `yaml:"long_context,omitempty"`
+	Input           float64             `yaml:"input"`
+	CachedInput     float64             `yaml:"cached_input"`
+	CacheWrite5m    float64             `yaml:"cache_write_5m"`
+	Output          float64             `yaml:"output"`
+	BatchMultiplier float64             `yaml:"batch_multiplier"`
+	RegionalUplift  float64             `yaml:"regional_uplift,omitempty"`
+	LongContext     *LongContextPricing `yaml:"long_context,omitempty"`
 }
 
 type LongContextPricing struct {

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build integration
 // +build integration
 
 package gateway
@@ -39,7 +40,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/validation"
-	
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -105,12 +106,12 @@ func NewMockProviderServer() *MockProviderServer {
 		// Check if streaming request
 		var req map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&req)
-		
+
 		if stream, ok := req["stream"].(bool); ok && stream {
 			// Return SSE stream
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			
+
 			for _, chunk := range mock.StreamChunks {
 				fmt.Fprintf(w, "data: %s\n\n", chunk)
 				if flusher, ok := w.(http.Flusher); ok {
@@ -172,22 +173,22 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 			DefaultRequestsPerMinute: 100,
 		},
 		Retry: config.RetryConfig{
-			MaxAttempts:     3,
-			InitialBackoff:  100 * time.Millisecond,
-			MaxBackoff:      5 * time.Second,
+			MaxAttempts:       3,
+			InitialBackoff:    100 * time.Millisecond,
+			MaxBackoff:        5 * time.Second,
 			BackoffMultiplier: 2.0,
-			Jitter:          0.1,
+			Jitter:            0.1,
 		},
 		Validation: config.ValidationConfig{
-			MaxModelLength:      100,
-			MaxMessagesCount:    1000,
-			MaxMessageLength:    50000,
-			MaxTemperature:      2.0,
-			MinTemperature:      0.0,
-			MaxTopP:             1.0,
-			MinTopP:             0.0,
-			MaxTokens:           100000,
-			MaxStopSequences:    4,
+			MaxModelLength:        100,
+			MaxMessagesCount:      1000,
+			MaxMessageLength:      50000,
+			MaxTemperature:        2.0,
+			MinTemperature:        0.0,
+			MaxTopP:               1.0,
+			MinTopP:               0.0,
+			MaxTokens:             100000,
+			MaxStopSequences:      4,
 			MaxStopSequenceLength: 100,
 		},
 	}
@@ -205,7 +206,7 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 	metrics := telemetry.NewMetrics()
 	costCalc := cost.NewCalculator(modelsCfg)
 	usageRecorder := storage.NewUsageRecorder(db)
-	
+
 	// Setup providers registry with mock provider
 	registry := router.NewRegistry()
 	mockAdapter := &mockProviderAdapter{
@@ -214,7 +215,7 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 		client: http.DefaultClient,
 	}
 	registry.Register("openai", mockAdapter)
-	
+
 	healthTracker := router.NewHealthTracker()
 	filterChain := filter.NewChain()
 	retryExecutor := retry.NewExecutor(cfg.Retry, metrics)

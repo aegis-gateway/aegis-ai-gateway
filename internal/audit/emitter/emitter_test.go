@@ -251,7 +251,7 @@ func sealFixture(t *testing.T, db *pgxpool.Pool, events, batchSize int) {
 		}
 	}
 	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{
-		LagSeconds: 0, BatchSize: batchSize,
+		LagSeconds: checkpoint.SealLag(0), BatchSize: batchSize,
 	}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestEmitterCarriesNoPayload(t *testing.T) {
 		`{"prompt":"`+canary+`"}`); err != nil {
 		t.Fatalf("inserting the canary event: %v", err)
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
 
@@ -527,9 +527,9 @@ func TestEmitterReportsSealingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submitting: %v", err)
 	}
-	if result.SealState != controlplanev1.SealStateCurrent {
+	if result.SealState != controlplanev1.SealStateAdvancing {
 		t.Errorf("seal state is %q, want %q after a complete seal",
-			result.SealState, controlplanev1.SealStateCurrent)
+			result.SealState, controlplanev1.SealStateAdvancing)
 	}
 
 	f.mu.Lock()
@@ -540,8 +540,8 @@ func TestEmitterReportsSealingStatus(t *testing.T) {
 		t.Fatalf("%d status reports received, want 1", len(reports))
 	}
 	report := reports[0]
-	if report.SealState != controlplanev1.SealStateCurrent {
-		t.Errorf("reported seal state %q, want %q", report.SealState, controlplanev1.SealStateCurrent)
+	if report.SealState != controlplanev1.SealStateAdvancing {
+		t.Errorf("reported seal state %q, want %q", report.SealState, controlplanev1.SealStateAdvancing)
 	}
 	if report.UnsealedEventCount != 0 {
 		t.Errorf("reported %d unsealed events, want 0", report.UnsealedEventCount)
@@ -579,6 +579,10 @@ func TestEmitterReportsAGapPause(t *testing.T) {
 		t.Fatalf("creating the gap: %v", err)
 	}
 
+	// The events beyond the gap were written an hour ago by sealFixture, so the
+	// gap is older than the lag window and the sealer has already stopped at
+	// it. A gap younger than the window is a different state; see
+	// TestEmitterReportsAGapStillInsideTheLagWindow.
 	result, err := runEmitter(t, db, f, 0)
 	if err != nil {
 		t.Fatalf("submitting: %v", err)
@@ -595,11 +599,20 @@ func TestEmitterReportsAGapPause(t *testing.T) {
 	report := f.statusReports[0]
 
 	// The two numbers an operator needs in order to go and look.
-	if report.GapAfterEventID == nil || *report.GapAfterEventID != 4 {
-		t.Errorf("gap_after_event_id is %v, want 4", report.GapAfterEventID)
+	if report.LastSealedEventID != 4 {
+		t.Errorf("last_sealed_event_id is %d, want 4", report.LastSealedEventID)
 	}
-	if report.NextVisibleEventID == nil || *report.NextVisibleEventID != 6 {
-		t.Errorf("next_visible_event_id is %v, want 6", report.NextVisibleEventID)
+	if report.FirstUnsealedEventID == nil || *report.FirstUnsealedEventID != 6 {
+		t.Errorf("first_unsealed_event_id is %v, want 6", report.FirstUnsealedEventID)
+	}
+	// Age is reported independently of the threshold, so a consumer can judge
+	// the gap without agreeing with the gateway's declared window.
+	if report.GapAgeSeconds == nil || *report.GapAgeSeconds <= 0 {
+		t.Errorf("gap_age_seconds is %v, want a positive age", report.GapAgeSeconds)
+	}
+	if report.SealLagSeconds != controlplanev1.DefaultSealLagSeconds {
+		t.Errorf("seal_lag_seconds is %d, want the declared default %d",
+			report.SealLagSeconds, controlplanev1.DefaultSealLagSeconds)
 	}
 	// The count bounds what is unattested. A pause with one unsealed event and
 	// one with a million are different situations wearing the same label.
@@ -685,5 +698,106 @@ func TestEmitterStopsOnAnUnidentifiedAcknowledgement(t *testing.T) {
 	}
 	if cursor != 1 {
 		t.Errorf("the cursor advanced to %d past an unstored checkpoint; want 1", cursor)
+	}
+}
+
+// TestEmitterReportsAGapStillInsideTheLagWindow is the false positive this
+// state exists to remove.
+//
+// BIGSERIAL hands out an ID at insert and the row becomes visible at commit, so
+// a transaction in flight leaves a gap that resolves itself moments later. The
+// sealer's lag window exists to let exactly that happen: it will not consider
+// events younger than the window, so it has not attempted to seal past this gap
+// and nothing is stuck.
+//
+// Reporting that as paused would be wrong, and worse than wrong: an operator
+// who sees paused on a healthy gateway learns to ignore the signal, and the
+// signal exists to be believed the one time it means something.
+func TestEmitterReportsAGapStillInsideTheLagWindow(t *testing.T) {
+	db := testDB(t)
+	f := newFakeControlPlane(t)
+	ctx := context.Background()
+
+	sealFixture(t, db, 4, 4) // one checkpoint covering events 1-4
+
+	// Two fresh events, then delete the first: a gap whose far side was
+	// written just now and is therefore well inside any sane lag window.
+	for range 2 {
+		if _, err := db.Exec(ctx, `
+			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
+			VALUES ('req-fresh-gap', NOW(), 'test_event', '{}')
+		`); err != nil {
+			t.Fatalf("inserting an audit event: %v", err)
+		}
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM audit_events WHERE id = 5`); err != nil {
+		t.Fatalf("creating the gap: %v", err)
+	}
+
+	result, err := runEmitter(t, db, f, 0)
+	if err != nil {
+		t.Fatalf("submitting: %v", err)
+	}
+	if result.SealState != controlplanev1.SealStateWaitingOnGap {
+		t.Fatalf("seal state is %q, want %q: a gap younger than the lag window has not been "+
+			"attempted yet and may still fill", result.SealState, controlplanev1.SealStateWaitingOnGap)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	report := f.statusReports[0]
+	if report.GapAgeSeconds == nil {
+		t.Fatal("no gap age was reported")
+	}
+	if *report.GapAgeSeconds >= report.SealLagSeconds {
+		t.Errorf("gap age %ds is not inside the declared window of %ds, so this test is not "+
+			"exercising the waiting state", *report.GapAgeSeconds, report.SealLagSeconds)
+	}
+	// The same numbers are reported whatever the state, so an operator can see
+	// how far behind a healthy gateway is without waiting for it to break.
+	if report.FirstUnsealedEventID == nil || *report.FirstUnsealedEventID != 6 {
+		t.Errorf("first_unsealed_event_id is %v, want 6", report.FirstUnsealedEventID)
+	}
+}
+
+// TestSealStateRespectsADeclaredWindow covers the declaration itself: the same
+// database yields a different state depending on the window the gateway says it
+// runs with, and the report carries the number it was judged against.
+func TestSealStateRespectsADeclaredWindow(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	sealFixture(t, db, 4, 4)
+	for range 2 {
+		if _, err := db.Exec(ctx, `
+			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
+			VALUES ('req-window', NOW() - INTERVAL '30 seconds', 'test_event', '{}')
+		`); err != nil {
+			t.Fatalf("inserting an audit event: %v", err)
+		}
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM audit_events WHERE id = 5`); err != nil {
+		t.Fatalf("creating the gap: %v", err)
+	}
+
+	// A 30-second-old gap: inside a five minute window, beyond a ten second one.
+	for _, tc := range []struct {
+		lag  int64
+		want controlplanev1.SealState
+	}{
+		{lag: 300, want: controlplanev1.SealStateWaitingOnGap},
+		{lag: 10, want: controlplanev1.SealStatePausedAtGap},
+	} {
+		status, err := checkpoint.ReadSealStatus(ctx, db, tc.lag)
+		if err != nil {
+			t.Fatalf("reading status with lag %d: %v", tc.lag, err)
+		}
+		if status.State != tc.want {
+			t.Errorf("with a %ds window the state is %q, want %q", tc.lag, status.State, tc.want)
+		}
+		if status.LagSeconds != tc.lag {
+			t.Errorf("the status reports a window of %ds, want the declared %ds",
+				status.LagSeconds, tc.lag)
+		}
 	}
 }

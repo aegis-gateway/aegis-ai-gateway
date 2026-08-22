@@ -60,11 +60,11 @@ func TestScanner_GitHubToken(t *testing.T) {
 	s := NewScanner()
 
 	tokens := []string{
-		"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn",  // personal access token
-		"gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn",  // OAuth
-		"ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn",  // user-to-server
-		"ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn",  // server-to-server
-		"ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn",  // refresh token
+		"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", // personal access token
+		"gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", // OAuth
+		"ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", // user-to-server
+		"ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", // server-to-server
+		"ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", // refresh token
 	}
 
 	for _, token := range tokens {
@@ -154,7 +154,7 @@ func TestScanner_CleanText(t *testing.T) {
 		"Please help me write a function",
 		"The API endpoint is /v1/chat/completions",
 		"My email is user@example.com",
-		"The password is hunter2",  // not a structured secret pattern
+		"The password is hunter2", // not a structured secret pattern
 	}
 
 	for _, text := range cleanTexts {
