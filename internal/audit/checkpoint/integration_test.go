@@ -97,7 +97,7 @@ func TestCheckpointIntegration_SealEmpty(t *testing.T) {
 	resetCheckpoints(t, db)
 
 	opts := checkpoint.SealOptions{
-		LagSeconds: 0,
+		LagSeconds: checkpoint.SealLag(0),
 		BatchSize:  100,
 	}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
@@ -122,7 +122,7 @@ func TestCheckpointIntegration_SealAndVerify(t *testing.T) {
 		insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestCheckpointIntegration_TamperDetection(t *testing.T) {
 		}
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestCheckpointIntegration_ConcurrentSeal(t *testing.T) {
 		insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -258,7 +258,7 @@ func TestCheckpointIntegration_InclusionProof(t *testing.T) {
 		ids = append(ids, insertTestEvent(t, db, past.Add(time.Duration(i)*time.Second)))
 	}
 
-	opts := checkpoint.SealOptions{LagSeconds: 0, BatchSize: 100}
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
 	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
 		t.Fatalf("RunSeal: %v", err)
 	}

@@ -56,6 +56,7 @@ func sampleSubmission() CheckpointSubmission {
 		GatewayVersion:       "1.2.3",
 		CoveredFrom:          NewTimestamp(time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC)),
 		CoveredTo:            NewTimestamp(time.Date(2026, 8, 21, 13, 59, 59, 999999000, time.UTC)),
+		CoveredRangeSource:   CoverageSealed,
 	}
 }
 
@@ -235,7 +236,8 @@ func TestWireFormIsStable(t *testing.T) {
 		`"checkpoint_hash":"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",` +
 		`"hash_algorithm":"sha-256","hash_schema_version":1,"canonicalization_spec":"rfc8785-v1",` +
 		`"sealed_at":"2026-08-21T14:00:00.123456Z","sealer_version":"1.2.3","gateway_version":"1.2.3",` +
-		`"covered_from":"2026-08-21T13:00:00.000000Z","covered_to":"2026-08-21T13:59:59.999999Z"}`
+		`"covered_from":"2026-08-21T13:00:00.000000Z","covered_to":"2026-08-21T13:59:59.999999Z",` +
+		`"covered_range_source":"sealed"}`
 	if string(encoded) != want {
 		t.Errorf("the wire form changed\n want: %s\n  got: %s", want, encoded)
 	}
@@ -323,6 +325,15 @@ func TestValidate_RejectsMalformedSubmissions(t *testing.T) {
 		{"a missing covered range", func(s *CheckpointSubmission) {
 			s.CoveredFrom = Timestamp{}
 		}, "covered_from is required"},
+		{"an unknown coverage source", func(s *CheckpointSubmission) {
+			s.CoveredRangeSource = "guessed"
+		}, "not a known source"},
+		{"a missing coverage source", func(s *CheckpointSubmission) {
+			s.CoveredRangeSource = ""
+		}, "not a known source"},
+		{"coverage running past the seal beyond tolerance", func(s *CheckpointSubmission) {
+			s.CoveredTo = NewTimestamp(s.SealedAt.Add(time.Minute))
+		}, "beyond the"},
 		{"a covered range running backwards", func(s *CheckpointSubmission) {
 			s.CoveredFrom, s.CoveredTo = s.CoveredTo, s.CoveredFrom
 		}, "precedes covered_from"},

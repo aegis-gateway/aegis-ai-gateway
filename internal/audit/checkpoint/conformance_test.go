@@ -137,7 +137,7 @@ func TestSealerWritesThePublishedHash(t *testing.T) {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
 	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{
-		LagSeconds: 0, BatchSize: 4,
+		LagSeconds: checkpoint.SealLag(0), BatchSize: 4,
 	}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestSealedAtSurvivesTheDatabaseRoundTrip(t *testing.T) {
 	for i := range 3 {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
 	for i := range 4 {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing the first batch: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
 	for i := 4; i < 8; i++ {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing the second batch: %v", err)
 	}
 
@@ -357,7 +357,7 @@ func TestPartiallyPurgedRangeIsNotTrusted(t *testing.T) {
 	for i := range 6 {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Minute))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
 

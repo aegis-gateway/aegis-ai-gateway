@@ -148,6 +148,15 @@ type CheckpointSubmission struct {
 	CoveredFrom Timestamp `json:"covered_from"`
 	CoveredTo   Timestamp `json:"covered_to"`
 
+	// CoveredRangeSource says how the interval above was arrived at.
+	//
+	// Required, because a range computed by the sealer over the exact set of
+	// events it hashed and one reconstructed afterwards from surviving rows
+	// are not equally strong, and a consumer presenting them identically is
+	// overstating the weaker one. See [CoverageSealed] and
+	// [CoverageVerifiedBackfill].
+	CoveredRangeSource CoverageSource `json:"covered_range_source"`
+
 	// ConfigHash is reserved. Its semantics are unspecified in v1, no v1
 	// emitter may populate it, and its definition is deferred to v2.
 	//
@@ -162,6 +171,34 @@ type CheckpointSubmission struct {
 	// unspecified in v1, MUST NOT be populated by a v1 emitter, definition
 	// deferred to v2.
 	PolicyBundles []PolicyBundleRef `json:"policy_bundles,omitempty"`
+}
+
+// CoverageSource says how a checkpoint's covered time range was obtained.
+//
+// The distinction exists because a reconstructed range can be wrong in a way
+// that is invisible once written: if events were purged before the
+// reconstruction ran, the interval computed from the survivors is narrower
+// than what the checkpoint attests, and it looks exactly like a correct one.
+type CoverageSource string
+
+const (
+	// CoverageSealed means the sealer computed the interval at seal time, over
+	// the exact set of events it hashed. It cannot be narrower than the truth.
+	CoverageSealed CoverageSource = "sealed"
+
+	// CoverageVerifiedBackfill means the interval was reconstructed after the
+	// fact and proven complete: the surviving event count matched the
+	// checkpoint's own count and no purge overlapped its range.
+	//
+	// Weaker than [CoverageSealed] in one respect worth stating. It proves the
+	// events were all present when the reconstruction ran, not that the
+	// reconstruction saw the same bytes the sealer hashed.
+	CoverageVerifiedBackfill CoverageSource = "verified_backfill"
+)
+
+// Valid reports whether s is a known source.
+func (s CoverageSource) Valid() bool {
+	return s == CoverageSealed || s == CoverageVerifiedBackfill
 }
 
 // CoverageSemantics documents how a consumer must reason about coverage
@@ -363,6 +400,10 @@ func (c *CheckpointSubmission) Validate() error {
 	if c.CoveredTo.IsZero() {
 		return fmt.Errorf("covered_to is required")
 	}
+	if !c.CoveredRangeSource.Valid() {
+		return fmt.Errorf("covered_range_source %q is not a known source; expected %q or %q",
+			c.CoveredRangeSource, CoverageSealed, CoverageVerifiedBackfill)
+	}
 	if c.CoveredTo.Before(c.CoveredFrom.Time) {
 		return fmt.Errorf("covered_to %s precedes covered_from %s",
 			c.CoveredTo.Format(TimestampFormat), c.CoveredFrom.Format(TimestampFormat))
@@ -470,8 +511,9 @@ type CheckpointRecord struct {
 	SealerVersion        string               `json:"sealer_version"`
 	GatewayVersion       string               `json:"gateway_version"`
 
-	CoveredFrom Timestamp `json:"covered_from"`
-	CoveredTo   Timestamp `json:"covered_to"`
+	CoveredFrom        Timestamp      `json:"covered_from"`
+	CoveredTo          Timestamp      `json:"covered_to"`
+	CoveredRangeSource CoverageSource `json:"covered_range_source"`
 
 	// ConfigHash and PolicyBundles are reserved and never populated by a v1
 	// control plane, because no v1 emitter may send them.

@@ -386,6 +386,7 @@ func loadCheckpointsAfter(ctx context.Context, db *pgxpool.Pool, gatewayID strin
 			GatewayVersion:       GatewayVersion,
 			CoveredFrom:          controlplanev1.NewTimestamp(*coveredFrom),
 			CoveredTo:            controlplanev1.NewTimestamp(*coveredTo),
+			CoveredRangeSource:   controlplanev1.CoverageSource(*coveredRangeSource),
 		})
 	}
 	return out, rows.Err()

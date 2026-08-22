@@ -251,7 +251,7 @@ func sealFixture(t *testing.T, db *pgxpool.Pool, events, batchSize int) {
 		}
 	}
 	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{
-		LagSeconds: 0, BatchSize: batchSize,
+		LagSeconds: checkpoint.SealLag(0), BatchSize: batchSize,
 	}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestEmitterCarriesNoPayload(t *testing.T) {
 		`{"prompt":"`+canary+`"}`); err != nil {
 		t.Fatalf("inserting the canary event: %v", err)
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
 
