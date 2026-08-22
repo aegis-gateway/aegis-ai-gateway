@@ -54,6 +54,14 @@ type CheckpointRecord struct {
 	SealedAt             time.Time
 	SealerVersion        string
 	CanonicalizationSpec string
+
+	// CoveredFrom and CoveredTo are the earliest and latest event timestamp in
+	// the covered range. Both are nil for a checkpoint sealed before migration
+	// 009 whose events have since been purged, leaving nothing to read them
+	// from. They are not hash inputs; the leaf hashes already attest each
+	// event's timestamp, so these are an index over what the tree covers.
+	CoveredFrom *time.Time
+	CoveredTo   *time.Time
 }
 
 // VerifyResult summarises the verification outcome.
@@ -294,7 +302,8 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 	err := conn.QueryRow(ctx, `
 		SELECT id, range_start, range_end, event_count, merkle_root,
 		       prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
-		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec
+		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
+		       covered_from, covered_to
 		FROM audit_checkpoints
 		WHERE range_start <= $1 AND range_end >= $1
 		ORDER BY id ASC LIMIT 1
@@ -384,7 +393,8 @@ func loadCheckpoints(ctx context.Context, conn *pgx.Conn, fromID, toID int64) ([
 	query := `
 		SELECT id, range_start, range_end, event_count, merkle_root,
 		       prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
-		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec
+		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
+		       covered_from, covered_to
 		FROM audit_checkpoints
 		WHERE ($1 = 0 OR id >= $1)
 		  AND ($2 = 0 OR id <= $2)
@@ -403,6 +413,7 @@ func loadCheckpoints(ctx context.Context, conn *pgx.Conn, fromID, toID int64) ([
 			&cp.ID, &cp.RangeStart, &cp.RangeEnd, &cp.EventCount, &cp.MerkleRoot,
 			&cp.PrevCheckpointID, &cp.PrevCheckpointHash, &cp.CheckpointHash,
 			&cp.HashSchemaVersion, &cp.SealedAt, &cp.SealerVersion, &cp.CanonicalizationSpec,
+			&cp.CoveredFrom, &cp.CoveredTo,
 		); err != nil {
 			return nil, err
 		}

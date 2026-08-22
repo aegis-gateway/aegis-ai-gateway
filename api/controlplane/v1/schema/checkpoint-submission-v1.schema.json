@@ -20,7 +20,9 @@
     "canonicalization_spec",
     "sealed_at",
     "sealer_version",
-    "gateway_version"
+    "gateway_version",
+    "covered_from",
+    "covered_to"
   ],
   "$defs": {
     "sha256Hex": {
@@ -120,54 +122,20 @@
     },
     "covered_from": {
       "$ref": "#/$defs/microsecondTimestamp",
-      "description": "Reserved. Timestamp of the earliest covered audit event. The sealer works in event ID space and does not compute this today, so a current gateway omits it. Advisory when present: not an input to any hash and not attested."
+      "description": "Earliest audit event timestamp in the covered range. Required. An event ID range states extent in the gateway's own terms; this states it in terms a coverage question can be answered from. Not a hash input and it does not need to be: the leaf hash of every audit event covers that event's timestamp, so this interval is provable against merkle_root by inclusion proof. Consecutive checkpoints may overlap, because event IDs are allocated at insert and become visible at commit, so this is the minimum over the batch rather than the first event's timestamp. Treat these as intervals to be unioned, never as a partition."
     },
     "covered_to": {
       "$ref": "#/$defs/microsecondTimestamp",
-      "description": "Reserved. Timestamp of the latest covered audit event. Advisory when present. Must be sent together with covered_from."
+      "description": "Latest audit event timestamp in the covered range. Required. See covered_from for why this is not a hash input and why consecutive checkpoints may overlap."
     },
     "config_hash": {
-      "$ref": "#/$defs/sha256Hex",
-      "description": "Reserved. Digest of the gateway configuration in force while the covered events were produced. Nothing in the gateway computes this today. Declared now so that adding it later is a gateway change rather than a protocol version bump."
+      "not": {},
+      "description": "Reserved. Semantics unspecified in v1. MUST NOT be populated by a v1 emitter; definition deferred to v2. The name is claimed so that a v2 defining it is an addition rather than a collision, but no meaning is claimed, so nothing may be read into a v1 submission about the configuration in force when its events were produced. A v1 checkpoint attests event integrity, not policy provenance."
     },
     "policy_bundles": {
-      "type": "array",
-      "maxItems": 64,
-      "description": "Reserved. Policy bundles in force while the covered events were produced. Identifies bundles by digest; carries no policy source.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "name",
-          "digest",
-          "hash_algorithm"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200,
-            "pattern": "^[^\u0000-\u001f\u007f]+$"
-          },
-          "digest": {
-            "$ref": "#/$defs/sha256Hex"
-          },
-          "hash_algorithm": {
-            "enum": [
-              "sha-256"
-            ]
-          }
-        }
-      }
+      "not": {},
+      "description": "Reserved. Semantics unspecified in v1. MUST NOT be populated by a v1 emitter; definition deferred to v2. The name is claimed so that a v2 defining it is an addition rather than a collision, but no meaning is claimed, so nothing may be read into a v1 submission about the policy bundles in force when its events were produced. A v1 checkpoint attests event integrity, not policy provenance."
     }
-  },
-  "dependentRequired": {
-    "covered_from": [
-      "covered_to"
-    ],
-    "covered_to": [
-      "covered_from"
-    ]
   },
   "allOf": [
     {

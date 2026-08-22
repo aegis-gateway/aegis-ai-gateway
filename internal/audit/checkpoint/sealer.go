@@ -228,6 +228,24 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	rangeStart := events[0].ID
 	rangeEnd := events[len(events)-1].ID
 
+	// Wall-clock extent of the batch, for answering coverage questions without
+	// a lookup against the events themselves.
+	//
+	// A scan rather than first-and-last. Event IDs are allocated at insert and
+	// become visible at commit, so a long transaction carries an older
+	// timestamp and commits later: within one contiguous ID run the timestamps
+	// are not necessarily ordered, and consecutive checkpoints can overlap in
+	// time. Taking events[0] and events[len-1] would understate the extent
+	// whenever that happened.
+	coveredFrom, coveredTo := events[0].Timestamp.UTC(), events[0].Timestamp.UTC()
+	for _, ev := range events[1:] {
+		if ts := ev.Timestamp.UTC(); ts.Before(coveredFrom) {
+			coveredFrom = ts
+		} else if ts.After(coveredTo) {
+			coveredTo = ts
+		}
+	}
+
 	eventCount := int32(len(events))
 	sealedAt := time.Now().UTC()
 
@@ -261,11 +279,13 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		INSERT INTO audit_checkpoints
 		    (range_start, range_end, event_count, merkle_root,
 		     prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
-		     hash_schema_version, sealed_at, sealer_version, canonicalization_spec)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1')
+		     hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
+		     covered_from, covered_to)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11)
 	`, rangeStart, rangeEnd, eventCount, merkleRoot,
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,
+		coveredFrom, coveredTo,
 	)
 	if err != nil {
 		return false, fmt.Errorf("seal: insert checkpoint: %w", err)
@@ -278,6 +298,8 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		"range_start", rangeStart,
 		"range_end", rangeEnd,
 		"event_count", eventCount,
+		"covered_from", coveredFrom.Format(time.RFC3339Nano),
+		"covered_to", coveredTo.Format(time.RFC3339Nano),
 	)
 	return true, nil
 }

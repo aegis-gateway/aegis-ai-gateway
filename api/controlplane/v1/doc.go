@@ -52,11 +52,21 @@
 // are embedded via [Schemas]. They are the normative description of the wire
 // format for implementations that are not written in Go.
 //
-// # Fields the gateway does not yet populate
+// # Scope of a v1 checkpoint
 //
-// [CheckpointSubmission] declares ConfigHash, PolicyBundles, CoveredFrom, and
-// CoveredTo as optional. Nothing in the gateway computes them today, so a
-// current gateway omits them. They are declared now, with fixed meanings, so
-// that a gateway which learns to compute them can start sending them without a
-// protocol version bump. A control plane must treat their absence as normal.
+// A v1 checkpoint attests event integrity. It does not attest policy
+// provenance.
+//
+// It states that a contiguous range of audit events existed, in a particular
+// form, over a particular interval, at the time it was sealed, and it binds
+// that claim to every checkpoint before it. It says nothing about which
+// configuration or which policy bundles were in force while those events were
+// produced, and nothing in a v1 submission may be read as saying so.
+//
+// [CheckpointSubmission] declares ConfigHash and PolicyBundles, and both are
+// reserved: their semantics are unspecified in v1, no v1 emitter may populate
+// them, and their definition is deferred to v2. The names are claimed so that
+// a v2 defining them is an addition rather than a collision with whatever a
+// fork or a later emitter put there first. The meanings are not claimed, which
+// is what makes the paragraph above a declared boundary rather than a gap.
 package controlplanev1

@@ -54,17 +54,16 @@ func sampleSubmission() CheckpointSubmission {
 		SealedAt:             NewTimestamp(time.Date(2026, 8, 21, 14, 0, 0, 123456000, time.UTC)),
 		SealerVersion:        "1.2.3",
 		GatewayVersion:       "1.2.3",
+		CoveredFrom:          NewTimestamp(time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC)),
+		CoveredTo:            NewTimestamp(time.Date(2026, 8, 21, 13, 59, 59, 999999000, time.UTC)),
 	}
 }
 
-// sampleSubmissionWithReserved additionally populates every reserved field, so
-// that the round trip covers the parts of the message no gateway sends yet.
+// sampleSubmissionWithReserved populates the reserved fields, which a v1
+// emitter may not do. It exists so the tests can assert that populating them is
+// rejected rather than quietly accepted.
 func sampleSubmissionWithReserved() CheckpointSubmission {
 	s := sampleSubmission()
-	from := NewTimestamp(time.Date(2026, 8, 21, 13, 0, 0, 0, time.UTC))
-	to := NewTimestamp(time.Date(2026, 8, 21, 13, 59, 59, 999999000, time.UTC))
-	s.CoveredFrom = &from
-	s.CoveredTo = &to
 	s.ConfigHash = HashHex(strings.Repeat("d2", 32))
 	s.PolicyBundles = []PolicyBundleRef{{
 		Name:          "default",
@@ -82,7 +81,6 @@ func TestRoundTrip_CheckpointSubmission(t *testing.T) {
 		in   CheckpointSubmission
 	}{
 		{"as a current gateway sends it", sampleSubmission()},
-		{"with every reserved field populated", sampleSubmissionWithReserved()},
 		{"genesis", func() CheckpointSubmission {
 			s := sampleSubmission()
 			s.CheckpointID = 1
@@ -236,7 +234,8 @@ func TestWireFormIsStable(t *testing.T) {
 		`"prev_checkpoint_hash":"b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7",` +
 		`"checkpoint_hash":"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",` +
 		`"hash_algorithm":"sha-256","hash_schema_version":1,"canonicalization_spec":"rfc8785-v1",` +
-		`"sealed_at":"2026-08-21T14:00:00.123456Z","sealer_version":"1.2.3","gateway_version":"1.2.3"}`
+		`"sealed_at":"2026-08-21T14:00:00.123456Z","sealer_version":"1.2.3","gateway_version":"1.2.3",` +
+		`"covered_from":"2026-08-21T13:00:00.000000Z","covered_to":"2026-08-21T13:59:59.999999Z"}`
 	if string(encoded) != want {
 		t.Errorf("the wire form changed\n want: %s\n  got: %s", want, encoded)
 	}
@@ -321,10 +320,25 @@ func TestValidate_RejectsMalformedSubmissions(t *testing.T) {
 		{"an unknown hash algorithm", func(s *CheckpointSubmission) {
 			s.HashAlgorithm = "sha3-256"
 		}, "is not supported"},
-		{"a covered range with only one end", func(s *CheckpointSubmission) {
-			from := NewTimestamp(time.Now())
-			s.CoveredFrom = &from
-		}, "together or not at all"},
+		{"a missing covered range", func(s *CheckpointSubmission) {
+			s.CoveredFrom = Timestamp{}
+		}, "covered_from is required"},
+		{"a covered range running backwards", func(s *CheckpointSubmission) {
+			s.CoveredFrom, s.CoveredTo = s.CoveredTo, s.CoveredFrom
+		}, "precedes covered_from"},
+		{"events covered after the seal", func(s *CheckpointSubmission) {
+			s.CoveredFrom = NewTimestamp(s.SealedAt.Add(time.Hour))
+			s.CoveredTo = NewTimestamp(s.SealedAt.Add(2 * time.Hour))
+		}, "written after it was sealed"},
+		{"a populated config_hash", func(s *CheckpointSubmission) {
+			s.ConfigHash = HashHex(strings.Repeat("d2", 32))
+		}, "config_hash is reserved in v1"},
+		{"populated policy bundles", func(s *CheckpointSubmission) {
+			s.PolicyBundles = []PolicyBundleRef{{
+				Name: "default", Digest: HashHex(strings.Repeat("e4", 32)),
+				HashAlgorithm: HashAlgorithmSHA256,
+			}}
+		}, "policy_bundles is reserved in v1"},
 		{"a control character in a label", func(s *CheckpointSubmission) {
 			s.SealerVersion = "1.2.3\nsealed"
 		}, "control character"},
@@ -342,6 +356,32 @@ func TestValidate_RejectsMalformedSubmissions(t *testing.T) {
 					tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// TestReservedFieldsAreRejected covers the whole reserved set at once.
+//
+// Declaring a field and forbidding its use is only a boundary if the
+// forbidding is enforced. Otherwise the first emitter to populate one decides
+// what it means, in a package that is meant to be a contract.
+func TestReservedFieldsAreRejected(t *testing.T) {
+	t.Parallel()
+
+	s := sampleSubmissionWithReserved()
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("a submission populating the reserved fields was accepted")
+	}
+	if !strings.Contains(err.Error(), "reserved in v1") {
+		t.Errorf("the error does not say the field is reserved: %v", err)
+	}
+
+	// Removing them makes the same message valid, so the rejection is about
+	// the reserved fields and nothing else.
+	s.ConfigHash = ""
+	s.PolicyBundles = nil
+	if err := s.Validate(); err != nil {
+		t.Errorf("clearing the reserved fields left the message invalid: %v", err)
 	}
 }
 

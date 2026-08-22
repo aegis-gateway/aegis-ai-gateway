@@ -121,30 +121,41 @@ type CheckpointSubmission struct {
 	// upgrade.
 	GatewayVersion string `json:"gateway_version"`
 
-	// CoveredFrom and CoveredTo are the timestamps of the earliest and latest
-	// audit event in the covered range.
+	// CoveredFrom and CoveredTo are the earliest and latest audit event
+	// timestamp in the covered range.
 	//
-	// Reserved. The sealer works in event ID space and does not currently
-	// compute this interval, so a current gateway omits both. When present
-	// they are advisory: they are not inputs to any hash, and a control plane
-	// must not treat them as attested.
-	CoveredFrom *Timestamp `json:"covered_from,omitempty"`
-	CoveredTo   *Timestamp `json:"covered_to,omitempty"`
+	// Required. An event ID range states extent in the gateway's own terms;
+	// this states it in terms anyone can act on. "Does this evidence cover the
+	// third quarter" is the first question asked of an evidence artifact, and
+	// an ID range cannot answer it without a lookup against every gateway that
+	// contributed.
+	//
+	// These are not hash inputs, and do not need to be: the leaf hash of every
+	// audit event covers that event's timestamp, so the interval is provable
+	// against MerkleRoot by inclusion proof. They index something the tree
+	// already attests rather than making a fresh claim.
+	//
+	// Consecutive checkpoints may overlap. Event IDs are allocated at insert
+	// and become visible at commit, so a long transaction carries an older
+	// timestamp and commits later, and CoveredFrom is the minimum over the
+	// batch rather than the first event's timestamp. Treat these as intervals
+	// to be unioned, never as a partition.
+	CoveredFrom Timestamp `json:"covered_from"`
+	CoveredTo   Timestamp `json:"covered_to"`
 
-	// ConfigHash is a digest of the gateway configuration in force while the
-	// covered events were produced.
+	// ConfigHash is reserved. Its semantics are unspecified in v1, no v1
+	// emitter may populate it, and its definition is deferred to v2.
 	//
-	// Reserved. Nothing in the gateway computes a configuration digest today,
-	// so a current gateway omits it. It is declared now so that adding it
-	// later is a gateway change rather than a protocol version bump.
+	// The name is claimed so that a v2 defining it is an addition rather than
+	// a collision with whatever someone else put there. The meaning is not
+	// claimed, so nothing may be read into a v1 submission about the
+	// configuration in force when its events were produced. A v1 checkpoint
+	// attests event integrity, not policy provenance.
 	ConfigHash HashHex `json:"config_hash,omitempty"`
 
-	// PolicyBundles identifies the policy bundles in force while the covered
-	// events were produced.
-	//
-	// Reserved, for the same reason as ConfigHash: the gateway compiles Rego
-	// bundles from a configuration directory but does not version or digest
-	// them.
+	// PolicyBundles is reserved on the same terms as ConfigHash: semantics
+	// unspecified in v1, MUST NOT be populated by a v1 emitter, definition
+	// deferred to v2.
 	PolicyBundles []PolicyBundleRef `json:"policy_bundles,omitempty"`
 }
 
@@ -257,28 +268,34 @@ func (c *CheckpointSubmission) Validate() error {
 		return err
 	}
 
+	if c.CoveredFrom.IsZero() {
+		return fmt.Errorf("covered_from is required")
+	}
+	if c.CoveredTo.IsZero() {
+		return fmt.Errorf("covered_to is required")
+	}
+	if c.CoveredTo.Before(c.CoveredFrom.Time) {
+		return fmt.Errorf("covered_to %s precedes covered_from %s",
+			c.CoveredTo.Format(TimestampFormat), c.CoveredFrom.Format(TimestampFormat))
+	}
+	// The events were written before the checkpoint that seals them.
+	if c.CoveredFrom.After(c.SealedAt.Time) {
+		return fmt.Errorf("covered_from %s is after sealed_at %s, so the checkpoint claims to "+
+			"cover events written after it was sealed",
+			c.CoveredFrom.Format(TimestampFormat), c.SealedAt.Format(TimestampFormat))
+	}
+
+	// The reserved fields carry no agreed meaning in v1, so a v1 message that
+	// populates them is rejected rather than stored under a definition that
+	// does not exist yet. See docs/adr/0004-reserved-fields-must-not-be-populated.md.
 	if c.ConfigHash != "" {
-		if err := c.ConfigHash.Validate("config_hash", digestLen); err != nil {
-			return err
-		}
+		return fmt.Errorf("config_hash is reserved in v1: its semantics are unspecified and " +
+			"no v1 emitter may populate it")
 	}
-	if (c.CoveredFrom == nil) != (c.CoveredTo == nil) {
-		return fmt.Errorf("covered_from and covered_to must be sent together or not at all")
-	}
-	if c.CoveredFrom != nil && c.CoveredTo.Before(c.CoveredFrom.Time) {
-		return fmt.Errorf("covered_to precedes covered_from")
-	}
-	for i, b := range c.PolicyBundles {
-		if err := validateLabel(fmt.Sprintf("policy_bundles[%d].name", i), b.Name, MaxNameLen); err != nil {
-			return err
-		}
-		if b.HashAlgorithm != HashAlgorithmSHA256 {
-			return fmt.Errorf("policy_bundles[%d].hash_algorithm %q is not supported; expected %q",
-				i, b.HashAlgorithm, HashAlgorithmSHA256)
-		}
-		if err := b.Digest.Validate(fmt.Sprintf("policy_bundles[%d].digest", i), digestLen); err != nil {
-			return err
-		}
+	if len(c.PolicyBundles) > 0 {
+		return fmt.Errorf("policy_bundles is reserved in v1: its semantics are unspecified and " +
+			"no v1 emitter may populate it; a v1 checkpoint attests event integrity, " +
+			"not policy provenance")
 	}
 	return nil
 }
@@ -324,8 +341,11 @@ type CheckpointRecord struct {
 	SealerVersion        string               `json:"sealer_version"`
 	GatewayVersion       string               `json:"gateway_version"`
 
-	CoveredFrom   *Timestamp        `json:"covered_from,omitempty"`
-	CoveredTo     *Timestamp        `json:"covered_to,omitempty"`
+	CoveredFrom Timestamp `json:"covered_from"`
+	CoveredTo   Timestamp `json:"covered_to"`
+
+	// ConfigHash and PolicyBundles are reserved and never populated by a v1
+	// control plane, because no v1 emitter may send them.
 	ConfigHash    HashHex           `json:"config_hash,omitempty"`
 	PolicyBundles []PolicyBundleRef `json:"policy_bundles,omitempty"`
 
