@@ -24,7 +24,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dbURL returns the TEST_DATABASE_URL or skips the test.
+// testPool returns a pool bound to a private schema, or skips the test.
+//
+// The private schema is the point. These tests build their own cut-down
+// audit_events, audit_logs and audit_purges and drop them again afterwards,
+// and those are names the migrations own. `go test ./...` runs package test
+// binaries in parallel against one database, so creating and dropping them in
+// `public` means this package races every other package that reads the audit
+// tables: whoever loses sees either a table that has been replaced with a
+// narrower one or a table that has been dropped outright.
+//
+// That race was real and alternating, failing this package on one run and
+// internal/audit/checkpoint on the next. Confining these tables to a schema
+// only this package looks at removes it without changing a single assertion.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -33,13 +45,32 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
+	}
+	// Unqualified names in both the tests and purge.Run resolve here first, so
+	// the production code under test is unmodified and still sees the tables
+	// by their ordinary names.
+	cfg.ConnConfig.RuntimeParams["search_path"] = purgeTestSchema
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect to test database: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS `+purgeTestSchema); err != nil {
+		pool.Close()
+		t.Fatalf("create the purge test schema: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
 }
+
+// purgeTestSchema is the private schema these tests build their tables in. It
+// is a fixed identifier rather than a generated one so that a crashed run
+// leaves something an operator can find and drop.
+const purgeTestSchema = "purge_test"
 
 // setupSchema creates the tables required for purge tests and tears them down.
 func setupSchema(t *testing.T, pool *pgxpool.Pool) {
@@ -87,9 +118,11 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 
 	t.Cleanup(func() {
 		cleanupCtx := context.Background()
-		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS audit_purges`)   //nolint:errcheck
-		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS audit_events`)   //nolint:errcheck
-		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS audit_logs`)     //nolint:errcheck
+		// Schema-qualified, so a search_path that failed to apply drops
+		// nothing rather than dropping the migrated tables.
+		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS `+purgeTestSchema+`.audit_purges`) //nolint:errcheck
+		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS `+purgeTestSchema+`.audit_events`) //nolint:errcheck
+		pool.Exec(cleanupCtx, `DROP TABLE IF EXISTS `+purgeTestSchema+`.audit_logs`)   //nolint:errcheck
 	})
 }
 

@@ -17,7 +17,10 @@ func TestCheckpointHashInputIsNinetySixBytes(t *testing.T) {
 	prevHash := bytes.Repeat([]byte{0xBB}, 32)
 	sealedAt := time.Unix(1700000000, 0).UTC()
 
-	got := computeCheckpointHash(merkleRoot, prevHash, 1, 100, 100, 1, sealedAt)
+	got, err := computeCheckpointHash(merkleRoot, prevHash, 1, 100, 100, 1, sealedAt)
+	if err != nil {
+		t.Fatalf("computing the checkpoint hash: %v", err)
+	}
 
 	// Reproduce the documented concatenation independently.
 	var want []byte

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/audittest"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -66,11 +67,34 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to database: %v", err)
 	}
-	defer pool.Close()
+	// t.Cleanup rather than defer, and the ordering is load-bearing.
+	//
+	// pgxpool.Close blocks until every checked-out connection is returned, and
+	// audittest.Serialise holds one for the length of the test so the advisory
+	// lock stays on a connection nobody else can be handed. Deferred calls run
+	// before cleanups, so `defer pool.Close()` would block waiting for a
+	// connection that is only released by a cleanup that has not run yet: the
+	// test would hang until the go test timeout rather than fail.
+	//
+	// Registered before Serialise so that LIFO ordering releases the lock
+	// first and closes the pool second.
+	t.Cleanup(pool.Close)
 
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatalf("ping database: %v", err)
 	}
+
+	// This test polls audit_events for its own row over several seconds, while
+	// internal/audit/emitter truncates that table to build its fixtures. Package
+	// binaries run in parallel against one database, so without coordination the
+	// canary's row can vanish mid-poll and the test fails reporting that the
+	// gateway did not write it.
+	//
+	// The same lock the audit packages take, so all three serialise rather than
+	// two of them serialising and the third racing both. It replaces relying on
+	// a -p 1 flag in one CI step, which held this shut without saying so and
+	// left `go test ./...` on a developer machine still racing.
+	audittest.Serialise(t, pool)
 
 	// The gateway echoes an X-Request-ID it is given, so choosing one up front
 	// lets us look up this exact request's audit row instead of guessing.

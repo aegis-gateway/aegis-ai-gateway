@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -53,6 +54,14 @@ type CheckpointRecord struct {
 	SealedAt             time.Time
 	SealerVersion        string
 	CanonicalizationSpec string
+
+	// CoveredFrom and CoveredTo are the earliest and latest event timestamp in
+	// the covered range. Both are nil for a checkpoint sealed before migration
+	// 009 whose events have since been purged, leaving nothing to read them
+	// from. They are not hash inputs; the leaf hashes already attest each
+	// event's timestamp, so these are an index over what the tree covers.
+	CoveredFrom *time.Time
+	CoveredTo   *time.Time
 }
 
 // VerifyResult summarises the verification outcome.
@@ -124,7 +133,7 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		var expectedPrev []byte
 		if cp.PrevCheckpointID == nil {
 			// Genesis: must be 32 zero bytes.
-			expectedPrev = make([]byte, 32)
+			expectedPrev = controlplanev1.GenesisPrevHashBytes()
 		} else {
 			if i == 0 {
 				// First in our window but not genesis — load the actual previous.
@@ -169,11 +178,19 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		}
 
 		// Recompute checkpoint_hash from stored fields.
-		computed := computeCheckpointHash(
+		computed, err := computeCheckpointHash(
 			cp.MerkleRoot, expectedPrev,
 			cp.RangeStart, cp.RangeEnd, cp.EventCount,
 			cp.HashSchemaVersion, cp.SealedAt,
 		)
+		if err != nil {
+			// A stored digest of the wrong length. The row cannot be verified,
+			// and reporting it as an anomaly is the honest outcome: silently
+			// skipping it would count the checkpoint as verified.
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("checkpoint %d: cannot recompute checkpoint_hash: %v", cp.ID, err))
+			continue
+		}
 		if !bytes.Equal(computed, cp.CheckpointHash) {
 			result.Anomalies = append(result.Anomalies,
 				fmt.Sprintf("checkpoint %d: checkpoint_hash mismatch (stored=%s, computed=%s)",
@@ -285,7 +302,8 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 	err := conn.QueryRow(ctx, `
 		SELECT id, range_start, range_end, event_count, merkle_root,
 		       prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
-		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec
+		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
+		       covered_from, covered_to
 		FROM audit_checkpoints
 		WHERE range_start <= $1 AND range_end >= $1
 		ORDER BY id ASC LIMIT 1
@@ -293,6 +311,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 		&cp.ID, &cp.RangeStart, &cp.RangeEnd, &cp.EventCount, &cp.MerkleRoot,
 		&cp.PrevCheckpointID, &cp.PrevCheckpointHash, &cp.CheckpointHash,
 		&cp.HashSchemaVersion, &cp.SealedAt, &cp.SealerVersion, &cp.CanonicalizationSpec,
+		&cp.CoveredFrom, &cp.CoveredTo,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("verify: event %d is not yet sealed into any checkpoint", eventID)
@@ -375,7 +394,8 @@ func loadCheckpoints(ctx context.Context, conn *pgx.Conn, fromID, toID int64) ([
 	query := `
 		SELECT id, range_start, range_end, event_count, merkle_root,
 		       prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
-		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec
+		       hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
+		       covered_from, covered_to
 		FROM audit_checkpoints
 		WHERE ($1 = 0 OR id >= $1)
 		  AND ($2 = 0 OR id <= $2)
@@ -394,6 +414,7 @@ func loadCheckpoints(ctx context.Context, conn *pgx.Conn, fromID, toID int64) ([
 			&cp.ID, &cp.RangeStart, &cp.RangeEnd, &cp.EventCount, &cp.MerkleRoot,
 			&cp.PrevCheckpointID, &cp.PrevCheckpointHash, &cp.CheckpointHash,
 			&cp.HashSchemaVersion, &cp.SealedAt, &cp.SealerVersion, &cp.CanonicalizationSpec,
+			&cp.CoveredFrom, &cp.CoveredTo,
 		); err != nil {
 			return nil, err
 		}

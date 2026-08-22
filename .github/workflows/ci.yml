@@ -62,10 +62,56 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Migrations run before the tests because the integration tests read the
+      # real schema rather than creating their own.
+      - name: Run migrations
+        run: go run ./cmd/migrate -direction up
+        env:
+          DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+
       - name: Run tests
         run: go test ./... -v -race -cover -coverprofile=coverage.out
         env:
           DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+          # The integration tests gate on TEST_DATABASE_URL, not DATABASE_URL.
+          # Without it every one of them skipped, and a skip reports as a pass:
+          # a defect that broke `verify-chain --event` on every invocation sat
+          # behind a green Test job because the only test covering it never ran.
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+          REDIS_URL: localhost:6379
+
+      # A skipped integration test is indistinguishable from a passing one in
+      # the summary, so failing on a skip is what keeps the variable above from
+      # being quietly dropped again.
+      #
+      # `tee`, not `>` and not `| grep -q`, and both halves of that matter.
+      #
+      # `| grep -q` was the original: grep returns at its first match, closing
+      # the pipe while `go test` is still writing, so `go test` dies of SIGPIPE
+      # with 141, `pipefail` reports 141 for the pipeline, the `if` reads false,
+      # and the guard stays silent exactly when a skip was there to find.
+      #
+      # `>"$log"` fixed that and broke something else: under `set -e` a failing
+      # `go test` aborts the step before anything prints, leaving an exit code
+      # and no test names in the Actions log.
+      #
+      # `tee` has neither problem. It reads to EOF so it never closes the pipe
+      # early, `pipefail` still propagates a real `go test` failure, and the
+      # output is on the console either way.
+      - name: Assert the integration tests actually ran
+        run: |
+          set -euo pipefail
+          log=$(mktemp)
+          go test ./internal/audit/... -count=1 -v 2>&1 | tee "$log"
+          if grep -q -- "--- SKIP" "$log"; then
+            echo "::error::an audit integration test skipped; TEST_DATABASE_URL is not reaching it"
+            grep -- "--- SKIP" "$log"
+            exit 1
+          fi
+          echo "no skips in the audit packages"
+        env:
+          DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           REDIS_URL: localhost:6379
 
       - name: Upload coverage
@@ -181,8 +227,18 @@ jobs:
       # in the Test job never compiles it. It needs a live gateway and the audit
       # database, which is why it gets its own job rather than an env var on that
       # one.
+      #
+      # -p 1 runs the matched packages one at a time. They share a single audit
+      # database, and `-run NoPayload` matches tests in two of them:
+      # TestNoPayload_CanaryEndToEnd in internal/audit polls audit_events for up
+      # to ten seconds waiting for the row it just provoked, while
+      # TestEmitterCarriesNoPayload in internal/audit/emitter truncates
+      # audit_events to get the clean slate it seals from. Run in parallel, the
+      # truncate deletes the row the canary is waiting for and the canary fails
+      # having proved nothing. Serialising the packages removes the overlap;
+      # the whole job is a few seconds either way.
       - name: Zero-retention canary
-        run: go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1
+        run: go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1 -p 1
         env:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           TEST_SERVER_URL: http://localhost:8080

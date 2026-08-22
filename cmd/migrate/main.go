@@ -46,6 +46,9 @@ func main() {
 		case "purge":
 			runPurge(os.Args[2:])
 			return
+		case "submit":
+			runSubmit(os.Args[2:])
+			return
 		case "up", "down":
 			runMigrate(os.Args[1], os.Args[2:])
 			return
