@@ -231,3 +231,108 @@ func TestSealedAtSurvivesTheDatabaseRoundTrip(t *testing.T) {
 			sealedAt.UnixMicro(), wire.UnixMicro())
 	}
 }
+
+// TestChainSurvivesABurnedCheckpointID pins a property the verifier has always
+// had and nothing tested.
+//
+// audit_checkpoints.id is a BIGSERIAL, and PostgreSQL sequences are
+// deliberately non-transactional so that concurrent writers do not serialise
+// on the counter: a value handed to a transaction that rolls back is consumed
+// and never reissued. The sealer writes each checkpoint inside a transaction,
+// so any failure between the insert and the commit burns an id and the chain
+// runs 1, 3, 4.
+//
+// The chain is still continuous, because continuity is the predecessor pointer
+// and not the id. verify-chain compares each checkpoint's prev_checkpoint_id
+// against the row that actually precedes it, so it reports no anomaly. A
+// consumer that assumed contiguous ids did not fare as well: see the control
+// plane's ADR 0007.
+//
+// Test fixtures normally truncate with RESTART IDENTITY, which is exactly the
+// condition under which ids are dense, so this arranges the opposite.
+func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
+	db := testDB(t)
+	resetCheckpoints(t, db)
+	ctx := context.Background()
+
+	// Only the first four events exist to begin with. RunSeal loops until it
+	// is caught up, so seeding everything up front would seal both batches in
+	// one call and leave no moment in between at which to burn an id.
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := range 4 {
+		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
+	}
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+		t.Fatalf("sealing the first batch: %v", err)
+	}
+
+	// Burn the next id the way a failed seal does: allocate it inside a
+	// transaction that rolls back.
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning the burn transaction: %v", err)
+	}
+	var burned int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO audit_checkpoints
+		    (range_start, range_end, event_count, merkle_root, prev_checkpoint_hash,
+		     checkpoint_hash, hash_schema_version, sealed_at, sealer_version,
+		     canonicalization_spec, covered_from, covered_to)
+		VALUES (900, 901, 2, $1, $1, $1, 1, NOW(), 'burn', 'rfc8785-v1', NOW(), NOW())
+		RETURNING id
+	`, bytes.Repeat([]byte{0x00}, 32)).Scan(&burned); err != nil {
+		t.Fatalf("allocating the id to burn: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rolling back the burn transaction: %v", err)
+	}
+
+	// Now the rest. Its checkpoint must skip the burned id.
+	for i := 4; i < 8; i++ {
+		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
+	}
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+		t.Fatalf("sealing the second batch: %v", err)
+	}
+
+	var ids []int64
+	rows, err := db.Query(ctx, `SELECT id FROM audit_checkpoints ORDER BY id`)
+	if err != nil {
+		t.Fatalf("reading checkpoint ids: %v", err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			t.Fatalf("scanning a checkpoint id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading checkpoint ids: %v", err)
+	}
+
+	if len(ids) != 2 {
+		t.Fatalf("%d checkpoints written, want 2", len(ids))
+	}
+	if ids[1] == ids[0]+1 {
+		t.Fatalf("the ids are contiguous (%v), so the rollback did not burn one and this "+
+			"test proves nothing about sparse ids", ids)
+	}
+	if ids[1] != burned+1 {
+		t.Errorf("the second checkpoint has id %d; the burned id was %d", ids[1], burned)
+	}
+
+	// The gap in the ids must not read as a gap in the chain.
+	result, _, err := checkpoint.RunVerify(ctx, db, checkpoint.VerifyOptions{})
+	if err != nil {
+		t.Fatalf("verifying the chain: %v", err)
+	}
+	if len(result.Anomalies) != 0 {
+		t.Errorf("a burned checkpoint id was reported as a chain anomaly: %v", result.Anomalies)
+	}
+	if result.CheckpointsVerified != 2 {
+		t.Errorf("%d checkpoints verified, want 2", result.CheckpointsVerified)
+	}
+}
