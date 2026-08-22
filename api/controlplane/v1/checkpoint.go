@@ -318,6 +318,31 @@ const (
 	ChainStatusBroken ChainStatus = "broken"
 )
 
+// HashVerification is the outcome of recomputing a stored checkpoint's hash
+// from its own attested fields.
+//
+// A control plane that aggregates checkpoints can recompute each one on
+// arrival. Reporting the outcome, rather than only storing checkpoints that
+// passed, is deliberate: a checkpoint that does not verify is itself evidence,
+// and a flag an auditor can see says more than a gap that looks like a gateway
+// which stopped reporting.
+type HashVerification string
+
+const (
+	// HashVerificationVerified means the stated hash was reproduced exactly.
+	HashVerificationVerified HashVerification = "verified"
+
+	// HashVerificationMismatch means recomputation produced a different
+	// digest. It does not on its own mean tampering: it equally means the two
+	// implementations disagree about the construction.
+	HashVerificationMismatch HashVerification = "mismatch"
+
+	// HashVerificationUnsupported means the algorithm or schema version is one
+	// the verifying implementation cannot recompute. Expected for a checkpoint
+	// sealed under a later version, and not a fault.
+	HashVerificationUnsupported HashVerification = "unsupported"
+)
+
 // CheckpointRecord is one stored checkpoint as returned by a list request.
 //
 // It repeats the attested fields of the submission so that a reader can
@@ -359,6 +384,18 @@ type CheckpointRecord struct {
 
 	// ChainNote explains a ChainStatusBroken value. It is empty otherwise.
 	ChainNote string `json:"chain_note,omitempty"`
+
+	// HashVerification is whether the storing implementation could reproduce
+	// CheckpointHash from this record's own attested fields when it arrived.
+	//
+	// A reader that wants to check this for itself has everything needed:
+	// every input to the hash is on this record. The field reports what the
+	// storing implementation found, and is not a substitute for recomputing.
+	HashVerification HashVerification `json:"hash_verification"`
+
+	// RecomputedHash is the digest the storing implementation produced when it
+	// disagreed with CheckpointHash. Empty when the two matched.
+	RecomputedHash HashHex `json:"recomputed_hash,omitempty"`
 }
 
 // CheckpointSubmissionResponse is returned for an accepted submission.

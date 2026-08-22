@@ -22,6 +22,7 @@ import (
 	"time"
 
 	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -58,6 +59,8 @@ type Result struct {
 	GatewayID  string
 	// HighestSubmitted is the checkpoint ID the cursor now sits at.
 	HighestSubmitted int64
+	// SealState is what this gateway reported about its own sealing.
+	SealState controlplanev1.SealState
 }
 
 // ErrCoveredRangeUnknown reports a checkpoint whose wall-clock extent cannot be
@@ -88,6 +91,20 @@ func Run(ctx context.Context, db *pgxpool.Pool, opts Options) (*Result, error) {
 	}
 
 	result := &Result{GatewayID: state.GatewayID, HighestSubmitted: state.LastSubmitted}
+
+	// Report the sealing state before submitting anything.
+	//
+	// Before, not after, because the run may not reach the end: a chain
+	// discontinuity stops it, and a gateway paused at a gap has nothing to
+	// submit at all. Reporting first means the control plane learns why a
+	// gateway is quiet even when the reason is that this run failed.
+	if err := reportStatus(ctx, db, client, state.GatewayID, result); err != nil {
+		// A failed status report must not stop checkpoint submission.
+		// Checkpoints are the evidence; the status is context for it, and
+		// losing the context is not a reason to withhold the evidence.
+		slog.Warn("control plane: could not report sealing status; continuing with submission",
+			"gateway_id", state.GatewayID, "err", err)
+	}
 
 	for {
 		rows, err := loadCheckpointsAfter(ctx, db, state.GatewayID, result.HighestSubmitted, batchLimit(opts.BatchSize))
@@ -132,6 +149,33 @@ func Run(ctx context.Context, db *pgxpool.Pool, opts Options) (*Result, error) {
 			return result, nil
 		}
 	}
+}
+
+// reportStatus reads this gateway's sealing state and sends it.
+func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gatewayID string, result *Result) error {
+	status, err := checkpoint.ReadSealStatus(ctx, db)
+	if err != nil {
+		return fmt.Errorf("reading the sealing status: %w", err)
+	}
+	report := status.ToReport(gatewayID, GatewayVersion, time.Now().UTC())
+	if _, err := client.ReportStatus(ctx, report); err != nil {
+		return err
+	}
+	result.SealState = status.State
+
+	if status.State == controlplanev1.SealStatePausedAtGap {
+		slog.Warn("control plane: reported that sealing is paused at an event id gap",
+			"gateway_id", gatewayID,
+			"gap_after_event_id", *status.GapAfterEventID,
+			"next_visible_event_id", *status.NextVisibleEventID,
+			"unsealed_event_count", status.UnsealedEventCount)
+	} else {
+		slog.Info("control plane: reported sealing status",
+			"gateway_id", gatewayID,
+			"seal_state", string(status.State),
+			"unsealed_event_count", status.UnsealedEventCount)
+	}
+	return nil
 }
 
 func batchLimit(batchSize int) int {

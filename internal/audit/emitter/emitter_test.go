@@ -40,6 +40,8 @@ type fakeControlPlane struct {
 
 	// received is every checkpoint accepted, in order.
 	received []controlplanev1.CheckpointSubmission
+	// statusReports is every sealing status the gateway reported.
+	statusReports []controlplanev1.GatewayStatusReport
 	// registrations counts how many times the gateway registered.
 	registrations int
 	// rejectAt, when non-zero, makes the server reject that checkpoint ID with
@@ -75,6 +77,31 @@ func newFakeControlPlane(t *testing.T) *fakeControlPlane {
 			OrgID:        "11111111-1111-4111-8111-111111111111",
 			Name:         req.Name,
 			RegisteredAt: controlplanev1.NewTimestamp(time.Now()),
+		})
+	})
+
+	mux.HandleFunc("POST /v1/gateways/{id}/status", func(w http.ResponseWriter, r *http.Request) {
+		if !f.authorized(w, r) {
+			return
+		}
+		var report controlplanev1.GatewayStatusReport
+		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if err := report.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, controlplanev1.Error{
+				Code: controlplanev1.ErrCodeInvalidRequest, Message: err.Error(),
+			})
+			return
+		}
+		f.mu.Lock()
+		f.statusReports = append(f.statusReports, report)
+		f.mu.Unlock()
+		writeJSON(w, http.StatusOK, controlplanev1.GatewayStatusResponse{
+			GatewayID:  report.GatewayID,
+			ReceivedAt: controlplanev1.NewTimestamp(time.Now()),
+			SealState:  report.SealState,
 		})
 	})
 
@@ -470,5 +497,139 @@ func TestEmitterRejectsABadToken(t *testing.T) {
 	}
 	if f.count() != 0 {
 		t.Errorf("checkpoints were submitted with a wrong token")
+	}
+}
+
+// TestEmitterReportsSealingStatus covers the signal that separates a gateway
+// which has deliberately stopped sealing from one that has fallen off the
+// network. Both stop submitting checkpoints; only the first can say why.
+func TestEmitterReportsSealingStatus(t *testing.T) {
+	db := testDB(t)
+	f := newFakeControlPlane(t)
+	sealFixture(t, db, 8, 4)
+
+	result, err := runEmitter(t, db, f, 0)
+	if err != nil {
+		t.Fatalf("submitting: %v", err)
+	}
+	if result.SealState != controlplanev1.SealStateCurrent {
+		t.Errorf("seal state is %q, want %q after a complete seal",
+			result.SealState, controlplanev1.SealStateCurrent)
+	}
+
+	f.mu.Lock()
+	reports := append([]controlplanev1.GatewayStatusReport(nil), f.statusReports...)
+	f.mu.Unlock()
+
+	if len(reports) != 1 {
+		t.Fatalf("%d status reports received, want 1", len(reports))
+	}
+	report := reports[0]
+	if report.SealState != controlplanev1.SealStateCurrent {
+		t.Errorf("reported seal state %q, want %q", report.SealState, controlplanev1.SealStateCurrent)
+	}
+	if report.UnsealedEventCount != 0 {
+		t.Errorf("reported %d unsealed events, want 0", report.UnsealedEventCount)
+	}
+	if report.LastCheckpointID == nil || *report.LastCheckpointID != 2 {
+		t.Errorf("reported last checkpoint %v, want 2", report.LastCheckpointID)
+	}
+}
+
+// TestEmitterReportsAGapPause is the case the signal exists for.
+//
+// A gap in audit event IDs stops the sealer permanently, so the gateway submits
+// nothing further. Without a status report that is indistinguishable from a
+// gateway that stopped running.
+func TestEmitterReportsAGapPause(t *testing.T) {
+	db := testDB(t)
+	f := newFakeControlPlane(t)
+	ctx := context.Background()
+
+	sealFixture(t, db, 4, 4) // one checkpoint covering events 1-4
+
+	// Insert two more events and delete the first of them, leaving a hole
+	// immediately after the sealed range. This is what a rolled-back insert
+	// leaves behind, and the sealer refuses to seal past it.
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := range 2 {
+		if _, err := db.Exec(ctx, `
+			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
+			VALUES ($1, $2, 'test_event', '{}')
+		`, "req-gap", base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("inserting an audit event: %v", err)
+		}
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM audit_events WHERE id = 5`); err != nil {
+		t.Fatalf("creating the gap: %v", err)
+	}
+
+	result, err := runEmitter(t, db, f, 0)
+	if err != nil {
+		t.Fatalf("submitting: %v", err)
+	}
+	if result.SealState != controlplanev1.SealStatePausedAtGap {
+		t.Fatalf("seal state is %q, want %q", result.SealState, controlplanev1.SealStatePausedAtGap)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.statusReports) != 1 {
+		t.Fatalf("%d status reports received, want 1", len(f.statusReports))
+	}
+	report := f.statusReports[0]
+
+	// The two numbers an operator needs in order to go and look.
+	if report.GapAfterEventID == nil || *report.GapAfterEventID != 4 {
+		t.Errorf("gap_after_event_id is %v, want 4", report.GapAfterEventID)
+	}
+	if report.NextVisibleEventID == nil || *report.NextVisibleEventID != 6 {
+		t.Errorf("next_visible_event_id is %v, want 6", report.NextVisibleEventID)
+	}
+	// The count bounds what is unattested. A pause with one unsealed event and
+	// one with a million are different situations wearing the same label.
+	if report.UnsealedEventCount != 1 {
+		t.Errorf("reported %d unsealed events, want 1", report.UnsealedEventCount)
+	}
+}
+
+// TestEmitterReportsNeverSealed covers a gateway holding events and no
+// checkpoint, whose chain attests nothing yet.
+func TestEmitterReportsNeverSealed(t *testing.T) {
+	db := testDB(t)
+	f := newFakeControlPlane(t)
+	ctx := context.Background()
+
+	if _, err := db.Exec(ctx,
+		"TRUNCATE audit_events, audit_checkpoints, control_plane_state RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("resetting: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
+		VALUES ('req-unsealed', NOW() - INTERVAL '1 hour', 'test_event', '{}')
+	`); err != nil {
+		t.Fatalf("inserting an audit event: %v", err)
+	}
+
+	result, err := runEmitter(t, db, f, 0)
+	if err != nil {
+		t.Fatalf("submitting: %v", err)
+	}
+	if result.SealState != controlplanev1.SealStateNeverSealed {
+		t.Errorf("seal state is %q, want %q", result.SealState, controlplanev1.SealStateNeverSealed)
+	}
+	if result.Submitted != 0 {
+		t.Errorf("submitted %d checkpoints from a gateway that has sealed none", result.Submitted)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.statusReports) != 1 {
+		t.Fatalf("%d status reports received, want 1; a gateway with nothing to submit is "+
+			"exactly the one whose status matters", len(f.statusReports))
+	}
+	if f.statusReports[0].LastCheckpointID != nil {
+		t.Errorf("reported a last checkpoint of %v on a gateway that has sealed none",
+			f.statusReports[0].LastCheckpointID)
 	}
 }

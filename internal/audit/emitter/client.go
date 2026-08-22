@@ -117,6 +117,24 @@ func (c *Client) SubmitCheckpoint(ctx context.Context, sub *controlplanev1.Check
 	return &resp, nil
 }
 
+// ReportStatus tells the control plane why this gateway's chain is or is not
+// advancing.
+//
+// It is sent whether or not any checkpoint was submitted, because the case it
+// exists for is exactly the one where no checkpoint is forthcoming: a gateway
+// paused at an event ID gap and a gateway that has fallen off the network both
+// simply stop submitting, and only the gateway can say which it is.
+func (c *Client) ReportStatus(ctx context.Context, report *controlplanev1.GatewayStatusReport) (*controlplanev1.GatewayStatusResponse, error) {
+	if err := report.Validate(); err != nil {
+		return nil, fmt.Errorf("status report is not valid: %w", err)
+	}
+	var resp controlplanev1.GatewayStatusResponse
+	if err := c.post(ctx, "/v1/gateways/"+report.GatewayID+"/status", report, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // RemoteError is a non-2xx response from the control plane.
 //
 // It carries the protocol's own error body when there is one, so a chain
