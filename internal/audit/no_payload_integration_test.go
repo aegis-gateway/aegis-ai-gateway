@@ -67,7 +67,18 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to database: %v", err)
 	}
-	defer pool.Close()
+	// t.Cleanup rather than defer, and the ordering is load-bearing.
+	//
+	// pgxpool.Close blocks until every checked-out connection is returned, and
+	// audittest.Serialise holds one for the length of the test so the advisory
+	// lock stays on a connection nobody else can be handed. Deferred calls run
+	// before cleanups, so `defer pool.Close()` would block waiting for a
+	// connection that is only released by a cleanup that has not run yet: the
+	// test would hang until the go test timeout rather than fail.
+	//
+	// Registered before Serialise so that LIFO ordering releases the lock
+	// first and closes the pool second.
+	t.Cleanup(pool.Close)
 
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatalf("ping database: %v", err)

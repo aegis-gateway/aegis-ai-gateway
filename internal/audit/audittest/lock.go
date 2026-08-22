@@ -56,6 +56,17 @@ func init() {
 // than on a pooled one that might be handed to someone else mid-test. A test
 // that panics still releases it: the connection closes and PostgreSQL drops
 // session locks with the session.
+//
+// Close the pool with t.Cleanup, registered before this call, and never with
+// defer.
+//
+// pgxpool.Close blocks until every checked-out connection is returned, and
+// this holds one for the length of the test. Deferred calls run before
+// cleanups, so `defer pool.Close()` waits on a connection that is released by
+// a cleanup which has not run yet, and the test hangs until the go test
+// timeout instead of failing. Registering t.Cleanup(pool.Close) first means
+// LIFO ordering releases the lock before the pool closes. Verified in both
+// directions: the deferred form blocks indefinitely, the cleanup form does not.
 func Serialise(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 
