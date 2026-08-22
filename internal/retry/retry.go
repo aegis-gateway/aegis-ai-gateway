@@ -32,10 +32,10 @@ import (
 var (
 	// ErrMaxRetriesExceeded is returned when all retries are exhausted
 	ErrMaxRetriesExceeded = errors.New("max retries exceeded")
-	
+
 	// ErrCircuitOpen is returned when circuit breaker is open
 	ErrCircuitOpen = errors.New("circuit breaker is open")
-	
+
 	// ErrContextCancelled is returned when context is cancelled
 	ErrContextCancelled = errors.New("request context cancelled")
 )
@@ -80,7 +80,7 @@ type RetryableFunc func(ctx context.Context, attempt int) (*http.Response, error
 // Execute runs the function with retry logic
 func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFunc) (*http.Response, error) {
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= e.cfg.MaxRetries; attempt++ {
 		// Check context before attempting
 		select {
@@ -91,12 +91,12 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			return nil, fmt.Errorf("%w: %v", ErrContextCancelled, ctx.Err())
 		default:
 		}
-		
+
 		// Execute the function
 		start := time.Now()
 		resp, err := fn(ctx, attempt)
 		duration := time.Since(start)
-		
+
 		// Success case
 		if err == nil && resp != nil && resp.StatusCode < 500 {
 			if attempt > 0 && e.metrics != nil {
@@ -104,10 +104,10 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			}
 			return resp, nil
 		}
-		
+
 		// Store the error
 		lastErr = err
-		
+
 		// Check if error is retryable
 		if !e.isRetryable(err, resp) {
 			slog.Debug("error is not retryable",
@@ -121,7 +121,7 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			}
 			return resp, err
 		}
-		
+
 		// Check if we have retries left
 		if attempt >= e.cfg.MaxRetries {
 			slog.Warn("max retries exceeded",
@@ -134,10 +134,10 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			}
 			return resp, fmt.Errorf("%w after %d attempts: %v", ErrMaxRetriesExceeded, attempt+1, lastErr)
 		}
-		
+
 		// Calculate backoff with jitter
 		backoff := e.calculateBackoff(attempt)
-		
+
 		slog.Debug("retrying request",
 			"provider", provider,
 			"attempt", attempt+1,
@@ -146,11 +146,11 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			"error", err,
 			"duration_ms", duration.Milliseconds(),
 		)
-		
+
 		if e.metrics != nil {
 			e.metrics.RecordRetryAttempt(provider, attempt+1)
 		}
-		
+
 		// Wait for backoff duration or context cancellation
 		select {
 		case <-ctx.Done():
@@ -162,7 +162,7 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			// Continue to next retry
 		}
 	}
-	
+
 	return nil, fmt.Errorf("%w: %v", ErrMaxRetriesExceeded, lastErr)
 }
 
@@ -172,12 +172,12 @@ func (e *Executor) isRetryable(err error, resp *http.Response) bool {
 	if err != nil && errors.Is(err, context.Canceled) {
 		return false
 	}
-	
+
 	// Circuit breaker open is not retryable
 	if err != nil && errors.Is(err, ErrCircuitOpen) {
 		return false
 	}
-	
+
 	// Network errors are retryable
 	if err != nil {
 		if isNetworkError(err) {
@@ -188,7 +188,7 @@ func (e *Executor) isRetryable(err error, resp *http.Response) bool {
 			return true
 		}
 	}
-	
+
 	// HTTP status codes
 	if resp != nil {
 		switch resp.StatusCode {
@@ -205,7 +205,7 @@ func (e *Executor) isRetryable(err error, resp *http.Response) bool {
 			return false
 		}
 	}
-	
+
 	return false
 }
 
@@ -214,26 +214,26 @@ func isNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Check for common network errors
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true
 	}
-	
+
 	// Check for syscall errors
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		return true
 	}
-	
+
 	// Check for specific syscall errors
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.ETIMEDOUT) {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -241,18 +241,18 @@ func isNetworkError(err error) bool {
 func (e *Executor) calculateBackoff(attempt int) time.Duration {
 	// Exponential backoff: initialBackoff * (multiplier ^ attempt)
 	backoff := float64(e.cfg.InitialBackoff) * math.Pow(e.cfg.BackoffMultiplier, float64(attempt))
-	
+
 	// Cap at max backoff
 	if backoff > float64(e.cfg.MaxBackoff) {
 		backoff = float64(e.cfg.MaxBackoff)
 	}
-	
+
 	// Add jitter: randomize between (1-jitter) and (1+jitter) of backoff
 	if e.cfg.JitterFraction > 0 {
 		jitter := e.cfg.JitterFraction * backoff
 		backoff = backoff - jitter + (rand.Float64() * 2 * jitter)
 	}
-	
+
 	return time.Duration(backoff)
 }
 
@@ -277,7 +277,7 @@ func NewContextMonitor(metrics *telemetry.Metrics) *ContextMonitor {
 // Watch monitors a context and logs when it's cancelled
 func (m *ContextMonitor) Watch(ctx context.Context, requestID, provider string) func() {
 	done := make(chan struct{})
-	
+
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -293,7 +293,7 @@ func (m *ContextMonitor) Watch(ctx context.Context, requestID, provider string) 
 			// Normal completion
 		}
 	}()
-	
+
 	// Return cleanup function
 	return func() {
 		close(done)

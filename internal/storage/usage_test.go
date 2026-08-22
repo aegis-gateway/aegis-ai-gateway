@@ -157,9 +157,9 @@ func TestUsageRecord_DifferentProviders(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			record := UsageRecord{
-				RequestID:    "req-" + tt.provider,
-				Provider:     tt.provider,
-				ModelServed:  tt.model,
+				RequestID:   "req-" + tt.provider,
+				Provider:    tt.provider,
+				ModelServed: tt.model,
 			}
 
 			if record.Provider != tt.provider {
@@ -348,7 +348,7 @@ func TestUsageRecord_SpecialCharactersInProject(t *testing.T) {
 // mockQueryTime simulates query time ranges for testing.
 func TestQueryTimeRanges(t *testing.T) {
 	now := time.Now()
-	
+
 	tests := []struct {
 		name      string
 		startTime time.Time

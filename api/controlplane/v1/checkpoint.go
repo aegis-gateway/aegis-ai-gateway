@@ -16,6 +16,7 @@ package controlplanev1
 
 import (
 	"fmt"
+	"time"
 )
 
 // CheckpointSubmission is one sealed audit checkpoint, offered to a control
@@ -138,8 +139,12 @@ type CheckpointSubmission struct {
 	// Consecutive checkpoints may overlap. Event IDs are allocated at insert
 	// and become visible at commit, so a long transaction carries an older
 	// timestamp and commits later, and CoveredFrom is the minimum over the
-	// batch rather than the first event's timestamp. Treat these as intervals
-	// to be unioned, never as a partition.
+	// batch rather than the first event's timestamp.
+	//
+	// See [CoverageSemantics] for what that means for anything answering a
+	// coverage question. Getting it wrong is not a rounding error: it produces
+	// a statement about what evidence covers that is wrong in the direction of
+	// claiming more.
 	CoveredFrom Timestamp `json:"covered_from"`
 	CoveredTo   Timestamp `json:"covered_to"`
 
@@ -157,6 +162,90 @@ type CheckpointSubmission struct {
 	// unspecified in v1, MUST NOT be populated by a v1 emitter, definition
 	// deferred to v2.
 	PolicyBundles []PolicyBundleRef `json:"policy_bundles,omitempty"`
+}
+
+// CoverageSemantics documents how a consumer must reason about coverage
+// intervals. It is a documentation anchor rather than a value.
+//
+// # Intervals are unioned, never partitioned
+//
+// Checkpoint intervals can overlap, so they do not partition time. Event IDs
+// are allocated at insert and become visible at commit, so an event written
+// during a long transaction carries a timestamp earlier than events already
+// sealed into the previous checkpoint. Checkpoint N+1 can therefore begin
+// earlier in time than checkpoint N ended.
+//
+// Two rules follow, and both are easy to get wrong in the direction of
+// claiming more coverage than exists:
+//
+//   - A coverage query unions the intervals of the checkpoints it selects. It
+//     never subtracts, never assumes adjacency, and never treats one
+//     checkpoint's CoveredTo as the next one's CoveredFrom.
+//   - Ordering by CheckpointID does not order by time. Sorting by ID and
+//     reading the first and last interval gives a range that may exclude
+//     covered instants and include uncovered ones.
+//
+// # What a coverage statement must contain
+//
+// Anything stating coverage for a period, an evidence bundle above all, states
+// four things and not fewer:
+//
+//  1. the period requested
+//  2. the checkpoints whose intervals intersect it
+//  3. the union of those intervals
+//  4. any gap inside the requested period, named explicitly
+//
+// A statement of the form "covered from X to Y" is not sufficient, because it
+// cannot express a hole.
+//
+// # An instant may fall in more than one checkpoint
+//
+// Because intervals overlap, one instant can be inside several. Those
+// checkpoints are not duplicates and counting them is not double counting:
+// each attests a different set of events. Anything reporting intersecting
+// checkpoints says so, or a reader will reasonably suspect the count is
+// inflated.
+//
+// # Coverage is asserted, not attested
+//
+// CoveredFrom and CoveredTo are not inputs to CheckpointHash. See
+// [CheckpointSubmission.CoveredFrom] and the note on verification below.
+//
+// While the underlying audit events are retained, the interval is checkable:
+// every leaf hash covers its event's timestamp, so the true minimum and
+// maximum can be re-derived from the events and their inclusion proofs and
+// compared. Once those events are purged, nothing can check it, and the
+// interval becomes an unverifiable assertion by the party being audited.
+//
+// A consumer must therefore describe coverage as gateway-asserted rather than
+// attested, in those words, until a hash schema version binds it.
+const CoverageSemantics = "see the documentation on this constant"
+
+// MaxCoverageClockSkew bounds how far CoveredTo may exceed SealedAt.
+//
+// Events are written before the checkpoint that seals them, so any excess is
+// disagreement between the clock that stamped the event and the clock that
+// stamped the seal. Under NTP those agree to within milliseconds; five seconds
+// is generous for that and small enough that it still rejects a genuinely
+// wrong timestamp rather than absorbing it.
+//
+// Exceeding SealedAt at all is an anomaly worth recording even when it is
+// inside this bound. See [CheckpointSubmission.ClockSkew].
+const MaxCoverageClockSkew = 5 * time.Second
+
+// ClockSkew returns how far CoveredTo exceeds SealedAt, or zero when it does
+// not.
+//
+// A non-zero value is within tolerance, because Validate rejects anything
+// beyond it. It is still worth recording and reporting: a deployment whose
+// clocks disagree by four seconds is one configuration change from producing
+// evidence that fails validation, and an auditor reading a coverage range is
+// entitled to know its endpoints were not perfectly ordered.
+func (c *CheckpointSubmission) ClockSkew() time.Duration {
+	if skew := c.CoveredTo.Sub(c.SealedAt.Time); skew > 0 {
+		return skew
+	}
+	return 0
 }
 
 // PolicyBundleRef identifies one policy bundle by name and content digest.
@@ -278,7 +367,22 @@ func (c *CheckpointSubmission) Validate() error {
 		return fmt.Errorf("covered_to %s precedes covered_from %s",
 			c.CoveredTo.Format(TimestampFormat), c.CoveredFrom.Format(TimestampFormat))
 	}
-	// The events were written before the checkpoint that seals them.
+	// The events were sealed after they were written, so covered_to cannot
+	// meaningfully exceed sealed_at. The invariant is enforced rather than
+	// weakened, with a small tolerance for clock skew between whatever wrote
+	// the event and whatever sealed it.
+	//
+	// Small on purpose. A tolerance wide enough to absorb an unsynchronised
+	// clock is not an invariant, it is a suggestion. Hosts under NTP agree to
+	// within milliseconds, so seconds is already generous and anything past it
+	// is a real anomaly worth seeing rather than absorbing.
+	if skew := c.CoveredTo.Sub(c.SealedAt.Time); skew > MaxCoverageClockSkew {
+		return fmt.Errorf(
+			"covered_to %s is %s after sealed_at %s, beyond the %s tolerance; the checkpoint "+
+				"claims to cover events written after it was sealed",
+			c.CoveredTo.Format(TimestampFormat), skew.Round(time.Millisecond),
+			c.SealedAt.Format(TimestampFormat), MaxCoverageClockSkew)
+	}
 	if c.CoveredFrom.After(c.SealedAt.Time) {
 		return fmt.Errorf("covered_from %s is after sealed_at %s, so the checkpoint claims to "+
 			"cover events written after it was sealed",

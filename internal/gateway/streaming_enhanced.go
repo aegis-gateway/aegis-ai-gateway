@@ -44,24 +44,24 @@ type StreamingConfig struct {
 // DefaultStreamingConfig returns sensible defaults for streaming.
 func DefaultStreamingConfig() StreamingConfig {
 	return StreamingConfig{
-		PerChunkTimeout: 30 * time.Second,  // 30s per chunk
-		TotalTimeout:    5 * time.Minute,    // 5 min total
-		BufferSize:      64 * 1024,          // 64KB initial
-		MaxBufferSize:   1024 * 1024,        // 1MB max
+		PerChunkTimeout: 30 * time.Second, // 30s per chunk
+		TotalTimeout:    5 * time.Minute,  // 5 min total
+		BufferSize:      64 * 1024,        // 64KB initial
+		MaxBufferSize:   1024 * 1024,      // 1MB max
 	}
 }
 
 // StreamMetrics tracks metrics during a streaming session.
 type StreamMetrics struct {
-	StartTime         time.Time
-	FirstChunkTime    time.Time
-	ChunkCount        int
-	PromptTokens      int
-	CompletionTokens  int
-	TotalTokens       int
-	EstimatedCostUSD  float64
-	Provider          string
-	Model             string
+	StartTime        time.Time
+	FirstChunkTime   time.Time
+	ChunkCount       int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	EstimatedCostUSD float64
+	Provider         string
+	Model            string
 }
 
 // StreamingHandler manages enhanced streaming with metrics, timeouts, and cost tracking.
@@ -90,11 +90,11 @@ func (sh *StreamingHandler) HandleStream(
 	aegisReq *types.AegisRequest,
 ) {
 	receivedAt := time.Now()
-	
+
 	// Create context with total timeout
 	ctx, cancel := context.WithTimeout(r.Context(), sh.config.TotalTimeout)
 	defer cancel()
-	
+
 	// Update provider request with timeout context
 	providerReq = providerReq.WithContext(ctx)
 
@@ -102,7 +102,7 @@ func (sh *StreamingHandler) HandleStream(
 	providerResp, err := adapter.SendRequest(providerReq)
 	if err != nil {
 		slog.Error("streaming provider request failed", "error", err, "provider", adapter.Name())
-		
+
 		// Record failure metrics
 		if sh.handler.healthTracker != nil {
 			sh.handler.healthTracker.RecordFailure(adapter.Name())
@@ -110,7 +110,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.metrics != nil {
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), "request_failed")
 		}
-		
+
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
@@ -123,11 +123,11 @@ func (sh *StreamingHandler) HandleStream(
 			"provider", adapter.Name(),
 			"body", string(body),
 		)
-		
+
 		if sh.handler.metrics != nil {
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
-		
+
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		return
 	}
@@ -141,9 +141,9 @@ func (sh *StreamingHandler) HandleStream(
 
 	// Execute streaming with full monitoring
 	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, authInfo)
-	
+
 	totalDuration := time.Since(receivedAt)
-	
+
 	// Calculate final cost if we have token counts.
 	if sh.handler.costCalc != nil && metrics.TotalTokens > 0 {
 		if cost, found := sh.handler.costCalc.CalculateSimple(
@@ -193,16 +193,16 @@ func (sh *StreamingHandler) HandleStream(
 			CompletionTokens: metrics.CompletionTokens,
 			CostUSD:          metrics.EstimatedCostUSD,
 		})
-		
+
 		// Record streaming-specific metrics
 		timeToFirstToken := metrics.FirstChunkTime.Sub(metrics.StartTime)
 		sh.handler.metrics.RecordStreamingMetrics(telemetry.StreamingLabels{
-			Provider:             metrics.Provider,
-			Model:                originalModel,
-			ChunkCount:           metrics.ChunkCount,
-			TimeToFirstTokenMs:   float64(timeToFirstToken.Milliseconds()),
-			TokensPerSecond:      sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
-			StreamDurationMs:     float64(totalDuration.Milliseconds()),
+			Provider:           metrics.Provider,
+			Model:              originalModel,
+			ChunkCount:         metrics.ChunkCount,
+			TimeToFirstTokenMs: float64(timeToFirstToken.Milliseconds()),
+			TokensPerSecond:    sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
+			StreamDurationMs:   float64(totalDuration.Milliseconds()),
 		})
 	}
 
@@ -268,14 +268,14 @@ func (sh *StreamingHandler) streamWithMonitoring(
 		<-ctx.Done()
 		clientDisconnected <- true
 	}()
-	
+
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
 	defer chunkTimer.Stop()
 
 	scanChan := make(chan bool)
 	lineChan := make(chan string)
-	
+
 	// Scanner goroutine
 	go func() {
 		for scanner.Scan() {
@@ -291,7 +291,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	for {
 		// Reset chunk timer for each iteration
 		chunkTimer.Reset(sh.config.PerChunkTimeout)
-		
+
 		select {
 		case <-ctx.Done():
 			slog.Warn("stream total timeout exceeded",
@@ -304,7 +304,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
 			flusher.Flush()
 			return metrics
-			
+
 		case <-chunkTimer.C:
 			slog.Warn("stream chunk timeout",
 				"request_id", reqID,
@@ -316,7 +316,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
 			flusher.Flush()
 			return metrics
-			
+
 		case <-clientDisconnected:
 			slog.Info("client disconnected during streaming",
 				"request_id", reqID,
@@ -326,7 +326,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
 			}
 			return metrics
-			
+
 		case <-scanChan:
 			// Scanner finished
 			if err := scanner.Err(); err != nil {
@@ -336,7 +336,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				}
 			}
 			return metrics
-			
+
 		case line := <-lineChan:
 			// Process chunk
 			if err := sh.processChunk(w, flusher, line, adapter, &metrics); err != nil {
@@ -346,7 +346,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				}
 				return metrics
 			}
-			
+
 			// Check if stream ended
 			if strings.Contains(line, "[DONE]") {
 				return metrics
@@ -404,7 +404,7 @@ func (sh *StreamingHandler) processChunk(
 	if metrics.ChunkCount == 0 {
 		metrics.FirstChunkTime = time.Now()
 	}
-	
+
 	metrics.ChunkCount++
 
 	// Extract token counts and model info from chunk (OpenAI format)

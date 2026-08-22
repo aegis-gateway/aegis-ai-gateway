@@ -75,8 +75,8 @@ func NewFilter(enabled func() bool) *SecretsFilter {
 	return &SecretsFilter{scanner: NewScanner(), enabled: enabled}
 }
 
-func (f *SecretsFilter) Name() string    { return "secrets" }
-func (f *SecretsFilter) Enabled() bool   { return f.enabled() }
+func (f *SecretsFilter) Name() string  { return "secrets" }
+func (f *SecretsFilter) Enabled() bool { return f.enabled() }
 
 func (f *SecretsFilter) ScanRequest(_ context.Context, req *types.AegisRequest) filter.Result {
 	detections := f.scanner.ScanMessages(req.Messages)

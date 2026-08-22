@@ -63,7 +63,14 @@ func testDB(t *testing.T) *pgxpool.Pool {
 func resetCheckpoints(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := db.Exec(ctx, "TRUNCATE audit_events, audit_checkpoints RESTART IDENTITY CASCADE")
+	// audit_purges as well, and not as an afterthought. verify-chain --full
+	// consults it to decide whether a range is attested-but-unverifiable, so a
+	// purge row left behind by one test makes a later test's healthy chain
+	// report an anomaly. That is the same class of cross-test contamination
+	// the search_path fix addressed for internal/purge, arriving by a
+	// different route.
+	_, err := db.Exec(ctx,
+		"TRUNCATE audit_events, audit_checkpoints, audit_purges RESTART IDENTITY CASCADE")
 	if err != nil {
 		t.Fatalf("truncate the audit tables: %v", err)
 	}

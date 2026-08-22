@@ -215,9 +215,9 @@ type openAIStreamChunk struct {
 }
 
 type openAIStreamChoice struct {
-	Index        int        `json:"index"`
+	Index        int         `json:"index"`
 	Delta        openAIDelta `json:"delta"`
-	FinishReason *string    `json:"finish_reason"`
+	FinishReason *string     `json:"finish_reason"`
 }
 
 type openAIDelta struct {
@@ -255,11 +255,11 @@ type anthropicRequestBody struct {
 }
 
 type anthropicResponseBody struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Model      string `json:"model"`
-	Content    []struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Model   string `json:"model"`
+	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`

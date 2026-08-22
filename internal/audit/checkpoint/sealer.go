@@ -47,8 +47,15 @@ type SealOptions struct {
 	SinceEvent int64
 	// BatchSize is the max events per checkpoint (default 10000).
 	BatchSize int
-	// LagSeconds is the safety window: only seal events older than this (default 300).
+	// LagSeconds is the safety window: only seal events older than this.
 	// Prevents sealing events still in-flight under concurrent load (BIGSERIAL gap issue).
+	//
+	// There is no default applied here, and the zero value means no lag at all.
+	// `aegis-migrate seal` supplies 300 through its -lag-seconds flag, and
+	// docs/AUDIT-INTEGRITY.md section 6 documents that as the default, but a
+	// caller constructing SealOptions directly gets zero unless it says
+	// otherwise. That is the configuration the doc warns about, so set it
+	// explicitly rather than relying on this struct.
 	LagSeconds int
 }
 
@@ -280,8 +287,8 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		    (range_start, range_end, event_count, merkle_root,
 		     prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
 		     hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
-		     covered_from, covered_to)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11)
+		     covered_from, covered_to, covered_range_source)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11,'sealed')
 	`, rangeStart, rangeEnd, eventCount, merkleRoot,
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,

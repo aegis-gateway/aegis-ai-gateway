@@ -28,8 +28,8 @@ type mockFilter struct {
 	result  Result
 }
 
-func (m *mockFilter) Name() string                                              { return m.name }
-func (m *mockFilter) Enabled() bool                                             { return m.enabled }
+func (m *mockFilter) Name() string                                                { return m.name }
+func (m *mockFilter) Enabled() bool                                               { return m.enabled }
 func (m *mockFilter) ScanRequest(_ context.Context, _ *types.AegisRequest) Result { return m.result }
 
 func TestNewChain(t *testing.T) {

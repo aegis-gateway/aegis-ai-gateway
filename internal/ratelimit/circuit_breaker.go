@@ -203,10 +203,10 @@ func (cb *RedisCircuitBreaker) Stats() CircuitBreakerStats {
 	defer cb.mu.RUnlock()
 
 	return CircuitBreakerStats{
-		State:             cb.state,
-		Failures:          cb.failures,
-		LastFailureTime:   cb.lastFailureTime,
-		LastSuccessTime:   cb.lastSuccessTime,
+		State:              cb.state,
+		Failures:           cb.failures,
+		LastFailureTime:    cb.lastFailureTime,
+		LastSuccessTime:    cb.lastSuccessTime,
 		ConsecutiveSuccess: cb.consecutiveSucces,
 	}
 }

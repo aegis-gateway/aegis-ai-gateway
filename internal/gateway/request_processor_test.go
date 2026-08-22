@@ -104,7 +104,7 @@ func TestParseAndValidateRequest(t *testing.T) {
 			// Create request
 			req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(tt.requestBody))
 			req.Header.Set("X-Aegis-Project", "test-project")
-			
+
 			authInfo := &auth.AuthInfo{
 				OrganizationID:    "test-org",
 				TeamID:            "test-team",
@@ -113,7 +113,9 @@ func TestParseAndValidateRequest(t *testing.T) {
 				MaxClassification: types.ClassPublic,
 			}
 
-			var validator interface{ Validate(*types.AegisRequest) error }
+			var validator interface {
+				Validate(*types.AegisRequest) error
+			}
 			if tt.validator != nil {
 				validator = tt.validator
 			}
@@ -158,12 +160,12 @@ func TestRequestEnrichment(t *testing.T) {
 		"model": "gpt-4",
 		"messages": [{"role": "user", "content": "Hello"}]
 	}`
-	
+
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(requestBody))
 	req.Header.Set("X-Aegis-Project", "my-project")
 	req.Header.Set("X-Aegis-Prefer-Provider", "openai")
 	req.Header.Set("X-Aegis-Trace-Context", "trace-123")
-	
+
 	authInfo := &auth.AuthInfo{
 		OrganizationID:    "org-123",
 		TeamID:            "team-456",
@@ -181,7 +183,7 @@ func TestRequestEnrichment(t *testing.T) {
 
 	// Verify all enrichments
 	aegisReq := result.AegisRequest
-	
+
 	if aegisReq.RequestID != "req-xyz" {
 		t.Errorf("Expected RequestID 'req-xyz', got '%s'", aegisReq.RequestID)
 	}
@@ -254,4 +256,3 @@ func TestResponseBuilder(t *testing.T) {
 		t.Errorf("Expected cost 0.123, got %f", aegisResp.EstimatedCostUSD)
 	}
 }
-

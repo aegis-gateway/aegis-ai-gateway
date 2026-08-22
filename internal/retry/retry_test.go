@@ -32,16 +32,16 @@ func TestExecutor_Execute_Success(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
 		return &http.Response{StatusCode: 200}, nil
 	}
-	
+
 	ctx := context.Background()
 	resp, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -62,7 +62,7 @@ func TestExecutor_Execute_RetryOnTransientError(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
@@ -72,10 +72,10 @@ func TestExecutor_Execute_RetryOnTransientError(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200}, nil
 	}
-	
+
 	ctx := context.Background()
 	resp, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -96,16 +96,16 @@ func TestExecutor_Execute_MaxRetriesExceeded(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
 		return &http.Response{StatusCode: 503}, nil
 	}
-	
+
 	ctx := context.Background()
 	resp, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if !errors.Is(err, ErrMaxRetriesExceeded) {
 		t.Errorf("expected ErrMaxRetriesExceeded, got %v", err)
 	}
@@ -126,16 +126,16 @@ func TestExecutor_Execute_NoRetryOn4xxError(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
 		return &http.Response{StatusCode: 400}, nil
 	}
-	
+
 	ctx := context.Background()
 	resp, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -156,9 +156,9 @@ func TestExecutor_Execute_ContextCancellation(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
@@ -169,9 +169,9 @@ func TestExecutor_Execute_ContextCancellation(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200}, nil
 	}
-	
+
 	_, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if !errors.Is(err, ErrContextCancelled) {
 		t.Errorf("expected ErrContextCancelled, got %v", err)
 	}
@@ -189,7 +189,7 @@ func TestExecutor_Execute_RetryNetworkError(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	callCount := 0
 	fn := func(ctx context.Context, attempt int) (*http.Response, error) {
 		callCount++
@@ -198,10 +198,10 @@ func TestExecutor_Execute_RetryNetworkError(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200}, nil
 	}
-	
+
 	ctx := context.Background()
 	resp, err := executor.Execute(ctx, "test-provider", fn)
-	
+
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -215,7 +215,7 @@ func TestExecutor_Execute_RetryNetworkError(t *testing.T) {
 
 func TestExecutor_isRetryable(t *testing.T) {
 	executor := NewExecutor(DefaultConfig(), nil)
-	
+
 	tests := []struct {
 		name       string
 		err        error
@@ -238,7 +238,7 @@ func TestExecutor_isRetryable(t *testing.T) {
 		{"timeout", context.DeadlineExceeded, 0, true},
 		{"circuit open", ErrCircuitOpen, 0, false},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var resp *http.Response
@@ -261,7 +261,7 @@ func TestExecutor_calculateBackoff(t *testing.T) {
 		JitterFraction:    0.0, // No jitter for predictable testing
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	tests := []struct {
 		attempt int
 		want    time.Duration
@@ -275,7 +275,7 @@ func TestExecutor_calculateBackoff(t *testing.T) {
 		{6, 5000 * time.Millisecond}, // Capped at MaxBackoff
 		{7, 5000 * time.Millisecond}, // Still capped
 	}
-	
+
 	for _, tt := range tests {
 		t.Run("attempt_"+itoa(tt.attempt), func(t *testing.T) {
 			got := executor.calculateBackoff(tt.attempt)
@@ -294,14 +294,14 @@ func TestExecutor_calculateBackoff_WithJitter(t *testing.T) {
 		JitterFraction:    0.1,
 	}
 	executor := NewExecutor(cfg, nil)
-	
+
 	// With jitter, backoff should be in a range
 	backoff := executor.calculateBackoff(0)
-	
+
 	// Expected range: 100ms * (1 - 0.1) to 100ms * (1 + 0.1)
 	minExpected := 90 * time.Millisecond
 	maxExpected := 110 * time.Millisecond
-	
+
 	if backoff < minExpected || backoff > maxExpected {
 		t.Errorf("calculateBackoff(0) = %v, want between %v and %v", backoff, minExpected, maxExpected)
 	}
@@ -309,18 +309,18 @@ func TestExecutor_calculateBackoff_WithJitter(t *testing.T) {
 
 func TestContextMonitor_Watch(t *testing.T) {
 	monitor := NewContextMonitor(nil)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Start watching
 	cleanup := monitor.Watch(ctx, "test-req-123", "test-provider")
-	
+
 	// Cancel context
 	cancel()
-	
+
 	// Give it a moment to process
 	time.Sleep(10 * time.Millisecond)
-	
+
 	// Cleanup
 	cleanup()
 }
