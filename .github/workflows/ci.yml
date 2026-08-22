@@ -83,11 +83,22 @@ jobs:
       # A skipped integration test is indistinguishable from a passing one in
       # the summary, so failing on a skip is what keeps the variable above from
       # being quietly dropped again.
+      #
+      # The output goes to a file rather than through a pipe into grep. Under
+      # `pipefail` the pipeline reports the last non-zero status in it, and
+      # `grep -q` exits the moment it matches, which closes the pipe and leaves
+      # `go test` writing into it -- so `go test` dies of SIGPIPE with 141, the
+      # pipeline reports 141, the `if` reads false, and the guard says nothing
+      # exactly when a skip was there to find. Verified: a producer that emits
+      # `--- SKIP` and keeps writing takes that branch every time.
       - name: Assert the integration tests actually ran
         run: |
           set -euo pipefail
-          if go test ./internal/audit/... -count=1 -v 2>&1 | grep -q -- "--- SKIP"; then
+          log=$(mktemp)
+          go test ./internal/audit/... -count=1 -v >"$log" 2>&1
+          if grep -q -- "--- SKIP" "$log"; then
             echo "::error::an audit integration test skipped; TEST_DATABASE_URL is not reaching it"
+            grep -- "--- SKIP" "$log"
             exit 1
           fi
           echo "no skips in the audit packages"
