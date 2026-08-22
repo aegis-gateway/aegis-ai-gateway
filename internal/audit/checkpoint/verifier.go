@@ -336,6 +336,23 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 		return nil, fmt.Errorf("verify: event %d not found in checkpoint %d range", eventID, cp.ID)
 	}
 
+	// The proof is rebuilt from the audit_events rows as they are *now*, while
+	// merkle_root below comes from the checkpoint as it was sealed. If a row in
+	// the range has since been altered or removed, the rebuilt tree no longer
+	// reproduces the stored root — and emitting the proof anyway hands the
+	// caller something that cannot verify, from a command that exits 0.
+	//
+	// Recompute the root and refuse to emit a proof that does not match. This
+	// is the single check that makes `verify-chain --event E` meaningful
+	// without --full: chain hashes alone say nothing about the leaves.
+	if computed := MerkleRoot(leaves); !bytes.Equal(computed, cp.MerkleRoot) {
+		return nil, fmt.Errorf(
+			"verify: event %d is in checkpoint %d, but the events in range %d–%d no longer "+
+				"reproduce the sealed merkle_root (recomputed %x, sealed %x) — the audit rows "+
+				"have been altered since sealing; run verify-chain --full to locate the damage",
+			eventID, cp.ID, cp.RangeStart, cp.RangeEnd, computed, cp.MerkleRoot)
+	}
+
 	siblings := InclusionProof(leaves, leafIdx)
 	sibHex := make([]string, len(siblings))
 	for i, s := range siblings {
