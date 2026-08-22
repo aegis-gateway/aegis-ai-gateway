@@ -2,6 +2,7 @@
 
 Status:   Proposed
 Date:     2026-08-22
+Tracked:  https://github.com/aegis-gateway/aegis-ai-gateway/issues/38
 Decision: Record the gap. Propose binding `prev_checkpoint_id` into a future `hash_schema_version`. Do not implement now.
 
 ## Context
