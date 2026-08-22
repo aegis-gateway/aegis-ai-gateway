@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"time"
 
+	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -237,7 +238,10 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	}
 
 	// Compute checkpoint hash per docs/AUDIT-INTEGRITY.md §3.
-	cpHash := computeCheckpointHash(merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, 1, sealedAt)
+	cpHash, err := computeCheckpointHash(merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, 1, sealedAt)
+	if err != nil {
+		return false, fmt.Errorf("seal: compute checkpoint hash: %w", err)
+	}
 
 	// Insert checkpoint in a transaction.
 	tx, err := conn.Begin(ctx)
@@ -287,8 +291,8 @@ func readPrevCheckpointHash(ctx context.Context, conn *pgx.Conn) ([]byte, int64,
 		"SELECT id, checkpoint_hash FROM audit_checkpoints ORDER BY id DESC LIMIT 1",
 	).Scan(&prevID, &prevHash)
 	if err == pgx.ErrNoRows {
-		// Genesis: use 32 zero bytes per docs/AUDIT-INTEGRITY.md §3.
-		return make([]byte, 32), -1, nil
+		// Genesis: 32 zero bytes per docs/AUDIT-INTEGRITY.md §3.
+		return controlplanev1.GenesisPrevHashBytes(), -1, nil
 	}
 	if err != nil {
 		return nil, 0, err
@@ -296,39 +300,21 @@ func readPrevCheckpointHash(ctx context.Context, conn *pgx.Conn) ([]byte, int64,
 	return prevHash, prevID, nil
 }
 
-// computeCheckpointHash returns SHA-256 over the 96-byte input defined in
-// docs/AUDIT-INTEGRITY.md §3:
+// computeCheckpointHash returns the checkpoint hash for the given fields.
 //
-//	merkle_root            (32 bytes)
-//	|| prev_checkpoint_hash (32 bytes; the genesis constant of 32 zero bytes
-//	                         for the first checkpoint)
-//	|| uint64_le(range_start)            (8)
-//	|| uint64_le(range_end)              (8)
-//	|| uint32_le(event_count)            (4)
-//	|| uint32_le(hash_schema_version)    (4)
-//	|| int64_le(sealed_at_unix_micros)   (8)
-//
-// The published spec is the contract for independent verifiers — the whole
-// point of using RFC 6962 here is that someone can check a checkpoint without
-// reading this file. An earlier version prefixed prev_checkpoint_hash with its
-// uint32 length, producing a 100-byte input that no spec-following verifier
-// would reproduce. The prefix also distinguished nothing: genesis is defined as
-// 32 zero bytes rather than an empty value, so the length was always 32.
+// The construction itself lives in api/controlplane/v1, which is the public
+// protocol package and the single normative implementation. It is there rather
+// than here because more than one party needs to produce these bytes: the
+// sealer, a control plane confirming that what it stored can be re-derived,
+// and an independent verifier checking an evidence bundle years later. Two
+// implementations of one specification is the drift the specification exists
+// to prevent.
 //
 // Callers must pass the 32-byte genesis constant for the first checkpoint,
-// never nil, or the input length changes and the hash leaves the spec again.
-func computeCheckpointHash(merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) []byte {
-	h := sha256.New()
-	h.Write(merkleRoot)
-	h.Write(prevHash)
-	var scalars [32]byte
-	binary.LittleEndian.PutUint64(scalars[0:8], uint64(rangeStart))
-	binary.LittleEndian.PutUint64(scalars[8:16], uint64(rangeEnd))
-	binary.LittleEndian.PutUint32(scalars[16:20], uint32(eventCount))
-	binary.LittleEndian.PutUint32(scalars[20:24], uint32(schemaVersion))
-	binary.LittleEndian.PutUint64(scalars[24:32], uint64(sealedAt.UnixMicro()))
-	h.Write(scalars[:])
-	return h.Sum(nil)
+// never nil. See docs/adr/0007-hash-construction-belongs-to-the-protocol.md.
+func computeCheckpointHash(merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) ([]byte, error) {
+	return controlplanev1.ComputeCheckpointHash(
+		merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, schemaVersion, sealedAt)
 }
 
 // scanEventRows reads all rows from pgx.Rows into a slice of AuditEventRow.

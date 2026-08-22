@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -124,7 +125,7 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		var expectedPrev []byte
 		if cp.PrevCheckpointID == nil {
 			// Genesis: must be 32 zero bytes.
-			expectedPrev = make([]byte, 32)
+			expectedPrev = controlplanev1.GenesisPrevHashBytes()
 		} else {
 			if i == 0 {
 				// First in our window but not genesis — load the actual previous.
@@ -169,11 +170,19 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		}
 
 		// Recompute checkpoint_hash from stored fields.
-		computed := computeCheckpointHash(
+		computed, err := computeCheckpointHash(
 			cp.MerkleRoot, expectedPrev,
 			cp.RangeStart, cp.RangeEnd, cp.EventCount,
 			cp.HashSchemaVersion, cp.SealedAt,
 		)
+		if err != nil {
+			// A stored digest of the wrong length. The row cannot be verified,
+			// and reporting it as an anomaly is the honest outcome: silently
+			// skipping it would count the checkpoint as verified.
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("checkpoint %d: cannot recompute checkpoint_hash: %v", cp.ID, err))
+			continue
+		}
 		if !bytes.Equal(computed, cp.CheckpointHash) {
 			result.Anomalies = append(result.Anomalies,
 				fmt.Sprintf("checkpoint %d: checkpoint_hash mismatch (stored=%s, computed=%s)",

@@ -45,13 +45,20 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// resetCheckpoints truncates audit_checkpoints for a clean-slate test.
+// resetCheckpoints clears both audit_events and audit_checkpoints.
+//
+// Both, not just checkpoints. A test that truncates only the checkpoints
+// leaves the events behind, and the next seal picks them up, so what a test
+// sees depends on which tests ran before it. That made
+// TestCheckpointIntegration_SealEmpty pass only while it happened to run
+// first, which stopped being true when another file was added ahead of it
+// alphabetically.
 func resetCheckpoints(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := db.Exec(ctx, "TRUNCATE audit_checkpoints RESTART IDENTITY CASCADE")
+	_, err := db.Exec(ctx, "TRUNCATE audit_events, audit_checkpoints RESTART IDENTITY CASCADE")
 	if err != nil {
-		t.Fatalf("truncate audit_checkpoints: %v", err)
+		t.Fatalf("truncate the audit tables: %v", err)
 	}
 }
 

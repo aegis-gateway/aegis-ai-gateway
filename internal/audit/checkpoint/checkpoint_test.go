@@ -17,10 +17,10 @@ package checkpoint_test
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"testing"
 	"time"
 
+	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
 )
 
@@ -115,24 +115,28 @@ func TestCheckpointDomainSeparation(t *testing.T) {
 
 func TestCheckpointGenesisConstant(t *testing.T) {
 	// The genesis prev_checkpoint_hash is 32 zero bytes per docs/AUDIT-INTEGRITY.md §3.
-	// testComputeCheckpointHash copies prevHash into a [96]byte buffer; passing an empty
-	// slice results in the same zero bytes as an explicit 32-zero-byte slice (both leave
-	// buf[32:64] zero). The spec-mandated invariant is that a non-zero prev hash changes
-	// the output — which proves the chain binding is sensitive to prev_checkpoint_hash.
+	// The invariant that matters is that a non-zero prev hash changes the output,
+	// which is what makes the chain binding sensitive to prev_checkpoint_hash.
+	//
+	// These assertions run against the normative construction in
+	// api/controlplane/v1 rather than a copy of it. An earlier version of this
+	// file carried its own implementation, which had drifted to a superseded
+	// 100-byte input and was only ever compared against itself, so it asserted
+	// nothing about what the sealer actually writes.
 	merkleRoot := bytes.Repeat([]byte{0x01}, 32)
 	genesis32zeros := make([]byte, 32) // all zeros — the normative genesis constant
 	sealedAt := time.Date(2026, 8, 21, 14, 32, 0, 0, time.UTC)
 
 	// Determinism: identical inputs must produce identical checkpoint hash.
-	h1 := testComputeCheckpointHash(merkleRoot, genesis32zeros, 1, 100, 100, 1, sealedAt)
-	h2 := testComputeCheckpointHash(merkleRoot, genesis32zeros, 1, 100, 100, 1, sealedAt)
+	h1 := mustCheckpointHash(t, merkleRoot, genesis32zeros, 1, 100, 100, 1, sealedAt)
+	h2 := mustCheckpointHash(t, merkleRoot, genesis32zeros, 1, 100, 100, 1, sealedAt)
 	if !bytes.Equal(h1, h2) {
 		t.Fatal("identical inputs must produce identical checkpoint hash")
 	}
 
 	// Chain binding: a different (non-zero) prev_hash must produce a different hash.
 	nonZeroPrev := bytes.Repeat([]byte{0xFF}, 32)
-	h3 := testComputeCheckpointHash(merkleRoot, nonZeroPrev, 1, 100, 100, 1, sealedAt)
+	h3 := mustCheckpointHash(t, merkleRoot, nonZeroPrev, 1, 100, 100, 1, sealedAt)
 	if bytes.Equal(h1, h3) {
 		t.Fatal("genesis (32 zeros) and non-zero prev_checkpoint_hash must produce different hashes")
 	}
@@ -147,27 +151,27 @@ func TestCheckpointChainBinding_TamperedField(t *testing.T) {
 	prevHash := make([]byte, 32) // genesis zeros
 	sealedAt := time.Date(2026, 8, 21, 14, 32, 0, 0, time.UTC)
 
-	correct := testComputeCheckpointHash(merkleRoot, prevHash, 1, 100, 100, 1, sealedAt)
+	correct := mustCheckpointHash(t, merkleRoot, prevHash, 1, 100, 100, 1, sealedAt)
 
 	// Tamper: range_end
-	tampered := testComputeCheckpointHash(merkleRoot, prevHash, 1, 101, 100, 1, sealedAt)
+	tampered := mustCheckpointHash(t, merkleRoot, prevHash, 1, 101, 100, 1, sealedAt)
 	if bytes.Equal(correct, tampered) {
 		t.Fatal("tampering range_end must change checkpoint_hash")
 	}
 
 	// Tamper: event_count
-	if bytes.Equal(correct, testComputeCheckpointHash(merkleRoot, prevHash, 1, 100, 99, 1, sealedAt)) {
+	if bytes.Equal(correct, mustCheckpointHash(t, merkleRoot, prevHash, 1, 100, 99, 1, sealedAt)) {
 		t.Fatal("tampering event_count must change checkpoint_hash")
 	}
 
 	// Tamper: sealed_at (one second later)
-	if bytes.Equal(correct, testComputeCheckpointHash(merkleRoot, prevHash, 1, 100, 100, 1, sealedAt.Add(time.Second))) {
+	if bytes.Equal(correct, mustCheckpointHash(t, merkleRoot, prevHash, 1, 100, 100, 1, sealedAt.Add(time.Second))) {
 		t.Fatal("tampering sealed_at must change checkpoint_hash")
 	}
 
 	// Tamper: prev_checkpoint_hash
 	altPrev := bytes.Repeat([]byte{0xFF}, 32)
-	if bytes.Equal(correct, testComputeCheckpointHash(merkleRoot, altPrev, 1, 100, 100, 1, sealedAt)) {
+	if bytes.Equal(correct, mustCheckpointHash(t, merkleRoot, altPrev, 1, 100, 100, 1, sealedAt)) {
 		t.Fatal("tampering prev_checkpoint_hash must change checkpoint_hash")
 	}
 }
@@ -254,24 +258,15 @@ func TestCheckpointTimestampFormat(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// testComputeCheckpointHash replicates docs/AUDIT-INTEGRITY.md §3 hash construction
-// independently of the production code, for test isolation.
-// testComputeCheckpointHash mirrors the production computeCheckpointHash algorithm.
-// The length-prefix on prevHash distinguishes genesis (len=0) from a non-genesis
-// checkpoint whose hash happens to be 32 zero bytes.
-func testComputeCheckpointHash(merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) []byte {
-	h := sha256.New()
-	h.Write(merkleRoot)
-	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(prevHash)))
-	h.Write(lenBuf[:])
-	h.Write(prevHash)
-	var scalars [32]byte
-	binary.LittleEndian.PutUint64(scalars[0:8], uint64(rangeStart))
-	binary.LittleEndian.PutUint64(scalars[8:16], uint64(rangeEnd))
-	binary.LittleEndian.PutUint32(scalars[16:20], uint32(eventCount))
-	binary.LittleEndian.PutUint32(scalars[20:24], uint32(schemaVersion))
-	binary.LittleEndian.PutUint64(scalars[24:32], uint64(sealedAt.UnixMicro()))
-	h.Write(scalars[:])
-	return h.Sum(nil)
+// mustCheckpointHash computes a checkpoint hash using the normative
+// implementation in the public protocol package, which is the same code path
+// the sealer takes. See docs/adr/0007-hash-construction-belongs-to-the-protocol.md.
+func mustCheckpointHash(t *testing.T, merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) []byte {
+	t.Helper()
+	h, err := controlplanev1.ComputeCheckpointHash(
+		merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, schemaVersion, sealedAt)
+	if err != nil {
+		t.Fatalf("computing the checkpoint hash: %v", err)
+	}
+	return h
 }
