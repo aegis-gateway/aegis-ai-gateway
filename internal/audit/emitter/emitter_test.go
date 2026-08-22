@@ -26,6 +26,7 @@ import (
 	"time"
 
 	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/audittest"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/emitter"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -223,6 +224,10 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect to the test database: %v", err)
 	}
 	t.Cleanup(pool.Close)
+
+	// internal/audit/checkpoint truncates and seals the same tables, and
+	// package binaries run in parallel against one database.
+	audittest.Serialise(t, pool)
 	return pool
 }
 

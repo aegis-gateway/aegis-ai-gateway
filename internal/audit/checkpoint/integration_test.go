@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/audittest"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
 )
 
@@ -43,6 +44,11 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect to test database: %v", err)
 	}
 	t.Cleanup(pool.Close)
+
+	// internal/audit/emitter truncates and seals the same tables, and package
+	// binaries run in parallel against one database. Serialise before any test
+	// here touches them.
+	audittest.Serialise(t, pool)
 	return pool
 }
 
