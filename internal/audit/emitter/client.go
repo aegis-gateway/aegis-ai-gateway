@@ -114,6 +114,29 @@ func (c *Client) SubmitCheckpoint(ctx context.Context, sub *controlplanev1.Check
 	if err := c.post(ctx, "/v1/checkpoints", sub, &resp); err != nil {
 		return nil, err
 	}
+
+	// The acknowledgement has to name what it acknowledges.
+	//
+	// A 2xx with a body that decodes but says nothing -- `{}` from a
+	// misconfigured proxy, a cached response, an acknowledgement for a
+	// different checkpoint -- would otherwise be read as success, and the
+	// caller advances its durable cursor past a checkpoint the control plane
+	// never stored. The next run resumes after it, so the checkpoint is never
+	// submitted again: a permanent hole in the evidence, created by the one
+	// mechanism meant to prevent holes. Refusing here stops the run instead,
+	// which is recoverable.
+	if resp.CheckpointID != sub.CheckpointID {
+		return nil, fmt.Errorf(
+			"control plane acknowledged checkpoint %d in response to checkpoint %d; "+
+				"refusing to treat that as an acknowledgement of what was sent",
+			resp.CheckpointID, sub.CheckpointID)
+	}
+	if resp.GatewayID != sub.GatewayID {
+		return nil, fmt.Errorf(
+			"control plane acknowledged checkpoint %d for gateway %q, but it was submitted "+
+				"for gateway %q",
+			sub.CheckpointID, resp.GatewayID, sub.GatewayID)
+	}
 	return &resp, nil
 }
 

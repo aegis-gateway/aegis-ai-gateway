@@ -50,6 +50,10 @@ type fakeControlPlane struct {
 	// failNext, when true, makes the next submission fail at the transport
 	// level, standing in for a dropped connection mid-run.
 	failNext bool
+	// hollowAckAt, when non-zero, makes the server answer that checkpoint with
+	// a 2xx whose body decodes but identifies nothing, standing in for a proxy
+	// or misconfigured endpoint that returns success without storing anything.
+	hollowAckAt int64
 
 	server *httptest.Server
 }
@@ -131,6 +135,12 @@ func newFakeControlPlane(t *testing.T) *fakeControlPlane {
 				}
 			}
 			http.Error(w, "boom", http.StatusBadGateway)
+			return
+		}
+
+		if f.hollowAckAt != 0 && sub.CheckpointID == f.hollowAckAt {
+			// A 2xx that decodes into the response type and names nothing.
+			writeJSON(w, http.StatusCreated, controlplanev1.CheckpointSubmissionResponse{})
 			return
 		}
 
@@ -631,5 +641,44 @@ func TestEmitterReportsNeverSealed(t *testing.T) {
 	if f.statusReports[0].LastCheckpointID != nil {
 		t.Errorf("reported a last checkpoint of %v on a gateway that has sealed none",
 			f.statusReports[0].LastCheckpointID)
+	}
+}
+
+// TestEmitterStopsOnAnUnidentifiedAcknowledgement covers a 2xx that decodes
+// but acknowledges nothing.
+//
+// The cursor is what makes submission resumable, and it advances on the
+// strength of the response. If an empty body counts as success the cursor
+// moves past a checkpoint the control plane never stored, and because the next
+// run resumes after the cursor that checkpoint is never offered again. The
+// result is a permanent hole in the evidence produced by the mechanism that
+// exists to prevent holes, so the run has to stop instead.
+func TestEmitterStopsOnAnUnidentifiedAcknowledgement(t *testing.T) {
+	db := testDB(t)
+	f := newFakeControlPlane(t)
+	sealFixture(t, db, 20, 4) // five checkpoints
+
+	f.mu.Lock()
+	f.hollowAckAt = 2
+	f.mu.Unlock()
+
+	_, err := runEmitter(t, db, f, 0)
+	if err == nil {
+		t.Fatal("an acknowledgement naming no checkpoint was accepted as success")
+	}
+	if !strings.Contains(err.Error(), "acknowledged checkpoint 0") {
+		t.Errorf("the error does not say the acknowledgement identified nothing: %v", err)
+	}
+
+	// The cursor must still sit at checkpoint 1: the run stopped at 2 rather
+	// than stepping over it.
+	var cursor int64
+	if err := db.QueryRow(context.Background(),
+		"SELECT last_submitted_checkpoint FROM control_plane_state WHERE singleton").
+		Scan(&cursor); err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	if cursor != 1 {
+		t.Errorf("the cursor advanced to %d past an unstored checkpoint; want 1", cursor)
 	}
 }
