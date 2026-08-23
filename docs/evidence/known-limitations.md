@@ -130,17 +130,22 @@ secrets, PII, or injection.
 This is recorded prominently because the project has previously published a security
 policy claiming response scanning that did not exist.
 
-### 2.2 The default policy bundle cannot currently deny
+### 2.2 The default policy bundle denies on alias, not on provider trust
 
-The single deny rule in
-[`configs/policies/default.rego`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/policies/default.rego)
-requires `input.request.provider_type == "external"`. That field is populated from
-`adapter.Name()`, which returns the adapter **type** (`"openai"`, `"anthropic"`) and
-never `"external"`.
+`configs/policies/default.rego` keeps RESTRICTED data off any alias not listed in
+`restricted_cleared_aliases`, which is empty as shipped.
 
-**No policy deny is reachable on the shipped default configuration.** An operator
-relying on the default bundle for classification enforcement is not getting it. Write
-rules against `input.request.classification` or `input.request.model` instead.
+It deliberately does **not** test `input.request.provider_type`. That field is populated
+from `adapter.Name()`, which reports the adapter implementation (`"openai"`,
+`"anthropic"`) and never a trust boundary: `azure_openai` and `internal_vllm` both route
+through the OpenAI adapter and both report `"openai"`. **There is currently no input field
+that distinguishes an external provider from a self-hosted one.** Any rule of the form
+`provider_type == "external"` compiles, reads correctly, and can never fire. An earlier
+version of this bundle contained exactly that rule, so the shipped default denied nothing
+at all until it was replaced.
+
+If you need a genuine external/internal distinction in policy, encode it in alias names
+and gate on `input.request.model`, as the default bundle now does.
 
 ### 2.3 Zero-retention is enforced behaviourally, not structurally
 
@@ -158,9 +163,19 @@ serialising each row to JSON text.
 That is a real and testable guarantee. It is **not** the same as the schema making
 payload storage impossible, and it should not be described as though it were.
 
-### 2.4 The canary test skips silently
+### 2.4 The canary test runs in CI, and can no longer skip quietly
 
-`TestNoPayload_CanaryEndToEnd` requires `TEST_DATABASE_URL`, `TEST_SERVER_URL` and
-`TEST_API_KEY`, and **skips cleanly** when any is absent. A green `go test ./...` does
-not mean the runtime retention guarantee was checked. Confirm your CI sets all three, or
-the strongest evidence in the repository is silently not running.
+`TestNoPayload_CanaryEndToEnd` runs on every push, in a dedicated "Audit Conformance" job
+that provisions Postgres and Redis, runs migrations, issues an API key, and starts a real
+gateway.
+
+It previously skipped when `TEST_DATABASE_URL`, `TEST_SERVER_URL` or `TEST_API_KEY` were
+absent, which meant a pipeline where it skipped looked identical to one where it passed.
+It now **fails** with a message naming the missing variables; the only way to not run it is
+`AEGIS_SKIP_INTEGRATION=1`, which is explicit and appears in the test output. The CI step
+additionally greps for `--- PASS: TestNoPayload_CanaryEndToEnd` by name, because
+`go test -run` exits 0 when its pattern matches nothing, so a rename would otherwise have
+left the step green having run nothing.
+
+A conformance test that can silently not run is worse than no test, because it
+manufactures confidence. Both routes to that outcome are now closed.

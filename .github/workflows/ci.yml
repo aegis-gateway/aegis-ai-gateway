@@ -237,8 +237,28 @@ jobs:
       # truncate deletes the row the canary is waiting for and the canary fails
       # having proved nothing. Serialising the packages removes the overlap;
       # the whole job is a few seconds either way.
+      #
+      # The step asserts the canary PASSED by name rather than trusting the exit
+      # code. `go test -run` exits 0 when the pattern matches nothing: rename the
+      # test, or move it to another package, and this step stays green having run
+      # the very thing it exists to run. The `[no tests to run]` line that
+      # internal/audit/checkpoint already prints here is that failure mode in its
+      # harmless form, and it is the reason not to rely on the exit code alone.
+      #
+      # The test itself now fails rather than skips when the three variables are
+      # absent, so a dropped env var can no longer pass quietly either. Between
+      # them, the two cover both ways this evidence could stop existing without
+      # anyone noticing.
       - name: Zero-retention canary
-        run: go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1 -p 1
+        run: |
+          set -euo pipefail
+          log=$(mktemp)
+          go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1 -p 1 | tee "$log"
+          if ! grep -q -- "--- PASS: TestNoPayload_CanaryEndToEnd" "$log"; then
+            echo "::error::TestNoPayload_CanaryEndToEnd did not report PASS; the zero-retention claim is unevidenced by this run"
+            exit 1
+          fi
+          echo "zero-retention canary passed by name"
         env:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           TEST_SERVER_URL: http://localhost:8080

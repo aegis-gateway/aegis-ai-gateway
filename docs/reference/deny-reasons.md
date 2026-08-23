@@ -125,24 +125,28 @@ Runs **after** routing, because it needs the resolved provider. OPA `v1.13.2`, R
 ### Deny reasons in the shipped bundle
 
 [`configs/policies/default.rego`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/policies/default.rego)
-contains exactly one deny message:
+contains one deny message:
 
 | Reason text | Condition |
 |---|---|
-| `RESTRICTED data cannot be sent to external providers` | `classification == "RESTRICTED"` **and** `provider_type == "external"` |
+| `RESTRICTED data cannot be routed through alias "<alias>": no alias is cleared for it` | `classification == "RESTRICTED"` and the alias is not in `restricted_cleared_aliases` |
 
-> ### ⚠ This rule cannot currently fire
->
-> `provider_type` is populated from `adapter.Name()`
-> ([`handler.go:190`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L190)),
-> which returns the adapter **type**, `"openai"` or `"anthropic"`, and never
-> `"external"`. `azure_openai` and `internal_vllm` both fall through to the OpenAI
-> adapter and report `"openai"`.
->
-> **On the default bundle, no policy deny is reachable.** Operators relying on this
-> rule for classification enforcement are not getting it. Write rules against
-> `input.request.model` or `input.request.classification` until `provider_type`
-> carries a real external/internal distinction.
+`restricted_cleared_aliases` is empty as shipped, because no route in
+`configs/models.yaml` declares a `classification_ceiling` of `RESTRICTED`. Add an alias
+there only once a route exists that is approved for it, and keep the two in step.
+
+The router already refuses these requests, because `routeEligible` skips every route whose
+ceiling sits below the caller's classification. This rule is defence in depth, and it
+turns a confusing `503 No provider available` into a `451` that names the reason.
+
+> **Historical note, worth knowing if you inherit an older bundle.** This rule previously
+> read `input.request.provider_type == "external"`. That field is populated from
+> `adapter.Name()`, which reports the adapter implementation (`"openai"`, `"anthropic"`)
+> and never a trust boundary: `azure_openai` and `internal_vllm` both route through the
+> OpenAI adapter and both report `"openai"`. The rule compiled, read correctly, and could
+> never fire, so the shipped bundle denied nothing. If you are carrying a local policy
+> that tests `provider_type` against `"external"`, it is dead code. Gate on
+> `input.request.model` or `input.request.classification` instead.
 
 ### The reason string carries messages, not rule names
 

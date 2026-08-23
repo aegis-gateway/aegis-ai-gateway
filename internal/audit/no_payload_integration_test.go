@@ -50,15 +50,46 @@ const blockedStatus = 451
 //     table and the test proves nothing.
 //  4. Only then assert the canary appears in no audit row.
 //
-// Requires TEST_DATABASE_URL, TEST_SERVER_URL, and TEST_API_KEY; skips cleanly
-// when any is absent.
+// Requires TEST_DATABASE_URL, TEST_SERVER_URL, and TEST_API_KEY.
+//
+// It does NOT skip when they are absent. This test is the evidence behind a
+// public zero-retention claim, and a conformance test that can silently not run
+// is worse than no test, because a green pipeline where it skipped is
+// indistinguishable from one where it passed. Absent configuration is therefore
+// a failure, and the only way to not run it is to say so explicitly with
+// AEGIS_SKIP_INTEGRATION=1.
+//
+// The `integration` build tag already means nobody compiles this by accident:
+// anyone running with the tag has asked for the integration suite, so demanding
+// they either supply a stack or opt out by name costs a developer nothing and
+// closes the hole.
 func TestNoPayload_CanaryEndToEnd(t *testing.T) {
+	// The one sanctioned way to not run this. Named, deliberate, and visible in
+	// the test output rather than inferred from an empty environment.
+	if os.Getenv("AEGIS_SKIP_INTEGRATION") == "1" {
+		t.Skip("explicit opt-out: AEGIS_SKIP_INTEGRATION=1")
+	}
+
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	serverURL := os.Getenv("TEST_SERVER_URL")
 	apiKey := os.Getenv("TEST_API_KEY")
 
-	if dbURL == "" || serverURL == "" || apiKey == "" {
-		t.Skip("requires TEST_DATABASE_URL, TEST_SERVER_URL, and TEST_API_KEY")
+	var missing []string
+	for _, v := range []struct{ name, value string }{
+		{"TEST_DATABASE_URL", dbURL},
+		{"TEST_SERVER_URL", serverURL},
+		{"TEST_API_KEY", apiKey},
+	} {
+		if v.value == "" {
+			missing = append(missing, v.name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("zero-retention canary cannot run: %s not set.\n"+
+			"This test backs a public claim, so a missing stack fails rather than "+
+			"skips. Start one (mise run services:up, then run the gateway) and set "+
+			"all three, or opt out deliberately with AEGIS_SKIP_INTEGRATION=1.",
+			strings.Join(missing, ", "))
 	}
 
 	ctx := context.Background()
