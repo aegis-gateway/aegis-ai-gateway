@@ -327,6 +327,7 @@ func main() {
 	}
 
 	usageRecorder := storage.NewUsageRecorder(dbPool)
+	auditHandler := gateway.NewAuditHandler(audit.NewReader(dbPool))
 	handler := gateway.NewHandler(providerRegistry, healthTracker, func() *config.ModelsConfig {
 		return loader.Models()
 	}, func() *config.Config {
@@ -348,6 +349,12 @@ func main() {
 		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics, auditLogger))
 		r.Post("/v1/chat/completions", handler.ChatCompletions)
 		r.Get("/v1/models", handler.ListModels)
+
+		// Audit read API. Read-only, and every query is scoped to the calling
+		// key's organization inside the Reader rather than by a filter the
+		// handler has to remember to apply.
+		r.Get("/aegis/v1/audit/events", auditHandler.Events)
+		r.Get("/aegis/v1/audit/logs", auditHandler.Logs)
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
