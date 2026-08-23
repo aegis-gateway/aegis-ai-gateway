@@ -419,9 +419,22 @@ Receipt 01's citation moved from `migrations/` to
 `internal/audit/no_payload_test.go`, per the decision to cite the test rather than the
 schema. After the schema work in §4.2 lands, both can be cited.
 
-**Still outstanding:** the standalone `aegis-request-lifecycle.svg` and any PNG or OG
-export of it were not supplied and still carry the old never-panel text. They must be
-re-exported from the corrected inline SVG.
+**Closed.** The standalone `aegis-request-lifecycle.svg` was never supplied, but it was
+not needed: the inline SVG is self-contained, so it was extracted to
+[`assets/aegis-request-lifecycle.svg`](https://github.com/aegis-gateway/aegisgateway.ai/blob/claude/aegis-verification-site-build-2g1ybj/assets/aegis-request-lifecycle.svg)
+and rendered to PNG at 2x, both carrying the corrected content.
+
+A copy of the stale diagram was reviewed and confirmed to carry four falsified elements:
+the `deny_external_pii` chip, the "No column exists that could hold it" never-panel, an
+audit column list in which **not one of the eleven names exists in either table**, and the
+audit read API line. **Any copy of the diagram outside the site repository is stale and
+must be replaced from `assets/`.**
+
+`docs/COMPLIANCE-MAPPING.md` remains referenced inside the diagram. That is deliberate:
+removing it quietly would resolve a flagged blocker by editing the evidence rather than
+deciding what to do about it. A true Open Graph image is still outstanding, because the
+diagram is 1280x930 against OG's roughly 1200x630, so it needs composition rather than a
+crop, and that needs the design system.
 
 ### 3.2 Factual corrections applied
 
@@ -522,5 +535,6 @@ both need a decision, and neither can ship as written.
   correct but is not a launch artifact. Cut the tag and re-pin.
 - **`README.md` carries two shared-rule violations** (§1): a named competitor, and the
   commercial tier in present tense.
-- **The standalone lifecycle SVG and its PNG export** still carry the old never-panel
-  text (§3.1) and were not supplied.
+- **Any copy of the lifecycle diagram held outside the site repository is stale** (§3.1).
+  The corrected SVG and PNG are in `aegisgateway.ai/assets/`. An Open Graph image still
+  needs composing.
