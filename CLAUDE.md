@@ -152,3 +152,34 @@ Python side.
   It is Apache-2.0 and stays that way, and once it ships in a tagged release it is a
   contract: fields may be added, existing fields may not change name, type, or meaning.
   A breaking change needs a new versioned package, not an edit.
+
+## Shared rules for all AEGIS repositories
+
+These are not style preferences. Breaking one of them is worse than shipping late.
+They apply to this repository, `aegisgateway.ai`, and `aegisgateway.dev` alike.
+
+1. **Never claim a capability the code lacks, and never omit one it has.** This
+   repository has already shipped both errors: a security policy claiming response
+   scanning that did not exist, and a README that omitted the policy engine, PII
+   filtering, injection detection, rate limiting, and audit logging.
+2. **Every capability claim cites a package path, file, or test name**, linked to a
+   pinned commit or tag. **Never link to `main`.**
+3. **Never name a competitor** in any user-facing text. Frame the tension generically.
+4. **Never claim compliance.** Claim that AEGIS produces evidence relevant to a named
+   article or control.
+5. **Do not build urgency on a regulatory deadline.**
+6. **The commercial tier is written in future or waitlist tense.** It does not exist.
+7. **No em dashes.** Connect clauses directly.
+8. **Do not invent metrics, users, logos, or testimonials.** There are none.
+9. **When a claim fails verification, do not quietly soften the copy to make it true.**
+   Positioning is locked. Report the failure, propose options, and stop. A weakened
+   claim shipped without review is a worse outcome than a flagged one.
+
+### Verification artifacts
+
+- [`VERIFICATION.md`](VERIFICATION.md): claim-by-claim verification against source,
+  with per-claim verdicts and the launch blocker list.
+- [`docs/reference/deny-reasons.md`](docs/reference/deny-reasons.md): every refusal
+  string the gateway can emit.
+- [`docs/evidence/known-limitations.md`](docs/evidence/known-limitations.md): what the
+  audit trail does not establish.
