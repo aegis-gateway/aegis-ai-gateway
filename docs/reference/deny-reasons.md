@@ -129,7 +129,7 @@ contains one deny message:
 
 | Reason text | Condition |
 |---|---|
-| `RESTRICTED data cannot be routed through alias "<alias>": no alias is cleared for it` | `classification == "RESTRICTED"` and the alias is not in `restricted_cleared_aliases` |
+| `RESTRICTED data cannot be routed through alias "<alias>": it is not cleared for RESTRICTED` | `classification == "RESTRICTED"` and the alias is not in `restricted_cleared_aliases` |
 
 `restricted_cleared_aliases` is empty as shipped, because no route in
 `configs/models.yaml` declares a `classification_ceiling` of `RESTRICTED`. Add an alias

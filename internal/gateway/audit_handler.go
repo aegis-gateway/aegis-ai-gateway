@@ -165,6 +165,15 @@ func (h *AuditHandler) parse(w http.ResponseWriter, r *http.Request, reqID strin
 		httputil.WriteAuthError(w, reqID, "API key carries no organization; cannot scope an audit query")
 		return nil, zero, "", false
 	}
+	// audit.UnattributedOrg is the sentinel recorded for events that happen
+	// before a caller is identified. It is not a tenant, and a key carrying it
+	// would otherwise scope to every authentication failure in the deployment.
+	// cmd/keygen takes -org as a free string, so such a key is one typo away.
+	if authInfo.OrganizationID == audit.UnattributedOrg {
+		httputil.WriteAuthError(w, reqID,
+			"API key organization is the reserved sentinel for unattributed events; cannot scope an audit query")
+		return nil, zero, "", false
+	}
 
 	q := r.URL.Query()
 

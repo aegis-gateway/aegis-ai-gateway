@@ -39,6 +39,18 @@ type Reader struct {
 	db *pgxpool.Pool
 }
 
+// errUnattributedScope is returned for a query scoped to the sentinel
+// organization. Events recorded before a caller is identified carry
+// [UnattributedOrg], and they belong to the operator rather than to any tenant:
+// an authentication failure is by definition not attributable to the tenant
+// whose key was not presented. Serving them through the tenant-scoped API would
+// hand whoever held a key issued with that organization every other tenant's
+// failed-auth history, with the truncated key prefix, IP and user agent
+// attached. cmd/keygen takes -org as a free string, so that key is one typo away
+// from existing.
+var errUnattributedScope = fmt.Errorf(
+	"audit read: %q is the sentinel organization for unattributed events, not a tenant", UnattributedOrg)
+
 // NewReader creates a Reader over the given pool.
 func NewReader(pool *pgxpool.Pool) *Reader { return &Reader{db: pool} }
 
@@ -120,7 +132,13 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 	if orgID == "" {
 		return nil, fmt.Errorf("audit read: organization scope is required")
 	}
+	if orgID == UnattributedOrg {
+		return nil, errUnattributedScope
+	}
 
+	// The SQL repeats the exclusion the guard above already enforces. That is
+	// deliberate: the guard is one edit away from being refactored out, and this
+	// predicate means the sentinel's rows still cannot be selected if it is.
 	q := `
 		SELECT id, request_id, timestamp, event_type,
 		       organization_id, team_id, user_id, api_key_id,
@@ -128,6 +146,7 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		       error_message, metadata
 		FROM audit_events
 		WHERE organization_id = $1
+		  AND organization_id <> $8
 		  AND ($2::timestamptz IS NULL OR timestamp >= $2)
 		  AND ($3::timestamptz IS NULL OR timestamp < $3)
 		  AND ($4::text IS NULL OR event_type = $4)
@@ -138,7 +157,8 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 	`
 	rows, err := r.db.Query(ctx, q, orgID,
 		nullTime(f.From), nullTime(f.To), nullString(f.EventType),
-		nullString(f.RequestID), nullInt64(f.BeforeID), f.limit())
+		nullString(f.RequestID), nullInt64(f.BeforeID), f.limit(),
+		UnattributedOrg)
 	if err != nil {
 		return nil, fmt.Errorf("audit read: querying events: %w", err)
 	}
@@ -162,6 +182,9 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 func (r *Reader) QueryLogs(ctx context.Context, orgID string, f ReadFilter) ([]LogRow, error) {
 	if orgID == "" {
 		return nil, fmt.Errorf("audit read: organization scope is required")
+	}
+	if orgID == UnattributedOrg {
+		return nil, errUnattributedScope
 	}
 
 	q := `

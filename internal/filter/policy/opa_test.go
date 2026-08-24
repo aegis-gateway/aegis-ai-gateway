@@ -612,6 +612,17 @@ reason := "all requests denied"
 //
 // Every other test in this file builds its own inline fixture, which is exactly
 // how that survived. This one reads the real file.
+//
+// What it does NOT prove, stated plainly because the gap is the same shape as
+// the bug: it calls Evaluate directly, so it shows the bundle can deny, not that
+// a deny is reachable over HTTP. Policy runs after routing, and on the shipped
+// models config every RESTRICTED request fails ResolveRoute first and returns
+// 503, so this rule does not fire on the request path until an operator adds a
+// route whose classification_ceiling admits RESTRICTED.
+//
+// Closing that gap needs a request-path test with such a route configured, which
+// needs a running stack. Until then, a green result here means the bundle is
+// sound, not that the deny is live.
 func TestShippedDefaultPolicy_CanActuallyDeny(t *testing.T) {
 	modules, err := LoadRegoFiles(filepath.Join("..", "..", "..", "configs", "policies"))
 	if err != nil {

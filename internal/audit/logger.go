@@ -124,14 +124,23 @@ func (l *Logger) writeEvent(event Event) {
 	}
 }
 
+// UnattributedOrg is the organization recorded for events that happen before a
+// caller is identified, which in practice means authentication failures.
+//
+// It is a sentinel, not a tenant. Nothing may treat it as one: an audit query
+// scoped to it would return every tenant's authentication failures, including
+// the truncated key prefix, IP and user agent. [Reader] excludes it for exactly
+// that reason, and refuses a query scoped to it.
+const UnattributedOrg = "unknown"
+
 // LogAuthFailure logs an authentication failure.
 func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
 		EventType:      EventAuthFailure,
-		OrganizationID: "unknown",
-		TeamID:         "unknown",
+		OrganizationID: UnattributedOrg,
+		TeamID:         UnattributedOrg,
 		IPAddress:      ip,
 		UserAgent:      userAgent,
 		Endpoint:       "/v1/*",

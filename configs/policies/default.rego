@@ -47,7 +47,7 @@ restricted_cleared_aliases := set()
 deny contains msg if {
 	input.request.classification == "RESTRICTED"
 	not input.request.model in restricted_cleared_aliases
-	msg := sprintf("RESTRICTED data cannot be routed through alias %q: no alias is cleared for it", [input.request.model])
+	msg := sprintf("RESTRICTED data cannot be routed through alias %q: it is not cleared for RESTRICTED", [input.request.model])
 }
 
 # Override allow if any deny rule fires.

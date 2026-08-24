@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 )
 
@@ -145,5 +146,37 @@ func TestAuditHandler_LogsSharesParameterHandling(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected /logs to validate format too, got %d", w.Code)
+	}
+}
+
+// A key whose organization is the sentinel recorded for pre-authentication
+// events must be refused, not scoped.
+//
+// audit.LogAuthFailure records authentication failures under
+// audit.UnattributedOrg, because at that point there is no caller to attribute
+// them to. Those rows carry the truncated key prefix, the IP and the user agent
+// for every failed attempt in the deployment. Scoping by plain equality would
+// hand all of them to anyone holding a key issued with that organization, and
+// cmd/keygen takes -org as a free string, so that key is one typo away from
+// existing.
+func TestAuditHandler_RefusesSentinelOrg(t *testing.T) {
+	for _, path := range []string{"/aegis/v1/audit/events", "/aegis/v1/audit/logs"} {
+		t.Run(path, func(t *testing.T) {
+			h := NewAuditHandler(nil)
+			w := httptest.NewRecorder()
+			req := newAuditRequest(t, path,
+				&auth.AuthInfo{KeyID: "key_1", OrganizationID: audit.UnattributedOrg})
+
+			if path == "/aegis/v1/audit/events" {
+				h.Events(w, req)
+			} else {
+				h.Logs(w, req)
+			}
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("a key scoped to the unattributed sentinel got %d, want 401; "+
+					"it would otherwise read every tenant's authentication failures", w.Code)
+			}
+		})
 	}
 }
