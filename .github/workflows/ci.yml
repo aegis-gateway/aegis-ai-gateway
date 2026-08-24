@@ -16,7 +16,13 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
+      # Full history: the citation check resolves pinned commits against the
+      # local object database, and the docs pin to commits older than the tip.
+      # The script can fetch a missing commit on demand, so this is the fast
+      # path rather than the only one, but it keeps the check off the network.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
