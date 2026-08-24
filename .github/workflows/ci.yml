@@ -25,6 +25,13 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 
+      # Every capability claim in the docs cites a file at a pinned commit. This
+      # fails if one of those citations points at a commit where the file does
+      # not exist, or at a branch. Both have happened, and a dead citation is
+      # worse than no citation because it looks like evidence.
+      - name: Documentation citations
+        run: ./scripts/check-citations.sh
+
       - name: golangci-lint
         run: golangci-lint run ./...
 

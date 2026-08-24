@@ -29,10 +29,21 @@ restricted_cleared_aliases := set()
 # Alias names are operator-controlled and map one to one onto routes in
 # configs/models.yaml, so they carry the distinction provider_type does not.
 #
-# The router already refuses these requests, because routeEligible skips every
-# route whose ceiling sits below the caller's classification. This rule is
-# defence in depth and, more usefully, it turns a confusing
-# "503 No provider available" into a 451 that names the reason.
+# Reachability, stated precisely, because it is easy to get wrong.
+#
+# Policy is evaluated AFTER routing, at internal/gateway/handler.go, because it
+# needs the resolved provider. On the configuration as shipped, no route declares
+# a classification_ceiling of RESTRICTED, so routeEligible skips every route and
+# ResolveRoute fails first: a RESTRICTED request gets a 503 "No provider
+# available" and never reaches this rule.
+#
+# This rule therefore fires only once an operator adds a route whose ceiling
+# admits RESTRICTED, at which point routing succeeds and the alias allowlist
+# below decides. That is a real difference from the rule this replaced, which
+# tested provider_type == "external" and could not fire under ANY configuration,
+# but it is not the same as firing today. Do not describe it as turning the 503
+# into a 451: it does not, and an earlier version of this comment said so
+# wrongly.
 deny contains msg if {
 	input.request.classification == "RESTRICTED"
 	not input.request.model in restricted_cleared_aliases

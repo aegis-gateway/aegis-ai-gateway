@@ -15,9 +15,9 @@ on this branch, the row says so and the baseline link still shows the defect.
 |---|---|
 | Claims confirmed | 19 |
 | Claims wrong, corrected in `index.html` | 14 |
-| Claims wrong, flagged for a decision rather than reworded | 3 |
+| Claims wrong, flagged for a decision rather than reworded | 3 (2 since resolved by building the missing capability) |
 | Claims unverifiable in this environment | 4 |
-| Launch blockers outstanding | 4 |
+| Launch blockers outstanding | 2 (the runtime verification, and the launch tag) |
 
 ---
 
@@ -293,10 +293,21 @@ both report `"openai"`. **The shipped default bundle could not deny anything.**
 > it fails against the old rule and passes against the new one. Every other test in that
 > file built its own inline fixture, which is how the dead rule survived.
 >
-> Worth recording: no route in `configs/models.yaml` declares a
-> `classification_ceiling` of `RESTRICTED`, so the router already refused these requests.
-> The dead rule was both unreachable **and** redundant. The new rule is defence in depth
-> and turns a confusing `503 No provider available` into a `451` that names the reason.
+> Worth recording, and stated carefully because an earlier draft of this document got it
+> wrong: no route in `configs/models.yaml` declares a `classification_ceiling` of
+> `RESTRICTED`, so the router already refused these requests. The dead rule was both
+> unreachable **and** redundant.
+>
+> The new rule is **not** reachable on the shipped configuration either, for a different
+> reason: policy is evaluated after routing, because it needs the resolved provider, so
+> `ResolveRoute` fails first and returns `503 No provider available` before the rule is
+> consulted ([`handler.go:178-181`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/handler.go#L178-L181)).
+> It fires once an operator adds a route whose ceiling admits `RESTRICTED`.
+>
+> That is still a real improvement on what it replaced, which could not fire under **any**
+> configuration. It is not the improvement an earlier draft claimed, which was that the
+> rule converts that 503 into a 451. It does not. Caught in review, and removed from the
+> policy comment, this document and the deny-reason catalogue.
 
 ### 2.7 Providers and aliases
 
@@ -458,21 +469,36 @@ crop, and that needs the design system.
 
 ### 3.3 Flagged for a decision, not reworded
 
-Per rule 9, these are positioning failures rather than copy errors. Each is marked with a
-`BUILD NOTE, BLOCKER` comment in the corrected file and left otherwise intact.
+Per rule 9, these were positioning failures rather than copy errors, so each was marked
+with a `BUILD NOTE, BLOCKER` comment in the corrected file and left otherwise intact.
+
+**Two of the three have since been resolved by building the missing thing** rather than
+by cutting the copy. They are kept below as findings, with their resolution, because this
+record should show what was wrong at the baseline and what was done about it. One
+remains.
 
 **1. "The audit read API" does not exist.** The page claims, twice, that records are
 "readable and exportable as JSON or CSV through the audit read API", and lists it among
 capabilities that are "already free". The gateway serves three routes plus `/metrics`.
 Neither this repository nor `aegis-control-plane` contains any audit read endpoint, JSON
 export, or CSV export path. This is a rule 1 violation and cannot ship as written.
-Options: build the endpoint, or cut the clause and describe reading the tables directly.
+Options were: build the endpoint, or cut the clause and describe reading the tables
+directly.
+
+> **RESOLVED.** The endpoint was built: `GET /aegis/v1/audit/events` and
+> `GET /aegis/v1/audit/logs`, authenticated and organization-scoped, with `?format=csv`.
+> See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/audit/reader.go)
+> and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/audit_handler.go).
+> The `BUILD NOTE, BLOCKER` markers are removed and the claim now has code behind it.
 
 **2. `docs/COMPLIANCE-MAPPING.md` does not exist.** Cited three times: as a receipt in the
 governance section, inside the diagram, and in the footer. Two passages tell a compliance
 team to start from it. A dead receipt is worse than no receipt, and this one is load
-bearing for the "we do not claim compliance, we produce evidence" position. Options: write
-the document, or cut all three citations.
+bearing for the "we do not claim compliance, we produce evidence" position. Options were: write the document, or cut all three citations.
+
+> **RESOLVED.** The document was written:
+> [`docs/COMPLIANCE-MAPPING.md`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/docs/COMPLIANCE-MAPPING.md).
+> All three citations resolve.
 
 **3. Fonts load from the Google Fonts CDN.** Three tags in `<head>` fetch IBM Plex and
 Source Serif from `fonts.googleapis.com` and `fonts.gstatic.com`, sending every visitor's
@@ -524,10 +550,15 @@ agreed for v0.1.0, in the order decided:
 
 Cannot be validated without a database, so it lands after §4.1 is unblocked.
 
-### 4.3 Two unsupported claims on the page, **BLOCKER**
+### 4.3 Unsupported claims on the page, **RESOLVED**
 
-The audit read API and `docs/COMPLIANCE-MAPPING.md` (§3.3). Both are rule 1 violations,
-both need a decision, and neither can ship as written.
+The audit read API and `docs/COMPLIANCE-MAPPING.md` were both rule 1 violations at the
+baseline: the page claimed capabilities that did not exist. Both were resolved by building
+the missing thing rather than by cutting the copy (§3.3), so neither blocks launch.
+
+The third item from §3.3 remains, and it is a port task rather than a launch blocker: the
+page as supplied loads its fonts from the Google Fonts CDN. The site build self-hosts them,
+and the built output makes no off-origin request.
 
 ### 4.4 Process
 

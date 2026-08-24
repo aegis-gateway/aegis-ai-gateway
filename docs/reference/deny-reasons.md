@@ -135,9 +135,14 @@ contains one deny message:
 `configs/models.yaml` declares a `classification_ceiling` of `RESTRICTED`. Add an alias
 there only once a route exists that is approved for it, and keep the two in step.
 
-The router already refuses these requests, because `routeEligible` skips every route whose
-ceiling sits below the caller's classification. This rule is defence in depth, and it
-turns a confusing `503 No provider available` into a `451` that names the reason.
+**When this rule actually fires.** Policy is evaluated after routing, because it needs the
+resolved provider. On the configuration as shipped, no route declares a
+`classification_ceiling` of `RESTRICTED`, so `routeEligible` skips every route and
+`ResolveRoute` fails first: a `RESTRICTED` request receives `503 No provider available`
+and never reaches this rule. It fires once an operator adds a route whose ceiling admits
+`RESTRICTED`, at which point routing succeeds and the alias allowlist decides.
+
+If you are debugging a refused `RESTRICTED` request, check the 503 path first.
 
 > **Historical note, worth knowing if you inherit an older bundle.** This rule previously
 > read `input.request.provider_type == "external"`. That field is populated from
