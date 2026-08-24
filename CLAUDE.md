@@ -139,6 +139,9 @@ Python side.
 ## Conventions
 
 - Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`); PRs target `main`.
+- Branch names are `feature/...`, `fix/...`, or `chore/...`. Do not prefix a branch with
+  the name of the tool that wrote it: the branch should say what the change is, not who
+  typed it, and a reviewer scanning the branch list should learn something from the name.
 - Structured logging with `log/slog` (JSON handler), always including `request_id` and,
   where available, `org_id`/`team_id`.
 - Client-facing errors go through `internal/httputil` helpers
