@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	controlplanev1 "github.com/aegis-gateway/aegis-ai-gateway/api/controlplane/v1"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/emitter"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -41,6 +42,12 @@ func runSubmit(args []string) {
 		"label this gateway registers under (or AEGIS_GATEWAY_NAME); must be stable across restarts")
 	batchSize := fs.Int("batch-size", 0, "stop after this many checkpoints (0 = all outstanding)")
 	timeout := fs.Duration("timeout", 30*time.Second, "per-request timeout")
+	// Mirrors `aegis-migrate seal -lag-seconds`. It has to: the sealing state
+	// reported here is judged against this window, so a value that disagrees
+	// with the one the sealer runs with produces a state describing a gateway
+	// that does not exist.
+	lagSeconds := fs.Int64("lag-seconds", controlplanev1.DefaultSealLagSeconds,
+		"the seal lag window this gateway runs with; must match `aegis-migrate seal -lag-seconds`")
 	dbURL := fs.String("db-url", "", "database URL (overrides env)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate submit [flags]")
@@ -76,11 +83,12 @@ func runSubmit(args []string) {
 	defer pool.Close()
 
 	result, err := emitter.Run(ctx, pool, emitter.Options{
-		Endpoint:    *endpoint,
-		Token:       token,
-		GatewayName: *name,
-		BatchSize:   *batchSize,
-		Timeout:     *timeout,
+		Endpoint:       *endpoint,
+		Token:          token,
+		GatewayName:    *name,
+		BatchSize:      *batchSize,
+		Timeout:        *timeout,
+		SealLagSeconds: emitter.SealLag(*lagSeconds),
 	})
 
 	if result != nil {

@@ -24,9 +24,9 @@ import (
 
 // LimitResult is the outcome of a rate limit check.
 type LimitResult struct {
-	Allowed   bool
-	Remaining int64
-	ResetAt   time.Time
+	Allowed    bool
+	Remaining  int64
+	ResetAt    time.Time
 	RetryAfter time.Duration
 }
 
@@ -166,4 +166,3 @@ func (l *Limiter) GetCircuitBreakerStats() *CircuitBreakerStats {
 	stats := l.circuitBreaker.Stats()
 	return &stats
 }
-

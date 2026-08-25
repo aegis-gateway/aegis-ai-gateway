@@ -45,11 +45,11 @@ func (s CircuitState) String() string {
 type CircuitBreaker struct {
 	mu sync.Mutex
 
-	state        CircuitState
-	failures     int
-	successes    int
-	lastFailure  time.Time
-	openedAt     time.Time
+	state       CircuitState
+	failures    int
+	successes   int
+	lastFailure time.Time
+	openedAt    time.Time
 
 	// Config
 	failureThreshold      int

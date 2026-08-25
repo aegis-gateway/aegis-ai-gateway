@@ -32,13 +32,23 @@ type SealStatus struct {
 	LastSealedAt       *time.Time
 	UnsealedEventCount int64
 
-	// GapAfterEventID and NextVisibleEventID are set only when sealing is
-	// paused at a gap.
-	GapAfterEventID    *int64
-	NextVisibleEventID *int64
+	// LastSealedEventID is the highest event ID covered by a checkpoint, zero
+	// when none has been sealed.
+	LastSealedEventID int64
+
+	// FirstUnsealedEventID is the lowest event ID beyond the last checkpoint,
+	// nil when nothing is unsealed.
+	FirstUnsealedEventID *int64
+
+	// GapAge is how long a gap has existed, nil when there is no gap.
+	GapAge *time.Duration
+
+	// LagSeconds is the window this status was judged against.
+	LagSeconds int64
 }
 
-// ReadSealStatus reports the current sealing state.
+// ReadSealStatus reports the current sealing state, judged against the same
+// lag window the sealer uses.
 //
 // It exists because a gateway that has stopped sealing and a gateway that has
 // stopped talking look identical from outside. The first is a known state with
@@ -50,8 +60,11 @@ type SealStatus struct {
 // it is safe to call while a sealer is running; what it returns is a snapshot
 // that may be stale by the time it is read, which is the nature of the thing
 // being reported.
-func ReadSealStatus(ctx context.Context, db *pgxpool.Pool) (*SealStatus, error) {
-	status := &SealStatus{}
+func ReadSealStatus(ctx context.Context, db *pgxpool.Pool, lagSeconds int64) (*SealStatus, error) {
+	if lagSeconds < 0 {
+		lagSeconds = 0
+	}
+	status := &SealStatus{LagSeconds: lagSeconds}
 
 	var lastCheckpointID, lastRangeEnd int64
 	var lastSealedAt time.Time
@@ -72,9 +85,20 @@ func ReadSealStatus(ctx context.Context, db *pgxpool.Pool) (*SealStatus, error) 
 		}
 		if status.UnsealedEventCount == 0 {
 			status.State = controlplanev1.SealStateEmpty
-		} else {
-			status.State = controlplanev1.SealStateNeverSealed
+			return status, nil
 		}
+
+		// Nothing sealed, so the whole table is unattested. LastSealedEventID
+		// stays zero and the first unsealed event is simply the lowest ID
+		// present. Reported here as in every other state: a consumer asking
+		// how far behind a gateway is should not have to special-case the one
+		// that has not started.
+		status.State = controlplanev1.SealStateNeverSealed
+		var firstUnsealed int64
+		if err := db.QueryRow(ctx, `SELECT MIN(id) FROM audit_events`).Scan(&firstUnsealed); err != nil {
+			return nil, fmt.Errorf("finding the first unsealed event: %w", err)
+		}
+		status.FirstUnsealedEventID = &firstUnsealed
 		return status, nil
 
 	case err != nil:
@@ -83,6 +107,7 @@ func ReadSealStatus(ctx context.Context, db *pgxpool.Pool) (*SealStatus, error) 
 
 	status.LastCheckpointID = &lastCheckpointID
 	status.LastSealedAt = &lastSealedAt
+	status.LastSealedEventID = lastRangeEnd
 
 	if err := db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM audit_events WHERE id > $1`, lastRangeEnd,
@@ -91,44 +116,103 @@ func ReadSealStatus(ctx context.Context, db *pgxpool.Pool) (*SealStatus, error) 
 	}
 
 	if status.UnsealedEventCount == 0 {
-		status.State = controlplanev1.SealStateCurrent
+		status.State = controlplanev1.SealStateAdvancing
 		return status, nil
 	}
 
-	// Events remain. The question is whether the next one continues the run or
-	// sits beyond a hole, because the sealer refuses to seal past a hole and
-	// will therefore make no further progress until it is resolved.
+	// Events remain. Find the first one and when it was written: the sealer
+	// refuses to seal past a hole, so whether the next event continues the run
+	// decides whether progress is possible at all.
 	var nextVisible int64
-	if err := db.QueryRow(ctx,
-		`SELECT MIN(id) FROM audit_events WHERE id > $1`, lastRangeEnd,
-	).Scan(&nextVisible); err != nil {
+	var nextVisibleAt time.Time
+	if err := db.QueryRow(ctx, `
+		SELECT id, "timestamp"
+		FROM audit_events
+		WHERE id > $1
+		ORDER BY id ASC
+		LIMIT 1
+	`, lastRangeEnd).Scan(&nextVisible, &nextVisibleAt); err != nil {
 		return nil, fmt.Errorf("finding the next unsealed event: %w", err)
 	}
+	status.FirstUnsealedEventID = &nextVisible
 
 	if nextVisible == lastRangeEnd+1 {
-		// Contiguous. These events are simply not sealed yet, which is the
-		// ordinary state between sealer runs and inside the lag window.
-		status.State = controlplanev1.SealStateCurrent
+		// Contiguous: not sealed yet, which is the ordinary state between
+		// sealer runs and inside the lag window.
+		status.State = controlplanev1.SealStateAdvancing
 		return status, nil
 	}
 
+	// A gap. Its age is measured from the first event beyond it, because that
+	// event's ID was allocated after the missing ones, so the gap has existed
+	// at least since that row was written. That is a lower bound and it is
+	// objective, which a bound derived from the sealer's own runs would not be.
+	gapAge := time.Since(nextVisibleAt.UTC())
+	if gapAge < 0 {
+		gapAge = 0
+	}
+	status.GapAge = &gapAge
+
+	// The sealer only considers events older than now minus the lag window, so
+	// a gap whose far side is still inside that window has not been attempted
+	// yet and may fill on its own. Reporting it as paused would be a false
+	// positive, and a signal that cries wolf gets ignored.
+	//
+	// Which of the two it is has to be decided over the set the sealer actually
+	// selects from, not by comparing the gap's age against the window. The
+	// sealer filters on timestamp and then orders by id, so its next batch
+	// begins at the lowest-id event already older than the watermark; if that
+	// event lies beyond the gap, the contiguity check fails and sealing stops
+	// with ErrSealPausedAtGap right now.
+	//
+	// Age and eligibility agree only while timestamps rise with ids. They need
+	// not: `timestamp` defaults to the inserting transaction's start time, so a
+	// long transaction commits a row carrying an older timestamp than rows with
+	// higher ids. Judging by the age of the lowest-id row beyond the gap would
+	// then report waiting_on_gap — a healthy gateway — while its sealer is
+	// already stopped on a higher-id row that aged past the watermark first.
+	// Reporting health for a stalled chain is the failure this signal exists to
+	// prevent, so the question is asked the way the sealer asks it.
+	watermark := time.Now().UTC().Add(-time.Duration(lagSeconds) * time.Second)
+	var nextEligible int64
+	if err := db.QueryRow(ctx, `
+		SELECT COALESCE(MIN(id), 0)
+		FROM audit_events
+		WHERE id > $1 AND "timestamp" < $2
+	`, lastRangeEnd, watermark).Scan(&nextEligible); err != nil {
+		return nil, fmt.Errorf("finding the sealer's next eligible event: %w", err)
+	}
+
+	// Zero means no row past the gap has aged into the window, so the sealer
+	// has not attempted it. Ids are BIGSERIAL and start at 1, so zero cannot be
+	// a real event.
+	if nextEligible == 0 {
+		status.State = controlplanev1.SealStateWaitingOnGap
+		return status, nil
+	}
+
+	// Something beyond the gap is eligible, and every eligible row sits above
+	// it, so the sealer's next batch cannot start at lastRangeEnd+1.
 	status.State = controlplanev1.SealStatePausedAtGap
-	status.GapAfterEventID = &lastRangeEnd
-	status.NextVisibleEventID = &nextVisible
 	return status, nil
 }
 
 // ToReport converts a status into the wire message.
 func (s *SealStatus) ToReport(gatewayID, gatewayVersion string, now time.Time) *controlplanev1.GatewayStatusReport {
 	report := &controlplanev1.GatewayStatusReport{
-		GatewayID:          gatewayID,
-		ReportedAt:         controlplanev1.NewTimestamp(now),
-		SealState:          s.State,
-		LastCheckpointID:   s.LastCheckpointID,
-		UnsealedEventCount: s.UnsealedEventCount,
-		GapAfterEventID:    s.GapAfterEventID,
-		NextVisibleEventID: s.NextVisibleEventID,
-		GatewayVersion:     gatewayVersion,
+		GatewayID:            gatewayID,
+		ReportedAt:           controlplanev1.NewTimestamp(now),
+		SealState:            s.State,
+		LastCheckpointID:     s.LastCheckpointID,
+		UnsealedEventCount:   s.UnsealedEventCount,
+		LastSealedEventID:    s.LastSealedEventID,
+		FirstUnsealedEventID: s.FirstUnsealedEventID,
+		SealLagSeconds:       s.LagSeconds,
+		GatewayVersion:       gatewayVersion,
+	}
+	if s.GapAge != nil {
+		seconds := int64(s.GapAge.Seconds())
+		report.GapAgeSeconds = &seconds
 	}
 	if s.LastSealedAt != nil {
 		ts := controlplanev1.NewTimestamp(*s.LastSealedAt)

@@ -22,7 +22,8 @@
     "sealer_version",
     "gateway_version",
     "covered_from",
-    "covered_to"
+    "covered_to",
+    "covered_range_source"
   ],
   "$defs": {
     "sha256Hex": {
@@ -135,6 +136,13 @@
     "policy_bundles": {
       "not": {},
       "description": "Reserved. Semantics unspecified in v1. MUST NOT be populated by a v1 emitter; definition deferred to v2. The name is claimed so that a v2 defining it is an addition rather than a collision, but no meaning is claimed, so nothing may be read into a v1 submission about the policy bundles in force when its events were produced. A v1 checkpoint attests event integrity, not policy provenance."
+    },
+    "covered_range_source": {
+      "enum": [
+        "sealed",
+        "verified_backfill"
+      ],
+      "description": "How the covered time range was obtained. Required. 'sealed' means the sealer computed it at seal time over the exact set of events it hashed, and it cannot be narrower than the truth. 'verified_backfill' means it was reconstructed afterwards and proven complete: the surviving event count matched the checkpoint's own count and no purge overlapped its range. The two are not equally strong and a consumer presenting them identically overstates the weaker one."
     }
   },
   "allOf": [

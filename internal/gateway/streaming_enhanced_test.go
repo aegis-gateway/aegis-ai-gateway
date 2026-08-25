@@ -96,7 +96,7 @@ data: {"model":"gpt-4","usage":{"prompt_tokens":10,"completion_tokens":20,"total
 data: [DONE]
 
 `
-	
+
 	body := bytes.NewBufferString(streamData)
 	mockResp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -117,7 +117,7 @@ data: [DONE]
 		BufferSize:      64 * 1024,
 		MaxBufferSize:   1024 * 1024,
 	}
-	
+
 	handler := &Handler{
 		metrics: getTestMetrics(),
 	}
@@ -126,20 +126,20 @@ data: [DONE]
 	// Create test request and response writer
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	w := httptest.NewRecorder()
-	
+
 	authInfo := &auth.AuthInfo{
 		OrganizationID: "test-org",
 		TeamID:         "test-team",
 		UserID:         "test-user",
 		KeyID:          "test-key",
 	}
-	
+
 	aegisReq := &types.AegisRequest{
 		Model:   "gpt-4",
 		Stream:  true,
 		Project: "test-project",
 	}
-	
+
 	// Create provider request
 	providerReq, _ := http.NewRequest("POST", "http://mock-provider.com", nil)
 
@@ -150,7 +150,7 @@ data: [DONE]
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
-	
+
 	// Verify streaming headers
 	contentType := w.Header().Get("Content-Type")
 	if contentType != "text/event-stream" {
@@ -196,7 +196,7 @@ func TestStreamTimeouts(t *testing.T) {
 				data:  []byte(`data: {"content":"test"}\n\ndata: [DONE]\n\n`),
 				delay: tt.chunkDelay,
 			}
-			
+
 			mockResp := &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       body,
@@ -222,16 +222,16 @@ func TestStreamTimeouts(t *testing.T) {
 
 			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			w := httptest.NewRecorder()
-			
+
 			authInfo := &auth.AuthInfo{
 				OrganizationID: "test-org",
 			}
-			
+
 			aegisReq := &types.AegisRequest{
 				Model:  "gpt-4",
 				Stream: true,
 			}
-			
+
 			providerReq, _ := http.NewRequest("POST", "http://mock-provider.com", nil)
 
 			// Execute streaming
@@ -251,12 +251,12 @@ func TestStreamTimeouts(t *testing.T) {
 
 func TestStreamTokenExtraction(t *testing.T) {
 	tests := []struct {
-		name               string
-		chunk              string
-		expectModel        string
-		expectPrompt       int
-		expectCompletion   int
-		expectTotal        int
+		name             string
+		chunk            string
+		expectModel      string
+		expectPrompt     int
+		expectCompletion int
+		expectTotal      int
 	}{
 		{
 			name:             "chunk with usage",
@@ -368,10 +368,10 @@ func (s *slowReader) Read(p []byte) (n int, err error) {
 	if s.pos >= len(s.data) {
 		return 0, io.EOF
 	}
-	
+
 	// Simulate slow streaming
 	time.Sleep(s.delay)
-	
+
 	// Copy one byte at a time to simulate chunked streaming
 	n = copy(p, s.data[s.pos:s.pos+1])
 	s.pos += n

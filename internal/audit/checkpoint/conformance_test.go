@@ -137,7 +137,7 @@ func TestSealerWritesThePublishedHash(t *testing.T) {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
 	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{
-		LagSeconds: 0, BatchSize: 4,
+		LagSeconds: checkpoint.SealLag(0), BatchSize: 4,
 	}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestSealedAtSurvivesTheDatabaseRoundTrip(t *testing.T) {
 	for i := range 3 {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
 	for i := range 4 {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing the first batch: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
 	for i := 4; i < 8; i++ {
 		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Second))
 	}
-	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: 0}); err != nil {
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
 		t.Fatalf("sealing the second batch: %v", err)
 	}
 
@@ -334,5 +334,210 @@ func TestChainSurvivesABurnedCheckpointID(t *testing.T) {
 	}
 	if result.CheckpointsVerified != 2 {
 		t.Errorf("%d checkpoints verified, want 2", result.CheckpointsVerified)
+	}
+}
+
+// migration011Rule mirrors the decision migration 011 makes, collapsed into the
+// single statement a test can run.
+//
+// It is a copy, and a copy is a liability: the first version of this test kept
+// the original event_id_min/event_id_max join after the migration moved to
+// affected_checkpoint_ids, so it went on asserting a rule the schema no longer
+// applied. Keep it in step with
+// migrations/011_verify_covered_range_provenance.up.sql.
+//
+// The migration itself cannot be replayed here. It writes the transitional
+// value 'unverified' before adding the CHECK constraint that forbids it, so
+// re-running its statements against an already-migrated database fails on that
+// constraint. What is reproduced is the outcome: discard any interval that is
+// not provably complete.
+const migration011Rule = `
+	WITH survival AS (
+	    SELECT cp.id AS checkpoint_id, cp.event_count AS attested_count,
+	           COUNT(e.id) AS surviving_count
+	    FROM audit_checkpoints cp
+	    LEFT JOIN audit_events e ON e.id >= cp.range_start AND e.id <= cp.range_end
+	    GROUP BY cp.id, cp.event_count
+	), purged AS (
+	    SELECT DISTINCT cid AS checkpoint_id
+	    FROM audit_purges p
+	    CROSS JOIN LATERAL UNNEST(p.affected_checkpoint_ids) AS cid
+	    WHERE NOT p.dry_run
+	)
+	UPDATE audit_checkpoints c
+	SET covered_from = NULL, covered_to = NULL, covered_range_source = NULL
+	FROM survival s LEFT JOIN purged p ON p.checkpoint_id = s.checkpoint_id
+	WHERE c.id = s.checkpoint_id
+	  AND NOT (s.surviving_count = s.attested_count AND p.checkpoint_id IS NULL)
+`
+
+// TestPartiallyPurgedRangeIsNotTrusted covers migration 011.
+//
+// Migration 009 backfilled covered_from and covered_to from whatever events
+// survived. Where a purge had already removed part of a checkpoint's range,
+// that produced an interval narrower than what the checkpoint attests, and
+// once written it is indistinguishable from one computed over a complete set.
+//
+// A missing range is a known unknown: the emitter refuses the checkpoint and
+// names it. A narrowed range is a silent falsehood in the field an auditor uses
+// to scope the evidence, and it understates coverage while looking
+// authoritative. 011 discards any interval it cannot prove complete.
+func TestPartiallyPurgedRangeIsNotTrusted(t *testing.T) {
+	db := testDB(t)
+	resetCheckpoints(t, db)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	for i := range 6 {
+		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Minute))
+	}
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+
+	var cpID int64
+	var sealedFrom, sealedTo time.Time
+	var source string
+	if err := db.QueryRow(ctx, `
+		SELECT id, covered_from, covered_to, covered_range_source
+		FROM audit_checkpoints ORDER BY id DESC LIMIT 1
+	`).Scan(&cpID, &sealedFrom, &sealedTo, &source); err != nil {
+		t.Fatalf("reading the checkpoint: %v", err)
+	}
+	if source != "sealed" {
+		t.Fatalf("a freshly sealed checkpoint has provenance %q, want \"sealed\"", source)
+	}
+
+	// Purge the first two events and record it, as the purge command does.
+	if _, err := db.Exec(ctx, `DELETE FROM audit_events WHERE id <= 2`); err != nil {
+		t.Fatalf("purging events: %v", err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO audit_purges
+		    (window_start, window_end, event_id_min, event_id_max, rows_deleted,
+		     affected_checkpoint_ids, dry_run)
+		VALUES ($1, $2, 1, 2, 2, ARRAY[$3]::BIGINT[], FALSE)
+	`, base, base.Add(time.Minute), cpID); err != nil {
+		t.Fatalf("recording the purge: %v", err)
+	}
+
+	// Re-run what 009 did, which is what produces the narrowed interval.
+	if _, err := db.Exec(ctx, `
+		UPDATE audit_checkpoints c
+		SET covered_from = r.min_ts, covered_to = r.max_ts
+		FROM (
+			SELECT cp.id AS checkpoint_id,
+			       MIN(e."timestamp") AS min_ts, MAX(e."timestamp") AS max_ts
+			FROM audit_checkpoints cp
+			JOIN audit_events e ON e.id >= cp.range_start AND e.id <= cp.range_end
+			GROUP BY cp.id
+		) r
+		WHERE c.id = r.checkpoint_id
+	`); err != nil {
+		t.Fatalf("re-running the 009 backfill: %v", err)
+	}
+
+	var narrowedFrom time.Time
+	if err := db.QueryRow(ctx,
+		`SELECT covered_from FROM audit_checkpoints WHERE id = $1`, cpID).Scan(&narrowedFrom); err != nil {
+		t.Fatalf("reading the narrowed range: %v", err)
+	}
+	if !narrowedFrom.After(sealedFrom) {
+		t.Fatalf("the backfill did not narrow the range (%v then %v), so this test is not "+
+			"exercising the case 011 exists for", sealedFrom, narrowedFrom)
+	}
+
+	// Now apply 011's rule. The surviving count no longer matches the
+	// checkpoint's event_count and a purge is recorded against it, so neither
+	// condition holds and the interval must be discarded.
+	if _, err := db.Exec(ctx, migration011Rule); err != nil {
+		t.Fatalf("applying the 011 rule: %v", err)
+	}
+
+	var from, to *time.Time
+	var src *string
+	if err := db.QueryRow(ctx, `
+		SELECT covered_from, covered_to, covered_range_source
+		FROM audit_checkpoints WHERE id = $1
+	`, cpID).Scan(&from, &to, &src); err != nil {
+		t.Fatalf("reading the checkpoint after 011: %v", err)
+	}
+	if from != nil || to != nil || src != nil {
+		t.Errorf("a partially purged checkpoint kept its narrowed range: from=%v to=%v source=%v; "+
+			"a narrowed interval understates coverage while looking authoritative", from, to, src)
+	}
+}
+
+// TestLogOnlyPurgeDoesNotInvalidateCoverage is the counterpart to
+// TestPartiallyPurgedRangeIsNotTrusted: 011 must discard what it cannot prove,
+// and must not discard anything else.
+//
+// audit_purges.event_id_min/event_id_max hold ids from whichever table the run
+// targeted. `aegis-migrate purge --table audit_logs` records audit_logs ids,
+// and that BIGSERIAL is unrelated to audit_events' — the two id spaces overlap
+// numerically all the time. Attributing a purge by comparing those columns
+// against range_start/range_end therefore lets a retention run on a table no
+// checkpoint attests destroy a valid checkpoint's coverage, after which the
+// emitter refuses that checkpoint by name and the rest of the chain cannot be
+// submitted.
+//
+// affected_checkpoint_ids is the distinction those columns cannot express:
+// purge.go populates it only when audit_events rows are in scope and leaves it
+// explicitly empty otherwise.
+func TestLogOnlyPurgeDoesNotInvalidateCoverage(t *testing.T) {
+	db := testDB(t)
+	resetCheckpoints(t, db)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	for i := range 6 {
+		insertTestEvent(t, db, base.Add(time.Duration(i)*time.Minute))
+	}
+	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+
+	var cpID int64
+	var rangeStart, rangeEnd int64
+	if err := db.QueryRow(ctx, `
+		SELECT id, range_start, range_end
+		FROM audit_checkpoints ORDER BY id DESC LIMIT 1
+	`).Scan(&cpID, &rangeStart, &rangeEnd); err != nil {
+		t.Fatalf("reading the checkpoint: %v", err)
+	}
+
+	// A retention run against audit_logs only. Its recorded id range is chosen
+	// to sit squarely inside the checkpoint's event range, which is the
+	// coincidence the old attribution could not tell from a real overlap. No
+	// audit_events row is touched, and affected_checkpoint_ids is empty, which
+	// is what purge.go writes for a log-only run.
+	if _, err := db.Exec(ctx, `
+		INSERT INTO audit_purges
+		    (window_start, window_end, event_id_min, event_id_max, rows_deleted,
+		     affected_checkpoint_ids, dry_run)
+		VALUES ($1, $2, $3, $4, 500, '{}'::BIGINT[], FALSE)
+	`, base, base.Add(time.Minute), rangeStart, rangeEnd); err != nil {
+		t.Fatalf("recording the log-only purge: %v", err)
+	}
+
+	if _, err := db.Exec(ctx, migration011Rule); err != nil {
+		t.Fatalf("applying the 011 rule: %v", err)
+	}
+
+	var from, to *time.Time
+	var src *string
+	if err := db.QueryRow(ctx, `
+		SELECT covered_from, covered_to, covered_range_source
+		FROM audit_checkpoints WHERE id = $1
+	`, cpID).Scan(&from, &to, &src); err != nil {
+		t.Fatalf("reading the checkpoint after 011: %v", err)
+	}
+	if from == nil || to == nil || src == nil {
+		t.Fatalf("a purge of audit_logs discarded an intact checkpoint's coverage "+
+			"(from=%v to=%v source=%v); the emitter now refuses this checkpoint by name "+
+			"and cannot submit the rest of the chain", from, to, src)
+	}
+	if *src != "sealed" {
+		t.Errorf("provenance is %q after an unrelated purge, want it left as \"sealed\"", *src)
 	}
 }
