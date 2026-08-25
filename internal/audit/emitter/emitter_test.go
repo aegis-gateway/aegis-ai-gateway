@@ -17,6 +17,7 @@ package emitter_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -799,5 +800,77 @@ func TestSealStateRespectsADeclaredWindow(t *testing.T) {
 			t.Errorf("the status reports a window of %ds, want the declared %ds",
 				status.LagSeconds, tc.lag)
 		}
+	}
+}
+
+// TestSealStateFollowsTheSealerWhenTimestampsAreNotMonotonic pins the state to
+// the set the sealer selects from rather than to the age of the gap.
+//
+// `timestamp` defaults to the inserting transaction's start time, so a long
+// transaction commits a row whose timestamp is older than rows already holding
+// higher ids. The lowest-id row beyond a gap can therefore be young while a
+// higher-id row beyond the same gap has already aged past the watermark. The
+// sealer filters on timestamp before ordering by id, so it takes the older row,
+// fails its contiguity check and stops — while a state derived from the age of
+// the lowest-id row still calls the gateway healthy.
+//
+// Reporting health for a chain that is not advancing is the failure this signal
+// exists to prevent, so the two must agree. The test asserts that agreement by
+// running the sealer, not by trusting the reasoning.
+func TestSealStateFollowsTheSealerWhenTimestampsAreNotMonotonic(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	sealFixture(t, db, 4, 4) // ids 1-4 sealed
+
+	// id 5 exists only to be removed: it is the hole the sealer refuses to
+	// seal past.
+	// id 6 is young, so a state judged by gap age calls this healthy.
+	// id 7 is old, so it is what the sealer's watermark-filtered batch begins
+	// at — beyond the hole, which stops sealing now.
+	for _, age := range []string{"1 second", "10 seconds", "1 hour"} {
+		if _, err := db.Exec(ctx, `
+			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
+			VALUES ('req-nonmonotonic', NOW() - $1::interval, 'test_event', '{}')
+		`, age); err != nil {
+			t.Fatalf("inserting an audit event aged %s: %v", age, err)
+		}
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM audit_events WHERE id = 5`); err != nil {
+		t.Fatalf("creating the gap: %v", err)
+	}
+
+	const lag = int64(300)
+
+	// What the sealer actually does with this database, established first so
+	// the expected state is not an assumption.
+	err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(int(lag))})
+	if !errors.Is(err, checkpoint.ErrSealPausedAtGap) {
+		t.Fatalf("the sealer did not pause at the gap, so this fixture no longer "+
+			"exercises the disagreement: %v", err)
+	}
+
+	status, err := checkpoint.ReadSealStatus(ctx, db, lag)
+	if err != nil {
+		t.Fatalf("reading status: %v", err)
+	}
+	if status.State != controlplanev1.SealStatePausedAtGap {
+		t.Errorf("the state is %q while the sealer is stopped at the gap, want %q",
+			status.State, controlplanev1.SealStatePausedAtGap)
+	}
+
+	// The age stays what it objectively is — measured from the first event
+	// beyond the gap — even though the state is no longer derived from it.
+	// Reporting a young age alongside paused_at_gap is the honest answer here,
+	// and it is what lets a consumer see the non-monotonicity.
+	if status.FirstUnsealedEventID == nil || *status.FirstUnsealedEventID != 6 {
+		t.Errorf("first_unsealed_event_id is %v, want 6", status.FirstUnsealedEventID)
+	}
+	if status.GapAge == nil {
+		t.Fatal("no gap age reported for a gap")
+	}
+	if *status.GapAge > time.Duration(lag)*time.Second {
+		t.Errorf("gap age is %s, want an age inside the %ds window: the point of the "+
+			"fixture is that the age alone would say waiting_on_gap", *status.GapAge, lag)
 	}
 }

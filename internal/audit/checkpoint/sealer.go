@@ -65,10 +65,15 @@ type SealOptions struct {
 
 // DefaultLagSeconds is the window used when SealOptions.LagSeconds is unset.
 //
-// 300, matching `aegis-migrate seal -lag-seconds` and the five minute default
-// documented in docs/AUDIT-INTEGRITY.md section 6. Defined here so the CLI, the
-// specification and a programmatic caller cannot drift apart.
-const DefaultLagSeconds = 300
+// It is the protocol's [controlplanev1.DefaultSealLagSeconds], not a second
+// copy of 300. `aegis-migrate seal` defaults to this and `aegis-migrate submit`
+// defaults to the protocol constant directly; a sealer and a submitter
+// disagreeing about the window describes a gateway that does not exist, so the
+// two cannot be allowed to drift by editing one literal. ADR 0008.
+//
+// Kept as an int because SealOptions.LagSeconds is one, and as a named constant
+// here so callers of this package need not import the protocol to seal.
+const DefaultLagSeconds = int(controlplanev1.DefaultSealLagSeconds)
 
 // SealLag returns a pointer to n, for setting SealOptions.LagSeconds
 // explicitly. Use SealLag(0) to seal with no lag, which is a deliberate choice

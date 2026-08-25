@@ -408,26 +408,37 @@ func (c *CheckpointSubmission) Validate() error {
 		return fmt.Errorf("covered_to %s precedes covered_from %s",
 			c.CoveredTo.Format(TimestampFormat), c.CoveredFrom.Format(TimestampFormat))
 	}
-	// The events were sealed after they were written, so covered_to cannot
-	// meaningfully exceed sealed_at. The invariant is enforced rather than
-	// weakened, with a small tolerance for clock skew between whatever wrote
-	// the event and whatever sealed it.
+	// The events were sealed after they were written, so neither bound of the
+	// covered interval can meaningfully exceed sealed_at. The invariant is
+	// enforced rather than weakened, with a small tolerance for clock skew
+	// between whatever wrote the event and whatever sealed it.
 	//
 	// Small on purpose. A tolerance wide enough to absorb an unsynchronised
 	// clock is not an invariant, it is a suggestion. Hosts under NTP agree to
 	// within milliseconds, so seconds is already generous and anything past it
 	// is a real anomaly worth seeing rather than absorbing.
+	//
+	// Both bounds get the same tolerance, and covered_from is checked first.
+	// Giving it none made the allowance unreachable for the case that needs it
+	// most: a single-event checkpoint has covered_from equal to covered_to, so
+	// a skew well inside the bound passed the covered_to check and was then
+	// rejected here anyway. A tolerance that only applies when at least one
+	// event precedes the seal is not the rule this documents. Checking the
+	// start bound first also reports the more specific failure when the whole
+	// interval sits after the seal, rather than blaming its end.
+	if skew := c.CoveredFrom.Sub(c.SealedAt.Time); skew > MaxCoverageClockSkew {
+		return fmt.Errorf(
+			"covered_from %s is %s after sealed_at %s, beyond the %s tolerance; the checkpoint "+
+				"claims to cover events written after it was sealed",
+			c.CoveredFrom.Format(TimestampFormat), skew.Round(time.Millisecond),
+			c.SealedAt.Format(TimestampFormat), MaxCoverageClockSkew)
+	}
 	if skew := c.CoveredTo.Sub(c.SealedAt.Time); skew > MaxCoverageClockSkew {
 		return fmt.Errorf(
 			"covered_to %s is %s after sealed_at %s, beyond the %s tolerance; the checkpoint "+
 				"claims to cover events written after it was sealed",
 			c.CoveredTo.Format(TimestampFormat), skew.Round(time.Millisecond),
 			c.SealedAt.Format(TimestampFormat), MaxCoverageClockSkew)
-	}
-	if c.CoveredFrom.After(c.SealedAt.Time) {
-		return fmt.Errorf("covered_from %s is after sealed_at %s, so the checkpoint claims to "+
-			"cover events written after it was sealed",
-			c.CoveredFrom.Format(TimestampFormat), c.SealedAt.Format(TimestampFormat))
 	}
 
 	// The reserved fields carry no agreed meaning in v1, so a v1 message that

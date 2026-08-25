@@ -36,7 +36,7 @@ ALTER TABLE audit_checkpoints
 --
 -- Two conditions must both hold for a backfilled range to be trusted, and
 -- neither is sufficient alone. The count check catches a purge that removed
--- rows; the purge-overlap check catches a purge that removed rows and left the
+-- rows; the recorded-purge check catches a purge that removed rows and left the
 -- count matching by coincidence, and also covers a purge whose deletions this
 -- query cannot see because the rows are gone.
 WITH survival AS (
@@ -49,13 +49,27 @@ WITH survival AS (
     GROUP BY cp.id, cp.event_count
 ),
 purged AS (
-    SELECT cp.id AS checkpoint_id
-    FROM audit_checkpoints cp
-    JOIN audit_purges p
-      ON NOT p.dry_run
-     AND p.event_id_min <= cp.range_end
-     AND p.event_id_max >= cp.range_start
-    GROUP BY cp.id
+    -- Read the checkpoints the purge itself recorded, rather than re-deriving
+    -- them from event_id_min/event_id_max.
+    --
+    -- Those two columns hold ids from whichever table the run targeted. A
+    -- `purge --table audit_logs` records audit_logs ids, and that BIGSERIAL is
+    -- unrelated to audit_events'. Joining them against range_start/range_end
+    -- compares two independent id spaces, so a log-only purge whose ids happen
+    -- to fall inside a checkpoint's event range would discard that
+    -- checkpoint's coverage — and the emitter then refuses the checkpoint by
+    -- name and cannot submit the rest of the chain. A retention run on a table
+    -- no checkpoint attests must not invalidate audit evidence.
+    --
+    -- affected_checkpoint_ids is populated only when audit_events rows are in
+    -- scope and is explicitly empty otherwise (internal/purge/purge.go), which
+    -- is the distinction event_id_min/max cannot express. It is also the more
+    -- accurate answer: it was computed while the rows still existed, and a
+    -- checkpoint sealed after a purge cannot have been affected by it.
+    SELECT DISTINCT cid AS checkpoint_id
+    FROM audit_purges p
+    CROSS JOIN LATERAL UNNEST(p.affected_checkpoint_ids) AS cid
+    WHERE NOT p.dry_run
 )
 UPDATE audit_checkpoints c
 SET covered_range_source = CASE

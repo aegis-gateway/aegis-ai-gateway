@@ -157,11 +157,42 @@ func ReadSealStatus(ctx context.Context, db *pgxpool.Pool, lagSeconds int64) (*S
 	// a gap whose far side is still inside that window has not been attempted
 	// yet and may fill on its own. Reporting it as paused would be a false
 	// positive, and a signal that cries wolf gets ignored.
-	if gapAge < time.Duration(lagSeconds)*time.Second {
+	//
+	// Which of the two it is has to be decided over the set the sealer actually
+	// selects from, not by comparing the gap's age against the window. The
+	// sealer filters on timestamp and then orders by id, so its next batch
+	// begins at the lowest-id event already older than the watermark; if that
+	// event lies beyond the gap, the contiguity check fails and sealing stops
+	// with ErrSealPausedAtGap right now.
+	//
+	// Age and eligibility agree only while timestamps rise with ids. They need
+	// not: `timestamp` defaults to the inserting transaction's start time, so a
+	// long transaction commits a row carrying an older timestamp than rows with
+	// higher ids. Judging by the age of the lowest-id row beyond the gap would
+	// then report waiting_on_gap — a healthy gateway — while its sealer is
+	// already stopped on a higher-id row that aged past the watermark first.
+	// Reporting health for a stalled chain is the failure this signal exists to
+	// prevent, so the question is asked the way the sealer asks it.
+	watermark := time.Now().UTC().Add(-time.Duration(lagSeconds) * time.Second)
+	var nextEligible int64
+	if err := db.QueryRow(ctx, `
+		SELECT COALESCE(MIN(id), 0)
+		FROM audit_events
+		WHERE id > $1 AND "timestamp" < $2
+	`, lastRangeEnd, watermark).Scan(&nextEligible); err != nil {
+		return nil, fmt.Errorf("finding the sealer's next eligible event: %w", err)
+	}
+
+	// Zero means no row past the gap has aged into the window, so the sealer
+	// has not attempted it. Ids are BIGSERIAL and start at 1, so zero cannot be
+	// a real event.
+	if nextEligible == 0 {
 		status.State = controlplanev1.SealStateWaitingOnGap
 		return status, nil
 	}
 
+	// Something beyond the gap is eligible, and every eligible row sits above
+	// it, so the sealer's next batch cannot start at lastRangeEnd+1.
 	status.State = controlplanev1.SealStatePausedAtGap
 	return status, nil
 }

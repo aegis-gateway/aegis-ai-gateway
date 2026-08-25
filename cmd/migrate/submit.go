@@ -88,7 +88,7 @@ func runSubmit(args []string) {
 		GatewayName:    *name,
 		BatchSize:      *batchSize,
 		Timeout:        *timeout,
-		SealLagSeconds: *lagSeconds,
+		SealLagSeconds: emitter.SealLag(*lagSeconds),
 	})
 
 	if result != nil {

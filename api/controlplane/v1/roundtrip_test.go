@@ -521,3 +521,66 @@ func matchJSONSchemaPattern(pattern, value string) error {
 	}
 	return nil
 }
+
+// TestCoverageSkewToleranceAppliesToBothBounds pins the tolerance to the whole
+// interval rather than to its end.
+//
+// A single-event checkpoint has covered_from equal to covered_to. When the
+// clock that wrote the event ran ahead of the one that sealed it, both bounds
+// land after sealed_at by the same amount, so a tolerance applied only to
+// covered_to accepted the end of the interval and then rejected its start —
+// making the allowance unreachable for the case that most needs it.
+func TestCoverageSkewToleranceAppliesToBothBounds(t *testing.T) {
+	t.Parallel()
+
+	within := MaxCoverageClockSkew - time.Second
+	beyond := MaxCoverageClockSkew + time.Second
+
+	for _, tc := range []struct {
+		name       string
+		from, to   time.Duration
+		wantErr    string
+		wantAccept bool
+	}{
+		{
+			name: "a single-event checkpoint skewed inside the tolerance",
+			from: within, to: within, wantAccept: true,
+		},
+		{
+			name: "a multi-event interval sitting entirely inside the tolerance",
+			from: within - 2*time.Second, to: within, wantAccept: true,
+		},
+		{
+			name: "a single-event checkpoint skewed past the tolerance",
+			from: beyond, to: beyond, wantErr: "covered_from",
+		},
+		{
+			name: "an interval whose end runs past the tolerance",
+			from: -time.Hour, to: beyond, wantErr: "covered_to",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := sampleSubmission()
+			s.CoveredFrom = NewTimestamp(s.SealedAt.Add(tc.from))
+			s.CoveredTo = NewTimestamp(s.SealedAt.Add(tc.to))
+			// EventCount is checked against the id range, not the interval, so
+			// it stays as the sample set it.
+			err := s.Validate()
+			if tc.wantAccept {
+				if err != nil {
+					t.Fatalf("rejected a skew of %s inside the %s tolerance: %v",
+						tc.from, MaxCoverageClockSkew, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("the error blames the wrong bound\n want it to mention: %s\n got: %v",
+					tc.wantErr, err)
+			}
+		})
+	}
+}

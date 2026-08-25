@@ -56,20 +56,35 @@ type Options struct {
 	// judged against it here rather than there: the control plane does not
 	// operate this database and must not hold a threshold describing it.
 	//
-	// Zero means the protocol's documented default, which is the sealer's own.
 	// A gateway running a non-default window must pass the same value it runs
 	// the sealer with, or it will report a state judged against a window it is
 	// not using.
-	SealLagSeconds int64
+	//
+	// It is a pointer for the same reason [checkpoint.SealOptions.LagSeconds]
+	// is: nil means unset and resolves to the protocol's documented default,
+	// while [SealLag](0) is a caller mirroring a sealer that genuinely runs
+	// with no lag. Collapsing those two onto a plain zero would declare a 300
+	// second window for a sealer using none, which is precisely the
+	// seal/submit disagreement ADR 0008 exists to prevent.
+	SealLagSeconds *int64
 }
 
-// sealLagSeconds resolves the configured window, falling back to the default
-// the protocol documents.
+// SealLag returns a pointer to n, for setting Options.SealLagSeconds
+// explicitly. Use SealLag(0) to mirror a sealer running with no lag, which is a
+// deliberate choice and not a default.
+func SealLag(n int64) *int64 { return &n }
+
+// sealLagSeconds resolves the declared window. Unset falls back to the default
+// the protocol documents; an explicit value is honoured as given, including
+// zero. A negative window is meaningless and is clamped, matching the sealer.
 func (o Options) sealLagSeconds() int64 {
-	if o.SealLagSeconds > 0 {
-		return o.SealLagSeconds
+	if o.SealLagSeconds == nil {
+		return controlplanev1.DefaultSealLagSeconds
 	}
-	return controlplanev1.DefaultSealLagSeconds
+	if *o.SealLagSeconds < 0 {
+		return 0
+	}
+	return *o.SealLagSeconds
 }
 
 // Result summarises a run.
@@ -183,7 +198,8 @@ func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gateway
 	}
 	result.SealState = status.State
 
-	if status.State == controlplanev1.SealStatePausedAtGap {
+	switch status.State {
+	case controlplanev1.SealStatePausedAtGap:
 		slog.Warn("control plane: reported that sealing is paused at an event id gap",
 			"gateway_id", gatewayID,
 			"last_sealed_event_id", status.LastSealedEventID,
@@ -191,7 +207,7 @@ func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gateway
 			"gap_age_seconds", int64(status.GapAge.Seconds()),
 			"seal_lag_seconds", status.LagSeconds,
 			"unsealed_event_count", status.UnsealedEventCount)
-	} else if status.State == controlplanev1.SealStateWaitingOnGap {
+	case controlplanev1.SealStateWaitingOnGap:
 		// Info, not warn. A gap inside the lag window is the sealer working as
 		// designed, and warning here is what would teach an operator to ignore
 		// the warning that matters.
@@ -201,7 +217,7 @@ func reportStatus(ctx context.Context, db *pgxpool.Pool, client *Client, gateway
 			"first_unsealed_event_id", *status.FirstUnsealedEventID,
 			"gap_age_seconds", int64(status.GapAge.Seconds()),
 			"seal_lag_seconds", status.LagSeconds)
-	} else {
+	default:
 		slog.Info("control plane: reported sealing status",
 			"gateway_id", gatewayID,
 			"seal_state", string(status.State),
