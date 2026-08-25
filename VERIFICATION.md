@@ -17,7 +17,7 @@ on this branch, the row says so and the baseline link still shows the defect.
 | Claims wrong, corrected in `index.html` | 14 |
 | Claims wrong, flagged for a decision rather than reworded | 3 (2 since resolved by building the missing capability) |
 | Claims unverifiable in this environment | 4 |
-| Launch blockers outstanding | 2 (the runtime verification, and the launch tag) |
+| Launch blockers outstanding | 1 (the fail-closed Redis test and the six demos; see 5.4) |
 
 ---
 
@@ -36,11 +36,22 @@ absence does not limit anything below. The lifecycle diagram is inline SVG insid
 `index.html` and was verified and corrected in place; the standalone `.svg` and any PNG
 export of it still carry the old text and must be re-exported.
 
-### 0.2 No tag exists
+### 0.2 The launch tag
 
-`git tag` returns empty. The brief specifies "a clean checkout of the tag being
-launched"; there is none, so verification ran against the branch head SHA above.
-**A launch tag must be cut and these links re-pinned before publication.**
+An earlier draft of this document said "no tag exists, `git tag` returns empty". That was
+wrong, and wrong in a way worth recording: the working clone had never fetched tags, so a
+local `git tag` was silently empty while the remote had one. That is the same class of
+error as the shallow-clone false positives in §4.4, an environment artifact stated as a
+fact about the repository.
+
+What is actually true: a `v0.1.0` tag existed on `2809594a`, but it sat on
+`chore/bump-vulnerable-deps` and was never on `main`. The two lines diverged at
+`00b15bf2`, with 51 commits on that branch absent from `main` and 147 on `main` absent
+from it, and trees differing across 207 files. It was a mis-tag on a feature branch.
+
+By decision of the author it is being moved to `main` at `aea3168` as an annotated tag, so
+that `v0.1.0` names the line that actually ships and matches the version every public
+surface already claims.
 
 ### 0.3 What could not be executed
 
@@ -49,15 +60,18 @@ Docker image pulls are blocked by this environment's egress policy
 proxy documentation is explicit that a 403 is an organisation policy denial to report
 rather than route around.
 
-Not executed, and carrying no verdict below:
+**Update, 2026-08-25.** Network policy was widened. Docker Hub's blob CDN
+(`production.cloudfront.docker.com`) is still denied, but `mirror.gcr.io` and
+`public.ecr.aws` both serve the official images, which is enough. Most of this section has
+now been executed against a real stack. See §5.
 
 | Brief item | Status |
 |---|---|
-| A3, all six demos | **Not run.** "All six demos are runnable" is unverified |
-| A3, real command output for the page | **Not captured.** The step 4 block remains a flagged placeholder |
-| A3, audit row capture | **Not captured** |
-| A3, `AKIA` grep over DB, logs and stdout | **Not run** |
-| A2, fail-closed on Redis | **Not tested.** The brief required testing rather than reading, and that stands |
+| A3, `AKIA` grep over DB, logs and stdout | **RUN. Zero hits, with a negative control.** See §5 |
+| A3, real command output for the page | **CAPTURED.** See §5 |
+| A3, audit row capture | **CAPTURED.** See §5 |
+| A3, all six demos | **Still not run.** "All six demos are runnable" remains unverified |
+| A2, fail-closed on Redis | **Still not tested.** The brief required testing rather than reading, and that stands |
 
 **The canary is the exception.** It could not run here, but it demonstrably runs in CI on
 every push, and the log evidence is in §2.10. The `AKIA` grep and the Redis test remain
@@ -255,8 +269,13 @@ Corrected block now on the page:
 
 **451 is runtime-confirmed**, not read from source: the CI canary asserts
 `gateway blocked the request with HTTP 451 as expected` against a live gateway (§2.10).
-The `message` value is still reconstructed from the format string and should be replaced
-with captured output when the demos run.
+**Superseded by §5: the envelope is now observed, and the reconstruction was wrong in one
+detail.** The real message is
+`Request blocked: detected 1 secret(s) of type: AWS Access Key`. This document previously
+guessed `aws_access_key`, taking the pattern's identifier rather than the human-readable
+name the scanner carries, and the corrected landing page carried that same wrong value
+until the live run exposed it. Reconstructing a string from a format specifier gets the
+shape right and the content wrong, which is exactly the failure mode running it fixes.
 
 ### 2.6 The Rego sample and the deny chip
 
@@ -520,15 +539,16 @@ for the Astro port; it needs the font files, which were not supplied.
 
 ## 4. Launch blockers
 
-### 4.1 The runtime verification has still not run, **BLOCKER**
+### 4.1 The runtime verification, **PARTLY RESOLVED**
 
-The `AKIA` sweep over the database, log files and stdout has not happened, and neither has
-the fail-closed Redis test. The brief is explicit that one `AKIA` hit anywhere is a
-blocker and that Redis must be tested rather than read. Both need an environment with
-Docker Hub access.
+The `AKIA` sweep has been run, with a negative control, and returned zero hits across the
+database, the gateway log, both container logs and the Redis keyspace (§5.3). The refusal
+and the audit row were captured from behaviour (§5.1, §5.2). That closes the part the
+landing page was blocked on.
 
-The CI canary covers part of this ground (§2.10) and is genuinely strong evidence, but it
-greps audit **rows**, not log files or stdout, and it does not touch Redis.
+**What remains, and still blocks a claim each:** the fail-closed Redis test, which the
+brief explicitly required be tested rather than read, and the six demos behind the
+"all six demos are runnable" line on the page.
 
 ### 4.2 The zero-retention guarantee is not yet structural
 
@@ -562,10 +582,117 @@ and the built output makes no off-origin request.
 
 ### 4.4 Process
 
-- **No launch tag exists.** Every citation is pinned to a branch-head SHA, which is
-  correct but is not a launch artifact. Cut the tag and re-pin.
+- **`v0.1.0` now names `main` at `aea3168`** (§0.2), replacing a mis-tag that sat on a
+  feature branch. Citations across this repository and both sites are still pinned to
+  `c74fa7a` and should be re-pinned to the tag. The citation checker fails on any that do
+  not resolve, so the re-pin is verifiable.
 - **`README.md` carries two shared-rule violations** (§1): a named competitor, and the
   commercial tier in present tense.
 - **Any copy of the lifecycle diagram held outside the site repository is stale** (§3.1).
-  The corrected SVG and PNG are in `aegisgateway.ai/assets/`. An Open Graph image still
-  needs composing.
+  The corrected SVG and PNG are in `aegisgateway.ai/assets/`, and were regenerated again
+  on 2026-08-25 after the live run corrected the pattern name inside the diagram. An Open
+  Graph card now exists at `aegisgateway.ai/public/assets/og.png`.
+
+---
+
+## 5. Runtime verification, executed 2026-08-25
+
+The half of the brief that could not run when this document was first written. Executed
+against `main` at `aea3168`, tagged `v0.1.0`.
+
+**Stack.** Postgres 16 and Redis 7 as containers, pulled through `mirror.gcr.io` because
+Docker Hub's blob CDN is still denied by egress policy. Migrations applied to version 11.
+A key issued with `cmd/keygen` for `verify-org`. The gateway run from source with
+deliberately fake provider credentials, since the request under test is refused before
+routing and must never reach a provider. This mirrors the CI Audit Conformance job, which
+is a configuration already known to work.
+
+### 5.1 The refusal, observed
+
+Request: `POST /v1/chat/completions`, model `aegis-fast`, content
+`Deploy with AKIAIOSFODNN7EXAMPLE`.
+
+```
+HTTP 451
+{
+    "error": {
+        "message": "Request blocked: detected 1 secret(s) of type: AWS Access Key",
+        "type": "content_filter_error",
+        "code": "content_blocked",
+        "aegis_request_id": "req_akia_sweep_1787689981"
+    }
+}
+```
+
+Confirms, from behaviour rather than source: the status is **451** and not the `403` the
+page claimed; the type is `content_filter_error` and not `policy_violation`; `code` and
+`aegis_request_id` are both present, and the page omitted both.
+
+**One correction to this document's own earlier work.** The message names the pattern as
+`AWS Access Key`. §2.5 had reconstructed it as `aws_access_key` from the format string,
+and the corrected landing page carried that wrong value until this run.
+
+### 5.2 The audit row, captured verbatim
+
+```
+id              1
+request_id      req_akia_sweep_1787689981
+timestamp       2026-08-25 20:33:01.492124+00
+event_type      filter_block
+organization_id verify-org
+team_id         verify-team
+api_key_id      d84ae83a-4cac-4c39-b1af-99b35750fe50
+ip_address      127.0.0.1:48640
+endpoint        
+method          
+status_code     451
+error_message   Content blocked by secrets filter
+metadata        {"reason": "Request blocked: detected 1 secret(s) of type: AWS Access Key", "filter_type": "secrets"}
+```
+
+This is the **positive control**: an audit row demonstrably exists for this request, so
+the absence of the key below is a fact about the write path rather than about an empty
+table.
+
+Two details worth noting, both now reflected on the page. `endpoint` and `method` are
+genuinely empty, because `LogFilterBlock` does not set them. `ip_address` carries
+`host:port` from `RemoteAddr`, not a bare address.
+
+The `metadata` JSONB holds the filter's own message: a pattern name and a count. Not the
+matched value.
+
+### 5.3 The AKIA sweep
+
+The claim is zero hits. The result is zero hits.
+
+| Surface | Method | `AKIA` hits |
+|---|---|---|
+| Entire database | `pg_dump` of all 9 tables, schema and data | **0** |
+| Gateway stdout and stderr | full log, 9 lines | **0** |
+| Postgres container log | `docker logs` | **0** |
+| Redis container log | `docker logs` | **0** |
+| Redis keyspace | every key scanned, keys and values | **0** |
+
+The block as the gateway logged it, carrying a filter name, a count and a score, and no
+matched text:
+
+```json
+{"level":"WARN","msg":"request blocked by filter","request_id":"req_akia_sweep_1787689981",
+ "filter":"secrets","detections":1,"score":0,"org_id":"verify-org"}
+```
+
+**Negative control, because a zero from a broken sweep is worthless.** A row was inserted
+into `audit_events.metadata` containing `AKIAIOSFODNN7EXAMPLE`, the dump retaken, and the
+grep returned **1 hit**, proving the method detects payload inside a JSONB column. The row
+was then deleted and the dump returned to **0**.
+
+So the zero is a measurement, not an absence of measurement.
+
+### 5.4 What this does and does not establish
+
+It establishes that on this stack, for this request, the key reached no persisted surface
+and no log. It does not establish anything about the streaming path, about a successful
+request that reaches a provider, or about the other five demos, none of which were run.
+
+Still outstanding, unchanged: the fail-closed Redis test, which the brief required be
+tested rather than read, and the six demos.
