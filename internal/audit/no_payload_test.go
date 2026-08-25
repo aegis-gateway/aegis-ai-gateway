@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
 )
 
@@ -203,4 +204,25 @@ func assertNoPayloadFields(t *testing.T, typ reflect.Type, visited map[reflect.T
 			assertNoPayloadFields(t, ft, visited)
 		}
 	}
+}
+
+// TestNoPayload_AuditReadAPIStructs applies the same reflection check to the
+// types the audit read API serialises.
+//
+// The read API is the one surface that deliberately hands audit records to a
+// caller, so it is exactly where a payload field would do the most damage: a
+// column that should never have existed would become a documented API field,
+// and removing it later would be a breaking change rather than a bug fix.
+//
+// The struct check is the cheap half. The canary covers the rest, because these
+// types are populated by column name and a payload column cannot be selected
+// into them without also existing in the schema.
+func TestNoPayload_AuditReadAPIStructs(t *testing.T) {
+	t.Parallel()
+
+	visited := make(map[reflect.Type]bool)
+	assertNoPayloadFields(t, reflect.TypeOf(audit.EventRow{}), visited)
+	assertNoPayloadFields(t, reflect.TypeOf(audit.LogRow{}), visited)
+
+	t.Logf("audit read API row structs carry no payload-holding field names")
 }

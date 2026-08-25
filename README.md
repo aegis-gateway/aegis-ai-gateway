@@ -1,8 +1,10 @@
 # AEGIS AI Gateway
 
-Every AI call your organization makes — governed and auditable.
+Every AI call your organization makes, governed and auditable.
 
-LiteLLM and Bifrost route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a persisted audit trail of every denial — built in Go, Apache 2.0.
+Most AI gateways route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a persisted audit trail of every denial, built in Go, Apache 2.0.
+
+The record contains no prompt text and no response text. Gateways that monetize payload logging cannot make that claim without deleting their core feature.
 
 → [aegisgateway.ai](https://aegisgateway.ai) · [Quick start](#quick-demo) · [Docs](docs/) · [Commercial](mailto:komlan@atlanticfrontier.com)
 
@@ -203,6 +205,8 @@ demos/          End-to-end runnable examples
 | GET | `/aegis/v1/health` | No | Health check |
 | POST | `/v1/chat/completions` | Yes | Chat completions (OpenAI-compatible) |
 | GET | `/v1/models` | Yes | List available models |
+| GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
+| GET | `/aegis/v1/audit/logs` | Yes | Read the per-request decision record. `?format=csv` to export |
 
 ## Contributing
 
@@ -218,4 +222,8 @@ AEGIS AI Gateway is open source under the [Apache License 2.0](LICENSE).
 
 The gateway is Apache 2.0 — no usage restrictions.
 
-Teams that need **SSO, multi-tenant policy management, long-horizon tamper-evident audit, evidence export, and support** can access the AEGIS control plane. Contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com) or visit [aegisgateway.ai](https://aegisgateway.ai).
+A commercial control plane is planned, covering running many gateways rather than one: **SSO and directory sync, multi-tenant policy management, cross-gateway aggregation, signed evidence bundles, long-horizon archive, and support with a service level agreement.** It is not built yet, and there is nothing to run.
+
+Anything the public zero-retention claim depends on ships free, and that rule has already moved work out of the commercial plan and into the core: hash-chained tamper-evident audit, the audit read API with JSON and CSV export, retention configuration and purge, the compliance framework mapping, and the conformance test asserting no payload is persisted.
+
+To join the waitlist or talk about a design partnership, contact [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com) or visit [aegisgateway.ai](https://aegisgateway.ai).

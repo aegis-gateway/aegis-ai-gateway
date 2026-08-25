@@ -600,3 +600,71 @@ reason := "all requests denied"
 		t.Errorf("expected 'all requests denied', got %s", reason)
 	}
 }
+
+// TestShippedDefaultPolicy_CanActuallyDeny loads configs/policies/default.rego,
+// the bundle operators actually get, and asserts it denies something.
+//
+// The previous default gated on input.request.provider_type == "external".
+// provider_type is set from adapter.Name(), which returns "openai" or
+// "anthropic" and never "external", so the only deny rule in the shipped bundle
+// could not fire. The bundle compiled, the tests passed, the landing page
+// advertised policy enforcement, and no policy denial was reachable.
+//
+// Every other test in this file builds its own inline fixture, which is exactly
+// how that survived. This one reads the real file.
+//
+// What it does NOT prove, stated plainly because the gap is the same shape as
+// the bug: it calls Evaluate directly, so it shows the bundle can deny, not that
+// a deny is reachable over HTTP. Policy runs after routing, and on the shipped
+// models config every RESTRICTED request fails ResolveRoute first and returns
+// 503, so this rule does not fire on the request path until an operator adds a
+// route whose classification_ceiling admits RESTRICTED.
+//
+// Closing that gap needs a request-path test with such a route configured, which
+// needs a running stack. Until then, a green result here means the bundle is
+// sound, not that the deny is live.
+func TestShippedDefaultPolicy_CanActuallyDeny(t *testing.T) {
+	modules, err := LoadRegoFiles(filepath.Join("..", "..", "..", "configs", "policies"))
+	if err != nil {
+		t.Fatalf("loading the shipped policy dir: %v", err)
+	}
+	if len(modules) == 0 {
+		t.Fatal("no .rego files in configs/policies; the shipped bundle is empty")
+	}
+
+	e := NewEvaluator(testCfg())
+	if err := e.LoadFromModules(modules); err != nil {
+		t.Fatalf("the shipped bundle does not compile: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// RESTRICTED on an uncleared alias must be denied, with a reason that names
+	// the alias rather than an empty string.
+	allowed, reason, err := e.Evaluate(ctx, PolicyInput{
+		User:    PolicyUser{ID: "u1", Org: "org1", Team: "eng"},
+		Request: PolicyReq{Model: "aegis-balanced", Classification: "RESTRICTED"},
+	})
+	if err != nil {
+		t.Fatalf("evaluating a RESTRICTED request: %v", err)
+	}
+	if allowed {
+		t.Error("the shipped default bundle allowed RESTRICTED data through an uncleared " +
+			"alias; it can deny nothing, which is the regression this test exists to catch")
+	}
+	if !strings.Contains(reason, "aegis-balanced") {
+		t.Errorf("deny reason %q does not name the alias; an operator cannot act on it", reason)
+	}
+
+	// A routine request must still pass, or the rule is denying everything.
+	allowed, _, err = e.Evaluate(ctx, PolicyInput{
+		User:    PolicyUser{ID: "u1", Org: "org1", Team: "eng"},
+		Request: PolicyReq{Model: "aegis-balanced", Classification: "INTERNAL"},
+	})
+	if err != nil {
+		t.Fatalf("evaluating an INTERNAL request: %v", err)
+	}
+	if !allowed {
+		t.Error("the shipped default bundle denied an ordinary INTERNAL request")
+	}
+}
