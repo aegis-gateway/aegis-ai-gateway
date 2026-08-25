@@ -179,3 +179,29 @@ left the step green having run nothing.
 
 A conformance test that can silently not run is worse than no test, because it
 manufactures confidence. Both routes to that outcome are now closed.
+
+### 2.5 Losing the Redis *address* is invisible on the health endpoint
+
+The rate limiter's fail direction depends on which of two things went wrong, and the
+asymmetry is deliberate: Redis configured but unreachable **fails closed**, and Redis not
+configured at all **fails open** so a developer can run the gateway without one.
+
+Both directions were tested on 2026-08-25 and both behave as documented
+(`VERIFICATION.md` §6.1). The finding is about what an operator can see.
+
+- Redis configured, server down: `/aegis/v1/health` reports `"status":"degraded"` with
+  `"redis":{"connected":false,"circuit_breaker":"open"}`, requests get 503, and every
+  refusal writes a `redis_failure` row to `audit_events`. This is loud, and correctly so.
+- Redis **not configured**: `/aegis/v1/health` reports `"status":"healthy"` and omits the
+  `redis` object entirely. Requests return 200 with rate-limit headers whose
+  `X-RateLimit-Remaining-Requests` never decrements, because no counter exists.
+
+So a deployment that loses its Redis *address*, through a dropped environment variable or
+a bad config merge, serves traffic with rate limiting and daily spend budgets silently
+disabled, behind a green health check. The fail-open path is intentional. Its
+indistinguishability from a healthy configured deployment is not a property anyone chose,
+and it is the failure mode most likely to survive unnoticed in production.
+
+Until this changes, an operator who relies on rate limiting should assert on the presence
+of the `redis` object in the health response, not just on `"status":"healthy"`, and should
+treat a non-decrementing `X-RateLimit-Remaining-Requests` as an outage signal.

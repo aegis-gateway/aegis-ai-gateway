@@ -7,6 +7,13 @@ Verified against commit
 Strings are quoted literally from source. Where a message is a format string, the
 literal template is given.
 
+Some of these strings have additionally been observed coming out of a running gateway on
+2026-08-25 and matched against the rows below: the fail-closed rate-limit 503 and both
+policy denials in the client response body, and four secrets refusals as recorded in
+`audit_events.metadata`. That run is also what corrected the pattern-name example on the
+secrets row: the names are title-cased words, not snake_case identifiers. The capture is
+in `VERIFICATION.md` §6.
+
 ## The envelope
 
 Every refusal uses the same OpenAI-shaped body
@@ -101,7 +108,7 @@ All emit `type: content_filter_error`, `code: content_blocked`.
 
 | Literal string | Filter | Trigger | Operator action |
 |---|---|---|---|
-| `Request blocked: detected %d secret(s) of type: %s` | secrets | One or more credential patterns matched | **The `%s` is the pattern *name*** (e.g. `aws_access_key`), never the matched value. Rotate the leaked credential, then fix the caller. |
+| `Request blocked: detected %d secret(s) of type: %s` | secrets | One or more credential patterns matched | **The `%s` is the pattern *name*** (one of `AWS Access Key`, `GCP Service Account Key`, `GitHub Token`, `Stripe Secret Key`, `Private Key`, `Connection String`, `JWT Token`), never the matched value. Rotate the leaked credential, then fix the caller. |
 | `Request blocked: prompt injection detected (score %.2f)` | injection | Heuristic score ≥ `block_threshold` | Tune `block_threshold` / `flag_threshold` if legitimate traffic scores high. Scores between flag and block are flagged, not blocked. |
 | `PII detected: %d entities found` | pii | Presidio found entities, and the request's classification makes the action a block | Count only, never the entities. Raise the key's classification or redact upstream. |
 | `PII service not connected` | pii | gRPC channel to the filter service was never established | **Fail-closed refusal.** Start the service (`mise run services:up`) or disable the PII filter in config. |
