@@ -567,19 +567,65 @@ The copy now states what is true, so this no longer blocks publication. The sche
 agreed for v0.1.0, in the order decided:
 
 1. **Drop `filter_results`.** Unused by any code path. Nothing to migrate.
-2. **Remove or type the JSONB.** `audit_events.metadata` currently carries
-   `{"filter_type","reason"}` from `LogFilterBlock`. Both are short and known, so they
-   should be real columns and the JSONB should go. A `CHECK` on JSONB is the weakest
-   option available: a key denylist is bypassed by renaming the key, and an allowlist
-   needs an `IMMUTABLE` function because `CHECK` cannot hold a subquery, which relocates
-   the guarantee into a function someone can alter.
+2. **Remove or type the JSONB.** **This step is larger than this list said, and the two
+   corrections below are mine.** See §4.2.1.
 3. **Bound the TEXT columns.** `error_message` and `user_agent` are short by nature.
    `varchar(128)` cannot hold a prompt, and a reader who knows nothing about the codebase
    can confirm that in ten seconds. This is the change that actually makes the claim
    structural.
 4. **Constraints last**, as a backstop for anything left over.
 
-Cannot be validated without a database, so it lands after §4.1 is unblocked.
+A database is now available, so the blocker named here is gone. Steps 1, 3 and 4 are
+ready to write. Step 2 is not, for the reasons below.
+
+#### 4.2.1 Two corrections to step 2, and what it actually costs
+
+**Correction 1: `metadata` does not carry two keys, it carries eleven.** Step 2 above said
+`{"filter_type","reason"}` from `LogFilterBlock`. Six `Log*` methods in
+[`logger.go:145-260`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go#L145-L260)
+write six different shapes: `api_key_prefix`; `dimension` and `limit`; `spent_cents` and
+`limit_cents`; `filter_type` and `reason`; `provider`, `model` and `mode`; `operation` and
+`error`. All eleven are short and known, so the direction of step 2 survives. Its size
+does not: it is eleven nullable columns, not two.
+
+**Correction 2: `metadata` is an input to the audit hash chain, so step 2 is not a
+migration.** It is one of the fifteen fields in the leaf hash at `hash_schema_version=1`
+([`event.go:66-88`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint/event.go#L66-L88)),
+and `hash_schema_version` lives in `api/controlplane/v1`, which this repository's own rules
+freeze once it ships in a tagged release. `v0.1.0` has now shipped.
+
+That is not a dead end, because the versioning exists for exactly this.
+`docs/AUDIT-INTEGRITY.md` §204-209 says to increment `hash_schema_version` when a column is
+added, and that old checkpoints stay verifiable under the old rules "regardless of what
+columns exist in the current schema". **Adding the eleven columns is supported. Dropping
+`metadata` is not**, because a v1 leaf cannot be recomputed once the column it hashes is
+gone, so every previously sealed checkpoint becomes unverifiable.
+
+So step 2 is an expand and contract across two releases:
+
+- **Expand,** now: add the eleven bounded columns, backfill from `metadata`, stop writing
+  `metadata`, and cut `hash_schema_version=2` with a new section in `AUDIT-INTEGRITY.md`
+  defining the v2 field set.
+- **Contract,** later: drop `metadata` only once no `hash_schema_version=1` checkpoint
+  needs verifying.
+
+**A third finding, about step 3, which is the one that would have caused harm.** Bounding
+`user_agent` looks harmless and is not. It is written from `r.UserAgent()` on the
+*unauthenticated* auth-failure path
+([`middleware.go:42-98`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth/middleware.go#L42-L98)),
+nothing truncates it before the insert, and PostgreSQL raises an error on `varchar(n)`
+overflow rather than truncating. A `varchar(128)` bound therefore hands any unauthenticated
+caller a way to suppress their own audit row: send a long `User-Agent`, the insert fails,
+and the only trace is an `slog` line. Any bound on this column must be paired with
+truncation at the write site.
+
+**And a claim in step 3 that does not hold.** It said `varchar(128)` "cannot hold a prompt".
+A 128-character prompt exists, and a legitimate browser `User-Agent` already runs to about
+200 characters, so no bound both fits real user agents and excludes all prompts. What
+bounding actually buys is that these columns cannot hold a document, a conversation, or a
+transcript, and that the limit is visible in the schema rather than asserted in prose. That
+is worth having and it is not the same as making payload storage impossible. The sentence
+should say the former.
 
 ### 4.3 Unsupported claims on the page, **RESOLVED**
 
@@ -925,16 +971,30 @@ narrower than the audit row.
 - The deny string, competitor name included, is then written to `audit_events.metadata`.
 
 Rule 3 is "never name a competitor in any user-facing text." A demo script printed to a
-terminal is user-facing text. Rule 9 says to report rather than reword, so nothing here is
-changed. Options, for a decision:
+terminal is user-facing text. Rule 9 says to report rather than reword, so it was reported
+here and left alone until decided.
 
-1. Replace the policy's subject with a generic denylist, for example internal project
-   codenames, keeping the demo's shape and losing nothing pedagogically.
-2. Keep the competitor policy as the example but source the names from a config file that
-   ships empty, so the repository names nobody.
-3. Accept it as an internal demo and decide rule 3 covers only published copy.
+**RESOLVED 2026-08-25, by decision of the author: option 1, a generic denylist.**
 
-Option 1 looks smallest, but this is a positioning call and not a copy edit.
+`policies/competitor-mention.rego` is now `policies/restricted-terms.rego`, and the three
+competitor names are three invented project codenames. The rule is unchanged in shape, so
+the demo teaches exactly what it taught before: a denylist of terms an organization does
+not want sent to a third-party model. The prompt in `run.sh` and the act title changed to
+match.
+
+Two things this touched that a rename alone would have broken:
+
+- `internal/filter/policy/opa_test.go` loads the demo bundle and asserted the old term was
+  denied. It would have failed against the renamed policy, so it was updated with it.
+- Verified against a running gateway rather than the unit test alone. The new term denies
+  with `Request denied by policy: restricted term detected: project ironwood`, the old
+  competitor prompt now passes the filter chain and fails only at the provider, and the
+  unrelated topic-restriction policy still fires.
+
+The competitor names that remain in this document are quotations inside violation
+reports, here and in §1. §6.2 quotes the deny string captured from the run that predates
+this fix; it is left as captured, because rewriting recorded evidence to match a later
+change is the thing this document exists to prevent.
 
 ### 6.5 What parts two and three of the brief now establish
 
