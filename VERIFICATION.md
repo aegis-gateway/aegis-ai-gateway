@@ -561,7 +561,7 @@ exercised, but they do not *confirm* the page's wording, because both things tha
 them are missing inputs rather than defects (§6.2). That leaves one claim at
 **unverifiable**, carried below as §4.5.
 
-### 4.2 The zero-retention guarantee is not yet structural
+### 4.2 The zero-retention guarantee is partly structural, **STEPS 1, 3 AND 4 DONE**
 
 The copy now states what is true, so this no longer blocks publication. The schema work
 agreed for v0.1.0, in the order decided:
@@ -575,8 +575,51 @@ agreed for v0.1.0, in the order decided:
    structural.
 4. **Constraints last**, as a backstop for anything left over.
 
-A database is now available, so the blocker named here is gone. Steps 1, 3 and 4 are
-ready to write. Step 2 is not, for the reasons below.
+A database is now available, so the blocker named here is gone.
+
+**Steps 1, 3 and 4 shipped as migration `012_bound_audit_text_columns`,** validated
+against PostgreSQL 16 rather than reasoned about: `filter_results` dropped,
+`error_message` bound to `varchar(128)`, `user_agent` to `varchar(256)`, and a
+`pg_column_size(metadata) <= 4096` constraint as the backstop. Full down-and-up round trip
+from an empty database, and the constraint verified to reject a 5000-byte metadata blob and
+accept a real one.
+
+Three things came out of writing it that the plan had not anticipated.
+
+**A shipped defect, found and fixed.** `ip_address` was `varchar(45)`, sized for the
+longest IPv6 literal, but it is written from Go's `RemoteAddr`, which is `host:port` with
+the host bracketed for IPv6. An ordinary full-form IPv6 address with a port is 47
+characters and the widest is 53. PostgreSQL errors on overflow rather than truncating, and
+`writeEvent` can only log that error, so the row is discarded. `LogAuthFailure` is on that
+path and is reachable unauthenticated. Reproduced before the fix:
+
+```
+INSERT INTO audit_events (..., ip_address, ...) VALUES (..., '[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:65535', ...);
+ERROR:  value too long for type character varying(45)
+```
+
+**Every IPv6 client that failed authentication did so without leaving an audit row.** The
+column is now `varchar(64)`, and the same insert succeeds.
+
+**Bounds without clipping would have created a second one.** `user_agent` is
+caller-controlled on that same unauthenticated path. Narrowing it to a `varchar` without
+truncating first would have handed any caller a way to suppress their own audit record by
+sending a long header. `internal/audit/limits.go` now clips every value that reaches a
+bounded column, rune-safe and marked with an ellipsis so a truncated record is
+distinguishable from a short one. Confirmed end to end against a running gateway: an
+840-character `User-Agent` on the auth-failure path returns `401` and leaves a surviving
+row holding 256 characters, rather than no row.
+
+**Two numbers describing one limit will drift.** `TestSchemaLimitsMatchMigration` parses
+the migrations and fails if the constants and the column widths disagree, because the
+drift is silent in the direction that matters: Go clips to the larger number and PostgreSQL
+rejects the row. Verified by control, changing one constant by one makes it fail.
+
+The down migration deliberately does not narrow `ip_address` back. Reinstating a width that
+discards audit rows is a regression rather than a rollback, and it is one a rollback cannot
+perform safely: the first attempt failed partway and left `schema_migrations` dirty at 11.
+
+**Step 2 is not done,** for the reasons below.
 
 #### 4.2.1 Two corrections to step 2, and what it actually costs
 

@@ -147,7 +147,7 @@ at all until it was replaced.
 If you need a genuine external/internal distinction in policy, encode it in alias names
 and gate on `input.request.model`, as the default bundle now does.
 
-### 2.3 Zero-retention is enforced behaviourally, not structurally
+### 2.3 Zero-retention is enforced behaviourally, and now partly structurally
 
 `audit_logs.filter_results`, `audit_events.metadata` (both `JSONB`),
 `audit_events.error_message` and `audit_events.user_agent` (both `TEXT`) carry **no
@@ -205,3 +205,33 @@ and it is the failure mode most likely to survive unnoticed in production.
 Until this changes, an operator who relies on rate limiting should assert on the presence
 of the `redis` object in the health response, not just on `"status":"healthy"`, and should
 treat a non-decrementing `X-RateLimit-Remaining-Requests` as an outage signal.
+
+
+### 2.6 What the column bounds do and do not establish
+
+Migration `012_bound_audit_text_columns` bounds the free-text columns on `audit_events`:
+`error_message` to 128 characters, `user_agent` to 256, `ip_address` to 64, and the
+`metadata` JSONB to 4096 bytes by CHECK constraint. `internal/audit/limits.go` clips every
+value to those limits before the insert.
+
+**What this establishes.** These columns cannot hold a document, a conversation, or a
+transcript, and the limit is declared in the schema where a reader can check it in a few
+seconds rather than asserted in prose they have to trust. Combined with the clipping, an
+over-long value is now recorded truncated instead of costing the entire audit row.
+
+**What it does not establish.** It does not make storing a prompt impossible. A
+128-character prompt exists, and a bound tight enough to exclude every prompt would be
+tighter than a legitimate browser `User-Agent`, which routinely runs past 200 characters. A
+bound a real client trips is not a safety property, it is an audit-suppression bug.
+
+So the bound raises the floor and narrows what a future mistake could retain. It is not a
+proof that no payload can ever be stored, and it should not be described as one. The claim
+that no payload *is* stored remains the behavioural one, tested by
+`TestNoPayload_CanaryEndToEnd` and by the sweeps in `VERIFICATION.md` §5.3 and §6.3.
+
+**The part that is still not structural at all** is `metadata`. It stays a JSONB column
+because it is one of the fifteen fields the audit leaf hash covers at
+`hash_schema_version=1`, and dropping it would leave every sealed version-1 checkpoint
+unverifiable: a version-1 leaf cannot be recomputed once the column it hashes is gone.
+Replacing it with typed columns is a separate versioned change, described in
+`VERIFICATION.md` §4.2.1. Until then the 4096-byte constraint is the only thing bounding it.

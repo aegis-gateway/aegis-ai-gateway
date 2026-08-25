@@ -81,6 +81,15 @@ func (l *Logger) writeEvent(event Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Clip every value that lands in a bounded column before the insert. See
+	// limits.go: PostgreSQL errors on varchar overflow rather than truncating, so
+	// an unclipped value costs the whole audit row, and two of these columns are
+	// written on the unauthenticated auth-failure path.
+	event.IPAddress = clip(event.IPAddress, MaxIPAddress)
+	event.ErrorMessage = clip(event.ErrorMessage, MaxErrorMessage)
+	event.UserAgent = clip(event.UserAgent, MaxUserAgent)
+	event.Metadata = clipMetadata(event.Metadata)
+
 	// Serialize metadata to JSONB
 	metadataJSON, err := json.Marshal(event.Metadata)
 	if err != nil {
