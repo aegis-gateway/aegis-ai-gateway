@@ -70,12 +70,12 @@ now been executed against a real stack. See §5.
 | A3, `AKIA` grep over DB, logs and stdout | **RUN. Zero hits, with a negative control.** See §5 |
 | A3, real command output for the page | **CAPTURED.** See §5 |
 | A3, audit row capture | **CAPTURED.** See §5 |
-| A3, all six demos | **Still not run.** "All six demos are runnable" remains unverified |
-| A2, fail-closed on Redis | **Still not tested.** The brief required testing rather than reading, and that stands |
+| A3, all six demos | **RUN. Four of six exit 0, one exits 1, one cannot start here.** See §6.2 |
+| A2, fail-closed on Redis | **TESTED, both directions, with a control.** See §6.1 |
 
 **The canary is the exception.** It could not run here, but it demonstrably runs in CI on
-every push, and the log evidence is in §2.10. The `AKIA` grep and the Redis test remain
-genuinely open.
+every push, and the log evidence is in §2.10. Everything else in this table has since been
+executed; §6 is the second run, and §6.0 lists the four deviations it required.
 
 ---
 
@@ -363,8 +363,8 @@ described as such anywhere. **Nothing on the page implies tracing**, so nothing 
 
 ### 2.9 Fail-closed on Redis
 
-**NOT VERIFIED.** The brief required testing rather than reading, and the stack could not
-be started (§0.3).
+**CONFIRMED BY TEST.** Executed on 2026-08-25 in both directions and with a negative
+control; the evidence is in §6.1. What follows is the source reading that test confirms.
 
 The code implements the documented asymmetry
 ([`middleware.go:78-155`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/ratelimit/middleware.go#L78-L155)):
@@ -372,8 +372,8 @@ Redis configured but unreachable yields `503`, a `redis_unavailable` metric, and
 `LogRedisFailure` audit row. Redis *not* configured skips limits entirely, which is the
 fail-open development path.
 
-The page states this correctly in "It does not fail open." **Reading the code is not the
-test that was asked for**, and this stays open.
+The page states this correctly in "It does not fail open." Reading the code was not the
+test that was asked for; §6.1 is that test, and it agrees with this reading.
 
 ### 2.10 The no-payload conformance test
 
@@ -539,16 +539,18 @@ for the Astro port; it needs the font files, which were not supplied.
 
 ## 4. Launch blockers
 
-### 4.1 The runtime verification, **PARTLY RESOLVED**
+### 4.1 The runtime verification, **RESOLVED**
 
 The `AKIA` sweep has been run, with a negative control, and returned zero hits across the
 database, the gateway log, both container logs and the Redis keyspace (§5.3). The refusal
 and the audit row were captured from behaviour (§5.1, §5.2). That closes the part the
 landing page was blocked on.
 
-**What remains, and still blocks a claim each:** the fail-closed Redis test, which the
-brief explicitly required be tested rather than read, and the six demos behind the
-"all six demos are runnable" line on the page.
+**Both remaining items were then executed** on the same day and are written up in §6. The
+fail-closed Redis test confirms the claim in both directions (§6.1). The six demos were all
+exercised, but they do not *confirm* the page's wording, because both things that stopped
+them are missing inputs rather than defects (§6.2). That leaves one claim at
+**unverifiable**, carried below as §4.5.
 
 ### 4.2 The zero-retention guarantee is not yet structural
 
@@ -592,6 +594,35 @@ and the built output makes no off-origin request.
   The corrected SVG and PNG are in `aegisgateway.ai/assets/`, and were regenerated again
   on 2026-08-25 after the live run corrected the pattern name inside the diagram. An Open
   Graph card now exists at `aegisgateway.ai/public/assets/og.png`.
+
+### 4.5 "All six demos are runnable" is **UNVERIFIABLE**, and blocks publication
+
+The sentence appears verbatim on two surfaces, `src/content/landing.html:24` and
+`index.html:206`: "The gateway runs and all six demos are runnable."
+
+All six were exercised on 2026-08-25 (§6.2). Four exit 0. `04-secrets-filter` exits 1 on
+its one assertion that needs a provider credential, having passed all four security
+assertions. `00-quickstart` cannot start, because `ghcr.io/open-webui/open-webui:main` is
+denied by egress policy here.
+
+Neither failure is a defect. Both are inputs this environment does not have, so the run
+neither confirms nor refutes the sentence. Under rule 1 an unverifiable capability claim
+cannot ship, and under rule 9 the fix is not to soften the wording. Two ways to clear it:
+
+1. **Run the six demos once with a real provider key**, in an environment that can pull
+   from `ghcr.io`. If `04-secrets-filter` then reports 5 of 5 and `00-quickstart` comes up,
+   the sentence is confirmed and this blocker closes with evidence.
+2. **Decide the sentence should say something narrower** that this run does support. That
+   is a positioning change and therefore a human decision, not a copy edit.
+
+Option 1 is one run away and is the only one that keeps the claim.
+
+Two smaller findings from the same run, neither changed:
+
+- `demos/04-secrets-filter/run.sh:33-42` predicts HTTP 500 for a clean request with no
+  usable provider key. The observed status is 503.
+- The same script ends in `docker compose down -v`, so a successful run destroys the
+  `audit_events` rows that are its own evidence.
 
 ---
 
@@ -694,5 +725,219 @@ It establishes that on this stack, for this request, the key reached no persiste
 and no log. It does not establish anything about the streaming path, about a successful
 request that reaches a provider, or about the other five demos, none of which were run.
 
-Still outstanding, unchanged: the fail-closed Redis test, which the brief required be
-tested rather than read, and the six demos.
+Both were subsequently run. See §6.
+
+---
+
+## 6. Runtime verification, part two, executed 2026-08-25
+
+The two items §5.4 left outstanding: the fail-closed Redis test, and the six demos. Both
+were executed. Same commit as §5, `main` at `aea3168`, tagged `v0.1.0`.
+
+### 6.0 Deviations, disclosed
+
+Four, none of which change the code under test.
+
+1. **The gateway image was built with `docker build --network host`.** BuildKit's default
+   bridge network cannot reach this sandbox's egress proxy, so every `apk` step in the
+   repository `Dockerfile` failed. `--network host` is the workaround the proxy's own
+   documentation names. The `Dockerfile` is unmodified; Compose was pointed at the
+   resulting image by a scratch-only override file that sets nothing but `build.context`.
+2. **The base images carry the sandbox proxy CA.** `alpine:3.21` and `golang:1.25-alpine`
+   were pulled through `mirror.gcr.io` and the proxy CA appended to their trust store, so
+   `apk` can fetch over an intercepted TLS connection. This changes the trust store of the
+   build image and nothing else.
+3. **No provider credential was available.** Every demo step that needs a completion fails
+   at the provider. Which steps those are is recorded per demo below, and the distinction
+   matters: the security assertions run before routing and need no credential, so they are
+   fully exercised.
+4. **`ghcr.io/open-webui/open-webui:main` is denied by egress policy.** Its blobs return
+   `403 Forbidden` from `pkg-containers.githubusercontent.com`. Reported rather than
+   routed around, per the proxy documentation. Demos 00 and 05 cannot start their browser
+   UI. No demo assertion touches it.
+
+### 6.1 Fail-closed on Redis, tested rather than read
+
+**CONFIRMED, with a negative control.** This closes §2.9.
+
+**Method.** The probe is `GET /v1/models`, not a chat completion. It sits behind the same
+`auth` then `ratelimit` middleware chain
+([`main.go:347-351`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/cmd/gateway/main.go#L347-L351))
+and calls no provider, so nothing but the limiter can produce its status code. A chat
+completion would have confounded a limiter 503 with a provider 503.
+
+| | Redis configured | Redis reachable | Result |
+|---|---|---|---|
+| A | yes | yes | `200`, `X-RateLimit-Remaining-Requests: 59`, counter decrements |
+| B | yes | **no** | **`503` on 6 of 6 requests** |
+| C | yes | restored | back to `200` |
+| D | **no** | no | **`200` on 3 of 3 requests**, counter never moves |
+
+**B, the fail-closed case.** With `docker stop aegis-redis` and the address still
+configured, all six probes returned:
+
+```json
+{"error":{"message":"Rate limiting service temporarily unavailable. Please try again in 30 seconds.","type":"server_error","code":"service_unavailable","aegis_request_id":"req_1787690834640_114634ae98261fcb"}}
+```
+
+`/aegis/v1/health` reported `"status":"degraded"`, `"redis":{"connected":false,
+"circuit_breaker":"open"}`. The gateway logged six `redis unavailable - rate limiting
+failed closed` lines and wrote six `redis_failure` rows to `audit_events`, one per denied
+request. Authentication still succeeded throughout, falling back to Postgres, which is
+what establishes that the 503 came from the limiter and not from the auth layer.
+
+**C, recovery.** After `docker start aegis-redis` the first probe still returned 503, and
+the next returned 200 about three seconds later, with the breaker passing through
+`half-open` to `closed`. That is faster than the 30 second half-open timeout because the
+background health checker probes every five seconds
+([`circuit_breaker.go:80-84`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/internal/ratelimit/circuit_breaker.go#L80-L84)),
+and it closes the breaker before the timeout is reached.
+
+**D, the negative control.** Redis was left stopped and `redis.addresses` emptied. Every
+probe returned 200, and `X-RateLimit-Remaining-Requests` stayed at 59 on all three, so the
+counter was not merely permissive, it was absent. Same outage, opposite outcome, decided
+only by configuration. That is the asymmetry the page claims, measured.
+
+**A finding this produced.** In case D the health endpoint reported
+`"status":"healthy"` and omitted the `redis` block entirely. An operator who loses the
+Redis address, rather than the Redis server, gets a green health endpoint with rate
+limiting silently disabled. The fail-open path is deliberate and documented; its
+invisibility on `/aegis/v1/health` appears not to be. Recorded in
+`docs/evidence/known-limitations.md`; no code changed.
+
+### 6.2 The six demos
+
+All six were exercised. The page's "all six demos are runnable" line is **not confirmed,
+and not falsified either.** Four of six complete with exit 0, one exits 1 on a single
+assertion that needs a provider credential, and one cannot start here because an image it
+pulls is denied by egress policy. Both of those causes are absent inputs, not defects, so
+this run cannot settle the claim in either direction. The verdict is **unverifiable**.
+
+| Demo | Exit | Steps completed | What is real, what is not |
+|---|---|---|---|
+| `00-quickstart` | **1** | 0 of 5 | Fails at the Open WebUI pull (§6.0.4). The gateway, Postgres and Redis subset comes up healthy; the banner's own smoke request needs a credential |
+| `01-curl-basics` | 0 | 7 of 7 | Steps 1, 2, 4, 5, 6 fully real. Step 3 needs a credential. Step 7 returns zero rows because `usage_records` is written only on a successful call |
+| `02-streaming` | 0 | 4 of 4 | Steps 1 to 3 need a credential. Step 4 is real |
+| `03-cost-tracking` | 0 | 4 of 4 | Completes, but every figure is empty: `n/a`, zero rows, no cost metric, session total 0. Nothing about cost is demonstrated without a credential |
+| `04-secrets-filter` | **1** | 5 of 5 | **The four security assertions all pass.** The fifth, a clean request expected to return 200, returns 503 |
+| `05-custom-policies` | n/a | Acts 1 to 3 | **Both policy denials fire.** The clean request needs a credential. Run without the UI service |
+
+**`04-secrets-filter`, the load-bearing one.** All four blocked cases returned `451`:
+
+```
+  [1/5] AWS key blocked                    → PASS (HTTP 451)
+  [2/5] GitHub token blocked               → PASS (HTTP 451)
+  [3/5] Private key blocked                → PASS (HTTP 451)
+  [4/5] JWT blocked                        → PASS (HTTP 451)
+  [5/5] Clean request passes               → FAIL (expected 200, got 503)
+
+Results: 4 passed, 1 failed
+```
+
+and each wrote an `audit_events` row naming the pattern and not the value:
+
+```
+           timestamp           |  event_type  | filter  |                       reason
+-------------------------------+--------------+---------+-----------------------------------------------------------
+ 2026-08-25 20:55:04.320759+00 | filter_block | secrets | Request blocked: detected 1 secret(s) of type: JWT Token
+ 2026-08-25 20:55:04.312481+00 | filter_block | secrets | Request blocked: detected 1 secret(s) of type: Private Key
+ 2026-08-25 20:55:04.303729+00 | filter_block | secrets | Request blocked: detected 1 secret(s) of type: GitHub Token
+ 2026-08-25 20:55:04.291227+00 | filter_block | secrets | Request blocked: detected 1 secret(s) of type: AWS Access Key
+```
+
+Two notes on case 5. The observed status is **503**, while the comment at
+`demos/04-secrets-filter/run.sh:33-42` predicts 500 for exactly this situation, so that
+comment is wrong about the failure mode. And because the script ends in
+`docker compose down -v`, a passing run destroys the audit rows that are the demo's own
+evidence. Neither is changed here.
+
+**`05-custom-policies`.** Both denials fired, with the specific rule in the client
+response and in the audit row:
+
+```json
+{"status": "content_blocked", "reason": "Request denied by policy: competitor mention detected: portkey"}
+{"status": "content_blocked", "reason": "Request denied by policy: financial topic restricted to finance team"}
+```
+
+The `audit_events.error_message` column holds a generic
+`Content blocked by policy filter`, but `metadata->>'reason'` holds the specific deny
+string, so which rule fired is recoverable from the audit trail.
+
+**`02-streaming`, step 4**, the one number this run produced that is not a refusal:
+
+```
+aegis_streaming_error_total{error_type="http_401",provider="anthropic"} 2
+```
+
+That is worth more than it looks. It shows the gateway reached Anthropic and was refused
+on credentials, so the provider-side failures throughout this run are a missing key and
+not blocked egress.
+
+### 6.3 A second `AKIA` sweep, against the demo payloads
+
+§5.3 swept after a single hand-built request. This one swept after the four payloads
+`04-secrets-filter` actually sends, against a stack deliberately left running.
+
+**Corpus.** `pg_dump` of all 9 tables (26,425 bytes), gateway stdout and stderr, the
+Postgres and Redis container logs, the Redis keyspace and a `DUMP` of every value in it.
+
+| Pattern | Hits |
+|---|---|
+| `AKIA` | **0** |
+| `IOSFODNN7EXAMPLE` | **0** |
+| `ghp_AAAA` | **0** |
+| `BEGIN RSA PRIVATE KEY` | **0** |
+| `notarealsignature` | **0** |
+| `eyJhbGciOiJIUzI1NiJ9` | **0** |
+
+**Validity.** The same corpus contains 6 `filter_block` rows and all four secret-type
+reason strings, so the requests are present in it and the zero is a measurement rather
+than an empty dataset.
+
+**Negative control.** `AKIAIOSFODNN7EXAMPLE` planted into `audit_events.metadata` produced
+4 hits on the next dump; removing it returned the count to 0. The method sees payload
+inside JSONB.
+
+A detail worth keeping: the gateway's own log line for a secrets block records
+`filter`, `detections` and `score`, and not the pattern type, so the stdout log is
+narrower than the audit row.
+
+### 6.4 A rule 3 violation in this repository, reported and not fixed
+
+`demos/05-custom-policies` names three competitors, in text a user reads:
+
+- `policies/competitor-mention.rego:5` lists them in a Rego array, and `run.sh:53` prints
+  that file to the terminal.
+- `run.sh:60` puts one of them in the prompt of the demo request.
+- The deny string, competitor name included, is then written to `audit_events.metadata`.
+
+Rule 3 is "never name a competitor in any user-facing text." A demo script printed to a
+terminal is user-facing text. Rule 9 says to report rather than reword, so nothing here is
+changed. Options, for a decision:
+
+1. Replace the policy's subject with a generic denylist, for example internal project
+   codenames, keeping the demo's shape and losing nothing pedagogically.
+2. Keep the competitor policy as the example but source the names from a config file that
+   ships empty, so the repository names nobody.
+3. Accept it as an internal demo and decide rule 3 covers only published copy.
+
+Option 1 looks smallest, but this is a positioning call and not a copy edit.
+
+### 6.5 What parts two and three of the brief now establish
+
+Confirmed by execution: the Redis asymmetry in both directions, with a control; the
+secrets filter on four pattern classes, refusing before routing and recording the pattern
+without the value; two custom Rego policies denying with rule-level attribution in the
+audit trail; and no secret payload on any persisted or logged surface, again with a
+control.
+
+Not established, and so not claimable: anything that requires a successful provider call.
+That is the streaming path end to end, cost calculation, `usage_records`, and the clean
+request in three separate demos. A provider credential is the single missing input for all
+of them.
+
+This is a gap in evidence, not evidence of a gap. Nothing observed here suggests those
+paths are broken; they were simply never reached. One run with a real provider key, in an
+environment that can pull `ghcr.io`, would settle both §6.2 and this paragraph. Until
+someone does that run, "all six demos are runnable" is a claim the repository cannot
+currently support, which is a different and lesser problem than a claim it contradicts.
