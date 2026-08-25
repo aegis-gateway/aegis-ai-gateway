@@ -47,6 +47,17 @@ for doc in "${docs[@]}"; do
     fail=1
   done < <(grep -oE "$repo/(blob|tree|raw)/(main|master|HEAD)/[^)\" ]*" "$doc" 2>/dev/null)
 
+  # A citation pinned to an abbreviated SHA is not checkable by the loop below,
+  # which matches full 40-character object names. Silently skipping one is the
+  # worst outcome available: the citation looks reviewed and never was. Reject
+  # it instead, and say what to replace it with.
+  while IFS= read -r short; do
+    [ -n "$short" ] || continue
+    abbrev=${short##*/}
+    echo "::error file=$doc::citation pinned to an abbreviated SHA ($abbrev): use the full 40-character commit so it can be verified"
+    fail=1
+  done < <(grep -oE "$repo/(blob|tree|raw)/[0-9a-f]{7,39}/" "$doc" 2>/dev/null | grep -oE "[0-9a-f]{7,39}/$" | sed 's|/$||' | sort -u)
+
   # Every pinned citation must resolve at the commit it names.
   while IFS= read -r url; do
     [ -n "$url" ] || continue
