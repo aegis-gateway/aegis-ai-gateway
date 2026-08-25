@@ -5,7 +5,7 @@ that an operator building an evidence package finds these limits here rather tha
 discovering them during an audit.
 
 Verified against commit
-[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a).
+[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1).
 
 ---
 
@@ -27,7 +27,7 @@ anywhere in the repository. Rego bundles are compiled from `configs/policies/`, 
 they are **neither versioned nor digested**.
 
 The control plane protocol reserves both field names,
-[`ConfigHash` and `PolicyBundles`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/api/controlplane/v1/checkpoint.go#L146-L160)
+[`ConfigHash` and `PolicyBundles`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/api/controlplane/v1/checkpoint.go#L160-L174)
 in `api/controlplane/v1`, but their semantics are **unspecified in v1**, no v1 emitter
 may populate them, and validation **actively rejects** a submission that does:
 
@@ -36,7 +36,7 @@ config_hash is reserved in v1: its semantics are unspecified and no v1 emitter m
 ```
 
 This is a considered decision, recorded in
-[ADR 0004](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/docs/adr/0004-reserved-fields-must-not-be-populated.md).
+[ADR 0004](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/docs/adr/0004-reserved-fields-must-not-be-populated.md).
 Declaring the fields merely *optional* would invite a future emitter to fill them with
 something plausible, letting whoever populated them first define their meaning inside
 what is supposed to be a contract. Reserving them keeps the name available for a v2 that
@@ -123,7 +123,7 @@ These are not the provenance gap, but an operator reading this page will want th
 
 Every filter implements `ScanRequest` and runs on the **inbound** request only. There is
 no `ScanResponse` in the
-[`filter.Filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/filter.go#L43-L47)
+[`filter.Filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/filter.go#L43-L47)
 interface and no outbound filtering in the codebase. **Model output is not scanned** for
 secrets, PII, or injection.
 

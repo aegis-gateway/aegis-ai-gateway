@@ -47,16 +47,57 @@ for doc in "${docs[@]}"; do
     fail=1
   done < <(grep -oE "$repo/(blob|tree|raw)/(main|master|HEAD)/[^)\" ]*" "$doc" 2>/dev/null)
 
-  # A citation pinned to an abbreviated SHA is not checkable by the loop below,
-  # which matches full 40-character object names. Silently skipping one is the
-  # worst outcome available: the citation looks reviewed and never was. Reject
-  # it instead, and say what to replace it with.
-  while IFS= read -r short; do
-    [ -n "$short" ] || continue
-    abbrev=${short##*/}
-    echo "::error file=$doc::citation pinned to an abbreviated SHA ($abbrev): use the full 40-character commit so it can be verified"
+  # Anything in the ref position that is not a full 40-character object name is
+  # invisible to the verification loop below, which matches only those. A
+  # silently skipped citation is the worst outcome available: it looks reviewed
+  # and never was, and the totals printed at the end say so untruthfully. So
+  # every non-SHA ref is rejected here by name.
+  #
+  # A tag is rejected along with the rest, deliberately. A tag is a moving
+  # pointer: v0.1.0 can be deleted and recreated on a different commit, which
+  # this repository has already done once, and a citation that moves with it
+  # stops being evidence for the claim it was attached to.
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    case $ref in
+      main|master|HEAD) continue ;;   # already reported above
+    esac
+    case $ref in
+      *[!0-9a-f]*)
+        echo "::error file=$doc::citation pinned to \"$ref\", which is not a commit: use the full 40-character commit so it can be verified, and so it cannot move"
+        ;;
+      *)
+        echo "::error file=$doc::citation pinned to an abbreviated SHA ($ref): use the full 40-character commit so it can be verified"
+        ;;
+    esac
     fail=1
-  done < <(grep -oE "$repo/(blob|tree|raw)/[0-9a-f]{7,39}/" "$doc" 2>/dev/null | grep -oE "[0-9a-f]{7,39}/$" | sed 's|/$||' | sort -u)
+  done < <(grep -oE "$repo/(blob|tree|raw)/[^/)\" ]+/" "$doc" 2>/dev/null |
+           while IFS= read -r m; do m=${m%/}; printf '%s\n' "${m##*/}"; done |
+           grep -vxE "[0-9a-f]{40}" | sort -u)
+
+  # A citation is usually written as [`file.go:152-165`](…/file.go#L152-L165).
+  # The label and the anchor are two copies of the same fact, and re-pinning to
+  # a newer commit moves the anchor while leaving the label behind. A reader
+  # trusts the label, so a stale one misstates the evidence just as badly as a
+  # dead link. Require the two to agree.
+  while IFS= read -r pair; do
+    [ -n "$pair" ] || continue
+    label=${pair%%$'\t'*}
+    anchor=${pair#*$'\t'}
+    lline=${label#*:}
+    lstart=${lline%%-*}
+    astart=${anchor%%-*}
+    astart=${astart#L}
+    if [ "$lstart" != "$astart" ]; then
+      echo "::error file=$doc::citation label \"$label\" disagrees with its own link anchor (#$anchor)"
+      fail=1
+    fi
+  done < <(grep -oE "\[\`[A-Za-z0-9_./-]+:[0-9]+(-[0-9]+)?\`\]\([^)]*$repo/(blob|raw)/[0-9a-f]{40}/[^)]*#L[0-9]+(-L[0-9]+)?\)" "$doc" 2>/dev/null |
+           while IFS= read -r m; do
+             lab=${m#*\`}; lab=${lab%%\`*}
+             anc=${m##*#}; anc=${anc%)}
+             printf '%s\t%s\n' "$lab" "$anc"
+           done | sort -u)
 
   # Every pinned citation must resolve at the commit it names.
   while IFS= read -r url; do

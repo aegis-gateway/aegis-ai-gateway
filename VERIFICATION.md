@@ -3,7 +3,7 @@
 Verification of every factual claim on the landing page and in `README.md` against the
 AEGIS gateway source.
 
-**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a)
+**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1)
 **Date:** 2026-08-23
 
 All permalinks pin that SHA. None point at `main`. Where a finding has since been fixed
@@ -92,11 +92,11 @@ executed; §6 is the second run, and §6.0 lists the four deviations it required
 
 | Claim (quoted) | Where | Verified against | Verdict |
 |---|---|---|---|
-| `` `/aegis/v1/health` `` \| No \| Health check | `README.md:203` | [`main.go:343`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/cmd/gateway/main.go#L343) | **confirmed** |
-| "View Prometheus metrics: `http://localhost:9090/metrics`" | `README.md:42` | [`main.go:176-178`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/cmd/gateway/main.go#L176-L178), [`gateway.yaml:29`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/gateway.yaml#L29) | **confirmed** |
-| `aegis-gpt4` \| *(deprecated alias → aegis-balanced)* | `README.md:57` | [`models.yaml:5`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/models.yaml#L5) | **confirmed**, and more accurate than the page, which omitted it |
-| "every denial ... is written to `audit_events` with request metadata, IP, and reason" | `README.md:149` | [`logger.go:92-99,186-202`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/logger.go#L92-L99) | **confirmed**, exactly right |
-| "Successful calls are recorded separately in `usage_records`" | `README.md:149` | [`internal/storage`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/storage) | **confirmed** |
+| `` `/aegis/v1/health` `` \| No \| Health check | `README.md:203` | [`main.go:344`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L344) | **confirmed** |
+| "View Prometheus metrics: `http://localhost:9090/metrics`" | `README.md:42` | [`main.go:176-178`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L176-L178), [`gateway.yaml:29`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/gateway.yaml#L29) | **confirmed** |
+| `aegis-gpt4` \| *(deprecated alias → aegis-balanced)* | `README.md:57` | [`models.yaml:5`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/models.yaml#L5) | **confirmed**, and more accurate than the page, which omitted it |
+| "every denial ... is written to `audit_events` with request metadata, IP, and reason" | `README.md:149` | [`logger.go:92-99,186-202`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go#L92-L99) | **confirmed**, exactly right |
+| "Successful calls are recorded separately in `usage_records`" | `README.md:149` | [`internal/storage`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/storage) | **confirmed** |
 | "**LiteLLM and Bifrost** route traffic and report what it cost." | `README.md:5` | Shared rule 3 | **RULE VIOLATION**, see below |
 | "Teams that need SSO, multi-tenant policy management ... **can access** the AEGIS control plane." | `README.md:221` | Shared rule 6 | **RULE VIOLATION**, see below |
 
@@ -131,7 +131,7 @@ positioning, not defects in the code.
 | `internal/auth` | **confirmed** |
 | `internal/validation` | **confirmed** |
 | `internal/filter` | **confirmed** |
-| `internal/policy` | **wrong.** No such package. Policy lives at [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/policy) |
+| `internal/policy` | **wrong.** No such package. Policy lives at [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy) |
 | `internal/ratelimit` | **confirmed** |
 | `internal/router` | **confirmed** |
 | `internal/cost` | **confirmed** |
@@ -143,7 +143,7 @@ Two structural errors in the capability table, both corrected:
    implements `filter.Filter` like any other filter.
 2. The page attributed **classification gating** to `internal/policy` as well.
    Classification gating is not policy at all: it is
-   [`router.routeEligible`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/router/provider.go),
+   [`router.routeEligible`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/router/provider.go),
    which skips any route whose `classification_ceiling` sits below the caller's
    clearance. Two separate mechanisms were shown as one package that does not exist.
 
@@ -152,7 +152,7 @@ are four subpackages of `internal/filter` behind one `filter.Chain`, not four pe
 
 ### 2.2 `filter.Result`
 
-Real definition, [`filter.go:33-39`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/filter.go#L33-L39):
+Real definition, [`filter.go:33-39`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/filter.go#L33-L39):
 
 ```go
 type Result struct {
@@ -182,9 +182,9 @@ The no-matched-string assertion holds through the whole chain:
    every value is built from pattern names and counts. The secrets filter is the sharp
    case: it collects `d.PatternName` into a set and formats
    `"Request blocked: detected %d secret(s) of type: %s"`, the type name, never the value
-   ([`scanner.go:84-101`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/secrets/scanner.go#L84-L101)).
+   ([`scanner.go:84-101`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/secrets/scanner.go#L84-L101)).
 3. **Every log and audit statement.** The block path
-   ([`handler.go:152-165`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L152-L165))
+   ([`handler.go:152-165`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L152-L165))
    logs `FilterName`, `Detections`, `Score`, and passes `Message` to `LogFilterBlock`.
 
 **Runtime corroboration.** The CI gateway log for the canary request shows exactly this
@@ -206,13 +206,13 @@ that could quietly hold it**.*
 
 **Verdict: wrong as worded.** Four columns are structurally capable of holding payload.
 
-[Migration 002](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/migrations/002_create_audit_logs.up.sql):
+[Migration 002](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/migrations/002_create_audit_logs.up.sql):
 
 ```sql
 filter_results  JSONB NOT NULL DEFAULT '{}',
 ```
 
-[Migration 005](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/migrations/005_create_audit_events.up.sql):
+[Migration 005](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/migrations/005_create_audit_events.up.sql):
 
 ```sql
 user_agent      TEXT,
@@ -256,7 +256,7 @@ The page showed `403` with
 `{"error":{"message":"content blocked by secrets filter","type":"policy_violation"}}`.
 
 **Wrong in four ways**
-([`errors.go:41-90`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/httputil/errors.go#L41-L90)):
+([`errors.go:41-90`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/httputil/errors.go#L41-L90)):
 
 1. Status is **451**, not 403.
 2. `type` is `content_filter_error`. There is no `policy_violation` type in the codebase.
@@ -290,7 +290,7 @@ shape right and the content wrong, which is exactly the failure mode running it 
 
 | Claim | Verdict |
 |---|---|
-| `deny contains msg if` v1 syntax | **confirmed.** `import rego.v1`, OPA [`v1.13.2`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/go.mod#L10) |
+| `deny contains msg if` v1 syntax | **confirmed.** `import rego.v1`, OPA [`v1.13.2`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/go.mod#L10) |
 | `package aegis.authz` | **wrong.** The real package is `aegis.policy` |
 | `input.filters.pii.detections` | **wrong.** `PolicyInput` has no `filters` field |
 | `data.providers[input.route.provider].eu_hosted` | **wrong.** No `route` field, and no such data document |
@@ -299,7 +299,7 @@ shape right and the content wrong, which is exactly the failure mode running it 
 
 The real input document is
 `{user:{id,org,team}, request:{model,classification,provider_type}, messages, time:{hour,day}}`
-([`opa.go:225-243`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/policy/opa.go#L225-L243)).
+([`opa.go:225-243`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy/opa.go#L225-L243)).
 The sample referenced three paths that do not exist, so it could not have fired as
 printed.
 
@@ -310,7 +310,7 @@ not individually named in Rego, so no rule name is available to emit. Copy of th
 
 **And the shipped rule was dead.** The sole deny rule in `default.rego` required
 `input.request.provider_type == "external"`. That field is set from `adapter.Name()`
-([`handler.go:190`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L190)),
+([`handler.go:190`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L190)),
 which returns the adapter implementation, `"openai"` or `"anthropic"`, and never
 `"external"`. `azure_openai` and `internal_vllm` both route through the OpenAI adapter and
 both report `"openai"`. **The shipped default bundle could not deny anything.**
@@ -329,7 +329,7 @@ both report `"openai"`. **The shipped default bundle could not deny anything.**
 > The new rule is **not** reachable on the shipped configuration either, for a different
 > reason: policy is evaluated after routing, because it needs the resolved provider, so
 > `ResolveRoute` fails first and returns `503 No provider available` before the rule is
-> consulted ([`handler.go:178-181`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/handler.go#L178-L181)).
+> consulted ([`handler.go:178-181`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L178-L181)).
 > It fires once an operator adds a route whose ceiling admits `RESTRICTED`.
 >
 > That is still a real improvement on what it replaced, which could not fire under **any**
@@ -350,7 +350,7 @@ product statement, but it is routable and `GET /v1/models` returns four. The dem
 run script advertises it. Page corrected to say three current plus one deprecated.
 
 On vendor names: `ListModels`
-([`handler.go:441-446`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L441-L446))
+([`handler.go:441-446`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L441-L446))
 emits only the alias as `id` with `owned_by: "aegis"`. The upstream mapping is never
 serialised. The API surface is clean. The one cosmetic caveat is that the alias
 `aegis-gpt4` embeds a vendor product name and is returned publicly; deprecating it out of
@@ -365,7 +365,7 @@ serialised. The API surface is clean. The one cosmetic caveat is that the alias
 | OpenTelemetry is transitive only | **confirmed** |
 
 Every `go.opentelemetry.io/*` entry in
-[`go.mod:52-56`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/go.mod#L52-L56)
+[`go.mod:52-56`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/go.mod#L52-L56)
 is `// indirect`, pulled in by OPA. No tracer provider, exporter, span, or configuration
 exists. `audit_logs.trace_id` is a plausible future hook, not OTel integration, and is not
 described as such anywhere. **Nothing on the page implies tracing**, so nothing to flag.
@@ -376,7 +376,7 @@ described as such anywhere. **Nothing on the page implies tracing**, so nothing 
 control; the evidence is in §6.1. What follows is the source reading that test confirms.
 
 The code implements the documented asymmetry
-([`middleware.go:78-155`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/ratelimit/middleware.go#L78-L155)):
+([`middleware.go:78-155`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/ratelimit/middleware.go#L78-L155)):
 Redis configured but unreachable yields `503`, a `redis_unavailable` metric, and a
 `LogRedisFailure` audit row. Redis *not* configured skips limits entirely, which is the
 fail-open development path.
@@ -390,9 +390,9 @@ test that was asked for; §6.1 is that test, and it agrees with this reading.
 
 | Test | File | Asserts |
 |---|---|---|
-| `TestNoPayload_SchemaIntrospection` | [`no_payload_test.go:69`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_test.go#L69) | Scans every `*.up.sql`; fails on payload-indicative column **names** in `audit_*` |
-| `TestNoPayload_FilterResultStruct` | [`no_payload_test.go:160`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_test.go#L160) | Reflects over `filter.Result`; fails on payload-ish field names or JSON tags |
-| `TestNoPayload_CanaryEndToEnd` | [`no_payload_integration_test.go:55`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_integration_test.go#L55) | Sends a canary, asserts `451`, asserts a row **was** written, then asserts the canary is in no row |
+| `TestNoPayload_SchemaIntrospection` | [`no_payload_test.go:70`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_test.go#L70) | Scans every `*.up.sql`; fails on payload-indicative column **names** in `audit_*` |
+| `TestNoPayload_FilterResultStruct` | [`no_payload_test.go:161`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_test.go#L161) | Reflects over `filter.Result`; fails on payload-ish field names or JSON tags |
+| `TestNoPayload_CanaryEndToEnd` | [`no_payload_integration_test.go:66`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_integration_test.go#L66) | Sends a canary, asserts `451`, asserts a row **was** written, then asserts the canary is in no row |
 
 **Run-history evidence.** CI run
 [`32546647855`](https://github.com/aegis-gateway/aegis-ai-gateway/actions/runs/32546647855),
@@ -515,8 +515,8 @@ directly.
 
 > **RESOLVED.** The endpoint was built: `GET /aegis/v1/audit/events` and
 > `GET /aegis/v1/audit/logs`, authenticated and organization-scoped, with `?format=csv`.
-> See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/audit/reader.go)
-> and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/audit_handler.go).
+> See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go)
+> and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/audit_handler.go).
 > The `BUILD NOTE, BLOCKER` markers are removed and the claim now has code behind it.
 
 **2. `docs/COMPLIANCE-MAPPING.md` does not exist.** Cited three times: as a receipt in the
@@ -525,7 +525,7 @@ team to start from it. A dead receipt is worse than no receipt, and this one is 
 bearing for the "we do not claim compliance, we produce evidence" position. Options were: write the document, or cut all three citations.
 
 > **RESOLVED.** The document was written:
-> [`docs/COMPLIANCE-MAPPING.md`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/docs/COMPLIANCE-MAPPING.md).
+> [`docs/COMPLIANCE-MAPPING.md`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/docs/COMPLIANCE-MAPPING.md).
 > All three citations resolve.
 
 **3. Fonts load from the Google Fonts CDN.** Three tags in `<head>` fetch IBM Plex and
@@ -541,7 +541,7 @@ for the Astro port; it needs the font files, which were not supplied.
 |---|---|
 | "All six demos are runnable" | Could not run any (§0.3). Plausible, unconfirmed |
 | Digital Omnibus dates and article numbers | Regulatory facts, outside the scope of a source verification. The page frames them correctly, explicitly disclaiming deadline urgency, which satisfies rule 5 |
-| "An offline sealer seals events into Merkle checkpoints that chain to each other" | **confirmed** in [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/checkpoint) (RFC 6962 Merkle root, `prev_checkpoint_hash` chain) |
+| "An offline sealer seals events into Merkle checkpoints that chain to each other" | **confirmed** in [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint) (RFC 6962 Merkle root, `prev_checkpoint_hash` chain) |
 | "It does not scan model responses" | **confirmed**, and correctly stated as a limitation. Only `ScanRequest` exists in the `filter.Filter` interface |
 
 ---
@@ -775,7 +775,7 @@ Four, none of which change the code under test.
 
 **Method.** The probe is `GET /v1/models`, not a chat completion. It sits behind the same
 `auth` then `ratelimit` middleware chain
-([`main.go:347-351`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/cmd/gateway/main.go#L347-L351))
+([`main.go:347-351`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L347-L351))
 and calls no provider, so nothing but the limiter can produce its status code. A chat
 completion would have confounded a limiter 503 with a provider 503.
 
@@ -803,7 +803,7 @@ what establishes that the 503 came from the limiter and not from the auth layer.
 the next returned 200 about three seconds later, with the breaker passing through
 `half-open` to `closed`. That is faster than the 30 second half-open timeout because the
 background health checker probes every five seconds
-([`circuit_breaker.go:80-84`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/internal/ratelimit/circuit_breaker.go#L80-L84)),
+([`circuit_breaker.go:80-84`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/ratelimit/circuit_breaker.go#L80-L84)),
 and it closes the breaker before the timeout is reached.
 
 **D, the negative control.** Redis was left stopped and `redis.addresses` emptied. Every
