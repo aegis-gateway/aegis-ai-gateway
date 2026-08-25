@@ -49,9 +49,18 @@ What is actually true: a `v0.1.0` tag existed on `2809594a`, but it sat on
 `00b15bf2`, with 51 commits on that branch absent from `main` and 147 on `main` absent
 from it, and trees differing across 207 files. It was a mis-tag on a feature branch.
 
-By decision of the author it is being moved to `main` at `aea3168` as an annotated tag, so
+By decision of the author it is to be moved to `main` at `aea3168` as an annotated tag, so
 that `v0.1.0` names the line that actually ships and matches the version every public
 surface already claims.
+
+**That move has not happened.** Verified against the remote on 2026-08-25:
+`git ls-remote --tags origin` still returns `2809594a` for `refs/tags/v0.1.0`. Tag pushes
+are rejected for this session, creation and mutation alike, while branch pushes succeed,
+so it needs a hand at a terminal. Until it is done, anyone who checks out `v0.1.0` gets
+the divergent feature-branch tree described above and not the tree verified in this
+document. Every reference to `v0.1.0` below means the intended tag, and every claim
+verified here is anchored to `aea3168` by commit rather than by tag name for exactly this
+reason.
 
 ### 0.3 What could not be executed
 
@@ -584,8 +593,10 @@ and the built output makes no off-origin request.
 
 ### 4.4 Process
 
-- **`v0.1.0` now names `main` at `aea3168`** (§0.2), replacing a mis-tag that sat on a
-  feature branch. Citations across this repository and both sites are still pinned to
+- **`v0.1.0` still names `2809594a` on the remote** and must be moved to `main` at
+  `aea3168` (§0.2). Confirmed against `git ls-remote` on 2026-08-25, not assumed. This is
+  an outstanding launch action, not a completed one: until the ref moves, `v0.1.0`
+  delivers the divergent feature-branch tree. Citations across this repository and both sites are still pinned to
   `c74fa7a` and should be re-pinned to the tag. The citation checker fails on any that do
   not resolve, so the re-pin is verifiable.
 - **`README.md` carries two shared-rule violations** (§1): a named competitor, and the
@@ -629,7 +640,8 @@ Two smaller findings from the same run, neither changed:
 ## 5. Runtime verification, executed 2026-08-25
 
 The half of the brief that could not run when this document was first written. Executed
-against `main` at `aea3168`, tagged `v0.1.0`.
+against `main` at `aea3168`, the commit `v0.1.0` is to be moved to (§0.2; the remote tag
+still points elsewhere).
 
 **Stack.** Postgres 16 and Redis 7 as containers, pulled through `mirror.gcr.io` because
 Docker Hub's blob CDN is still denied by egress policy. Migrations applied to version 11.
@@ -723,7 +735,8 @@ So the zero is a measurement, not an absence of measurement.
 
 It establishes that on this stack, for this request, the key reached no persisted surface
 and no log. It does not establish anything about the streaming path, about a successful
-request that reaches a provider, or about the other five demos, none of which were run.
+request that reaches a provider, or about the six demos, none of which had been run at the
+time this section was written.
 
 Both were subsequently run. See §6.
 
@@ -732,7 +745,7 @@ Both were subsequently run. See §6.
 ## 6. Runtime verification, part two, executed 2026-08-25
 
 The two items §5.4 left outstanding: the fail-closed Redis test, and the six demos. Both
-were executed. Same commit as §5, `main` at `aea3168`, tagged `v0.1.0`.
+were executed. Same commit as §5, `main` at `aea3168`.
 
 ### 6.0 Deviations, disclosed
 
