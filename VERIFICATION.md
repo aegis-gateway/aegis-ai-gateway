@@ -672,6 +672,11 @@ cannot ship, and under rule 9 the fix is not to soften the wording. Two ways to 
 2. **Decide the sentence should say something narrower** that this run does support. That
    is a positioning change and therefore a human decision, not a copy edit.
 
+**Option 1, by decision of the author.** The run is a human action, because it needs a
+provider credential and egress this environment does not have. What to run, what to send
+back, and the two results that will look like failures and are not, are in
+[`docs/evidence/demo-run-checklist.md`](docs/evidence/demo-run-checklist.md).
+
 Option 1 is one run away and is the only one that keeps the claim.
 
 Two smaller findings from the same run, neither changed:
