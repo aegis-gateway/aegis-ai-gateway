@@ -32,10 +32,8 @@ func TestEventSerialization(t *testing.T) {
 		Method:         "POST",
 		StatusCode:     401,
 		ErrorMessage:   "invalid api key",
-		Metadata: map[string]interface{}{
-			"api_key_prefix": "sk-test...",
-			"reason":         "key not found",
-		},
+		APIKeyPrefix:   strPtr("sk-test..."),
+		Reason:         strPtr("key not found"),
 	}
 
 	if event.EventType != EventAuthFailure {

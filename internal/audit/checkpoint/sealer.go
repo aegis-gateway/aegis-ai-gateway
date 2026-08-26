@@ -183,10 +183,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 
 	// Load up to BatchSize eligible events.
 	rows, err := conn.Query(ctx, `
-		SELECT id, request_id, timestamp, event_type,
-		       organization_id, team_id, user_id, api_key_id,
-		       ip_address, user_agent, endpoint, method,
-		       status_code, error_message, metadata
+		SELECT `+EventColumns+`
 		FROM audit_events
 		WHERE id > $1 AND timestamp < $2
 		ORDER BY id ASC
@@ -291,7 +288,11 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	}
 
 	// Compute checkpoint hash per docs/AUDIT-INTEGRITY.md §3.
-	cpHash, err := computeCheckpointHash(merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, 1, sealedAt)
+	// The version hashed and the version stored must be the same number. They
+	// were both the literal 1 before migration 013; they are both this constant
+	// now, so they cannot drift apart in a later edit.
+	cpHash, err := computeCheckpointHash(merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
+		controlplanev1.HashSchemaVersion2, sealedAt)
 	if err != nil {
 		return false, fmt.Errorf("seal: compute checkpoint hash: %w", err)
 	}
@@ -316,11 +317,12 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		     prev_checkpoint_id, prev_checkpoint_hash, checkpoint_hash,
 		     hash_schema_version, sealed_at, sealer_version, canonicalization_spec,
 		     covered_from, covered_to, covered_range_source)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,'rfc8785-v1',$10,$11,'sealed')
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$12,$8,$9,'rfc8785-v1',$10,$11,'sealed')
 	`, rangeStart, rangeEnd, eventCount, merkleRoot,
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,
 		coveredFrom, coveredTo,
+		controlplanev1.HashSchemaVersion2,
 	)
 	if err != nil {
 		return false, fmt.Errorf("seal: insert checkpoint: %w", err)
@@ -380,16 +382,17 @@ func scanEventRows(rows pgx.Rows) ([]AuditEventRow, error) {
 	var out []AuditEventRow
 	for rows.Next() {
 		var r AuditEventRow
-		var meta []byte
 		if err := rows.Scan(
 			&r.ID, &r.RequestID, &r.Timestamp, &r.EventType,
 			&r.OrganizationID, &r.TeamID, &r.UserID, &r.APIKeyID,
 			&r.IPAddress, &r.UserAgent, &r.Endpoint, &r.Method,
-			&r.StatusCode, &r.ErrorMessage, &meta,
+			&r.StatusCode, &r.ErrorMessage,
+			&r.APIKeyPrefix, &r.LimitDimension, &r.LimitValue,
+			&r.SpentCents, &r.LimitCents, &r.FilterType, &r.Reason,
+			&r.Provider, &r.Model, &r.Mode, &r.Operation, &r.ErrorDetail,
 		); err != nil {
 			return nil, err
 		}
-		r.Metadata = meta
 		out = append(out, r)
 	}
 	return out, rows.Err()

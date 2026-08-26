@@ -15,7 +15,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"unicode/utf8"
 )
 
@@ -42,14 +41,21 @@ const (
 	// user agents run past 200 characters.
 	MaxUserAgent = 256
 
-	// MaxMetadataBytes bounds the serialized JSONB, matching the
-	// audit_events_metadata_bounded CHECK constraint.
-	MaxMetadataBytes = 4096
-
-	// MaxMetadataValue bounds any single string value inside metadata, so the
-	// serialized whole stays under MaxMetadataBytes without the marshal step
-	// having to guess which key was the large one.
-	MaxMetadataValue = 512
+	// The detail columns migration 013 promoted out of the metadata JSONB.
+	//
+	// MaxReason is the widest at 512. It carries the joined policy deny message,
+	// which Rego builds with concat("; ", deny), so it grows with the number of
+	// rules that fire: the shipped RESTRICTED rule alone produces 119 characters
+	// and two rules together produce 201.
+	MaxAPIKeyPrefix   = 32
+	MaxLimitDimension = 32
+	MaxFilterType     = 32
+	MaxReason         = 512
+	MaxProvider       = 64
+	MaxModel          = 128
+	MaxMode           = 32
+	MaxOperation      = 64
+	MaxErrorDetail    = 512
 )
 
 // clip truncates s to at most max runes, never splitting a UTF-8 sequence.
@@ -75,27 +81,15 @@ func clip(s string, max int) string {
 	return string([]rune(s)[:keep]) + ellipsis
 }
 
-// clipMetadata bounds every string value in a metadata map, then bounds the
-// serialized whole. Non-string values are left alone: the six Log* methods only
-// ever put strings and integers in here, and an integer cannot run long.
+// clipPtr applies clip through a pointer, leaving nil as nil.
 //
-// If the map still serializes past MaxMetadataBytes, the metadata is replaced
-// with a marker rather than dropping the event. An audit row with a note saying
-// its metadata was too large is worth more than no audit row.
-func clipMetadata(m map[string]interface{}) map[string]interface{} {
-	if len(m) == 0 {
-		return m
+// nil and the empty string are different facts in these columns: nil means the
+// event does not carry that detail, and "" would mean it carries an empty one.
+// Clipping must not turn the first into the second.
+func clipPtr(s *string, max int) *string {
+	if s == nil {
+		return nil
 	}
-	out := make(map[string]interface{}, len(m))
-	for k, v := range m {
-		if s, ok := v.(string); ok {
-			out[k] = clip(s, MaxMetadataValue)
-			continue
-		}
-		out[k] = v
-	}
-	if encoded, err := json.Marshal(out); err == nil && len(encoded) <= MaxMetadataBytes {
-		return out
-	}
-	return map[string]interface{}{"metadata_omitted": "exceeded size limit"}
+	out := clip(*s, max)
+	return &out
 }

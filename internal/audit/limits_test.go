@@ -15,7 +15,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,6 +37,17 @@ func TestSchemaLimitsMatchMigration(t *testing.T) {
 
 	// ALTER TABLE audit_events ALTER COLUMN <name> TYPE VARCHAR(<n>)
 	alter := regexp.MustCompile(`(?is)ALTER\s+TABLE\s+audit_events\s+ALTER\s+COLUMN\s+(\w+)\s+TYPE\s+VARCHAR\((\d+)\)`)
+	// ADD COLUMN <name> VARCHAR(<n>), from migration 013.
+	addRe := regexp.MustCompile(`(?is)ADD\s+COLUMN\s+(\w+)\s+VARCHAR\((\d+)\)`)
+	added := map[string]int{}
+	for _, m := range addRe.FindAllStringSubmatch(sql, -1) {
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			t.Fatalf("unparseable width for %s: %v", m[1], err)
+		}
+		added[strings.ToLower(m[1])] = n
+	}
+
 	found := map[string]int{}
 	for _, m := range alter.FindAllStringSubmatch(sql, -1) {
 		n, err := strconv.Atoi(m[2])
@@ -64,18 +74,32 @@ func TestSchemaLimitsMatchMigration(t *testing.T) {
 		}
 	}
 
-	// The metadata CHECK must agree with MaxMetadataBytes for the same reason.
-	check := regexp.MustCompile(`(?is)pg_column_size\(metadata\)\s*<=\s*(\d+)`)
-	m := check.FindStringSubmatch(sql)
-	if m == nil {
-		t.Fatalf("no pg_column_size(metadata) CHECK found in migrations; limits.go declares MaxMetadataBytes=%d", MaxMetadataBytes)
+	// The columns migration 013 promoted must match too, for the same reason.
+	for col, limit := range map[string]int{
+		"api_key_prefix":  MaxAPIKeyPrefix,
+		"limit_dimension": MaxLimitDimension,
+		"filter_type":     MaxFilterType,
+		"reason":          MaxReason,
+		"provider":        MaxProvider,
+		"model":           MaxModel,
+		"mode":            MaxMode,
+		"operation":       MaxOperation,
+		"error_detail":    MaxErrorDetail,
+	} {
+		got, ok := added[col]
+		if !ok {
+			t.Errorf("no migration adds audit_events.%s; limits.go declares %d", col, limit)
+			continue
+		}
+		if got != limit {
+			t.Errorf("audit_events.%s: migration says VARCHAR(%d), limits.go says %d", col, got, limit)
+		}
 	}
-	got, err := strconv.Atoi(m[1])
-	if err != nil {
-		t.Fatalf("unparseable metadata bound: %v", err)
-	}
-	if got != MaxMetadataBytes {
-		t.Errorf("metadata CHECK says %d bytes, limits.go says %d", got, MaxMetadataBytes)
+
+	// metadata must be gone: it is the column this whole change removes, and a
+	// migration that quietly left it would defeat the point.
+	if regexp.MustCompile(`(?i)DROP\s+COLUMN\s+metadata`).FindString(sql) == "" {
+		t.Error("no migration drops audit_events.metadata")
 	}
 }
 
@@ -104,27 +128,49 @@ func TestClipNeverExceedsLimit(t *testing.T) {
 	}
 }
 
-// TestClipMetadataStaysUnderByteLimit covers the JSONB CHECK. Whatever goes in,
-// the serialized result must fit, and it must never come back nil: an audit row
-// noting that metadata was dropped beats no audit row.
-func TestClipMetadataStaysUnderByteLimit(t *testing.T) {
-	cases := []map[string]interface{}{
-		nil,
-		{},
-		{"filter_type": "secrets", "reason": "Request blocked: detected 1 secret(s) of type: AWS Access Key"},
-		{"error": strings.Repeat("x", 100_000)},
-		{"reason": strings.Repeat("😀", 50_000), "operation": "rate_limit_check"},
-		{"limit": 60, "dimension": "rpm"},
+// TestClipPtrPreservesNil covers the distinction the detail columns depend on:
+// nil means the event carries no such detail, "" would mean it carries an empty
+// one, and clipping must not turn the first into the second.
+func TestClipPtrPreservesNil(t *testing.T) {
+	if clipPtr(nil, MaxReason) != nil {
+		t.Error("clipPtr(nil) must stay nil")
 	}
-	for i, in := range cases {
-		out := clipMetadata(in)
-		encoded, err := json.Marshal(out)
-		if err != nil {
-			t.Fatalf("case %d: marshal: %v", i, err)
+	empty := ""
+	if got := clipPtr(&empty, MaxReason); got == nil || *got != "" {
+		t.Error("clipPtr of an empty string must stay an empty string, not nil")
+	}
+	long := strings.Repeat("x", 5000)
+	got := clipPtr(&long, MaxReason)
+	if got == nil {
+		t.Fatal("clipPtr of a long string must not return nil")
+	}
+	if utf8.RuneCountInString(*got) > MaxReason {
+		t.Errorf("clipPtr returned %d runes, limit is %d", utf8.RuneCountInString(*got), MaxReason)
+	}
+}
+
+// TestPolicyDenyReasonFits pins the width that decided MaxReason. Rego joins the
+// deny set with concat("; ", deny), so the string grows with the number of rules
+// that fire.
+func TestPolicyDenyReasonFits(t *testing.T) {
+	one := `Request denied by policy: RESTRICTED data cannot be routed through alias "aegis-fast": it is not cleared for RESTRICTED`
+	two := one + "; restricted term detected: project ironwood; financial topic restricted to finance team"
+	for _, s := range []string{one, two} {
+		if utf8.RuneCountInString(s) > MaxReason {
+			t.Errorf("a real deny reason is %d characters, MaxReason is %d", utf8.RuneCountInString(s), MaxReason)
 		}
-		if len(encoded) > MaxMetadataBytes {
-			t.Errorf("case %d: serialized metadata is %d bytes, limit is %d", i, len(encoded), MaxMetadataBytes)
-		}
+	}
+	// Why 512 and not the 128 the original plan proposed. A single shipped rule
+	// already fills most of 128, and two rules exceed it outright, so 128 would
+	// have started rejecting audit writes the first time two policies denied the
+	// same request.
+	if n := utf8.RuneCountInString(one); n > 128 {
+		t.Errorf("fixture drifted: expected the single-rule reason to fit in 128 with little room, got %d", n)
+	} else if 128-n > 32 {
+		t.Errorf("fixture drifted: the single-rule reason was 119 characters, leaving 9 of headroom in 128; now it leaves %d", 128-n)
+	}
+	if utf8.RuneCountInString(two) <= 128 {
+		t.Error("fixture is wrong: the two-rule reason is the case that rules out varchar(128)")
 	}
 }
 

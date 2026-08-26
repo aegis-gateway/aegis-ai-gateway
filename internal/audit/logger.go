@@ -16,7 +16,6 @@ package audit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -54,8 +53,32 @@ type Event struct {
 	Method         string
 	StatusCode     int
 	ErrorMessage   string
-	Metadata       map[string]interface{}
+
+	// Detail columns, promoted out of the metadata JSONB by migration 013.
+	// Pointers because absent and zero are different facts: an event that
+	// carries no limit is not an event whose limit is zero.
+	APIKeyPrefix   *string
+	LimitDimension *string
+	LimitValue     *int64
+	SpentCents     *int64
+	LimitCents     *int64
+	FilterType     *string
+	Reason         *string
+	Provider       *string
+	Model          *string
+	Mode           *string
+	Operation      *string
+	ErrorDetail    *string
 }
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func i64Ptr(i int64) *int64 { return &i }
 
 // Logger writes audit events to the database.
 type Logger struct {
@@ -88,26 +111,30 @@ func (l *Logger) writeEvent(event Event) {
 	event.IPAddress = clip(event.IPAddress, MaxIPAddress)
 	event.ErrorMessage = clip(event.ErrorMessage, MaxErrorMessage)
 	event.UserAgent = clip(event.UserAgent, MaxUserAgent)
-	event.Metadata = clipMetadata(event.Metadata)
-
-	// Serialize metadata to JSONB
-	metadataJSON, err := json.Marshal(event.Metadata)
-	if err != nil {
-		slog.Error("failed to marshal audit metadata", "error", err, "request_id", event.RequestID)
-		metadataJSON = []byte("{}")
-	}
+	event.APIKeyPrefix = clipPtr(event.APIKeyPrefix, MaxAPIKeyPrefix)
+	event.LimitDimension = clipPtr(event.LimitDimension, MaxLimitDimension)
+	event.FilterType = clipPtr(event.FilterType, MaxFilterType)
+	event.Reason = clipPtr(event.Reason, MaxReason)
+	event.Provider = clipPtr(event.Provider, MaxProvider)
+	event.Model = clipPtr(event.Model, MaxModel)
+	event.Mode = clipPtr(event.Mode, MaxMode)
+	event.Operation = clipPtr(event.Operation, MaxOperation)
+	event.ErrorDetail = clipPtr(event.ErrorDetail, MaxErrorDetail)
 
 	query := `
 		INSERT INTO audit_events (
 			request_id, timestamp, event_type, organization_id, team_id, user_id,
 			api_key_id, ip_address, user_agent, endpoint, method, status_code,
-			error_message, metadata
+			error_message,
+			api_key_prefix, limit_dimension, limit_value, spent_cents, limit_cents,
+			filter_type, reason, provider, model, mode, operation, error_detail
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			$14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
 		)
 	`
 
-	_, err = l.db.Exec(ctx, query,
+	_, err := l.db.Exec(ctx, query,
 		event.RequestID,
 		event.Timestamp,
 		event.EventType,
@@ -121,7 +148,18 @@ func (l *Logger) writeEvent(event Event) {
 		event.Method,
 		event.StatusCode,
 		event.ErrorMessage,
-		metadataJSON,
+		event.APIKeyPrefix,
+		event.LimitDimension,
+		event.LimitValue,
+		event.SpentCents,
+		event.LimitCents,
+		event.FilterType,
+		event.Reason,
+		event.Provider,
+		event.Model,
+		event.Mode,
+		event.Operation,
+		event.ErrorDetail,
 	)
 
 	if err != nil {
@@ -156,9 +194,7 @@ func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string)
 		Method:         "POST",
 		StatusCode:     401,
 		ErrorMessage:   reason,
-		Metadata: map[string]interface{}{
-			"api_key_prefix": truncateAPIKey(apiKey),
-		},
+		APIKeyPrefix:   strPtr(truncateAPIKey(apiKey)),
 	})
 }
 
@@ -174,10 +210,8 @@ func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimensio
 		IPAddress:      ip,
 		StatusCode:     429,
 		ErrorMessage:   fmt.Sprintf("Rate limit exceeded: %s", dimension),
-		Metadata: map[string]interface{}{
-			"dimension": dimension,
-			"limit":     limit,
-		},
+		LimitDimension: strPtr(dimension),
+		LimitValue:     i64Ptr(limit),
 	})
 }
 
@@ -193,10 +227,8 @@ func (l *Logger) LogBudgetViolation(requestID, orgID, teamID, keyID string, spen
 		IPAddress:      ip,
 		StatusCode:     402,
 		ErrorMessage:   "Daily budget exceeded",
-		Metadata: map[string]interface{}{
-			"spent_cents": spentCents,
-			"limit_cents": limitCents,
-		},
+		SpentCents:     i64Ptr(spentCents),
+		LimitCents:     i64Ptr(limitCents),
 	})
 }
 
@@ -212,10 +244,8 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 		IPAddress:      ip,
 		StatusCode:     451,
 		ErrorMessage:   fmt.Sprintf("Content blocked by %s filter", filterType),
-		Metadata: map[string]interface{}{
-			"filter_type": filterType,
-			"reason":      reason,
-		},
+		FilterType:     strPtr(filterType),
+		Reason:         strPtr(reason),
 	})
 }
 
@@ -243,11 +273,9 @@ func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, mod
 		IPAddress:      ip,
 		StatusCode:     status,
 		ErrorMessage:   fmt.Sprintf("no pricing entry for %s/%s", provider, model),
-		Metadata: map[string]interface{}{
-			"provider": provider,
-			"model":    model,
-			"mode":     mode,
-		},
+		Provider:       strPtr(provider),
+		Model:          strPtr(model),
+		Mode:           strPtr(mode),
 	})
 }
 
@@ -262,10 +290,8 @@ func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation stri
 		IPAddress:      ip,
 		StatusCode:     503,
 		ErrorMessage:   "Redis unavailable - failed closed",
-		Metadata: map[string]interface{}{
-			"operation": operation,
-			"error":     err.Error(),
-		},
+		Operation:      strPtr(operation),
+		ErrorDetail:    strPtr(err.Error()),
 	})
 }
 

@@ -561,7 +561,7 @@ exercised, but they do not *confirm* the page's wording, because both things tha
 them are missing inputs rather than defects (§6.2). That leaves one claim at
 **unverifiable**, carried below as §4.5.
 
-### 4.2 The zero-retention guarantee is partly structural, **STEPS 1, 3 AND 4 DONE**
+### 4.2 The zero-retention guarantee, **ALL FOUR STEPS DONE**
 
 The copy now states what is true, so this no longer blocks publication. The schema work
 agreed for v0.1.0, in the order decided:
@@ -619,17 +619,55 @@ The down migration deliberately does not narrow `ip_address` back. Reinstating a
 discards audit rows is a regression rather than a rollback, and it is one a rollback cannot
 perform safely: the first attempt failed partway and left `schema_migrations` dirty at 11.
 
-**Step 2 is not done,** for the reasons below.
+**Step 2 shipped as migration `013_promote_audit_metadata`,** taking the third of the
+options below by decision of the author: expand and contract in one release, behind a
+guard. The reasoning that produced those options is left in place below, because the
+constraint it describes is what the guard exists to enforce.
+
+`metadata` is gone. The twelve keys are twelve typed, bounded columns, and no column on
+`audit_events` is untyped or unbounded any more. Events seal at
+`hash_schema_version=2`, whose field set is defined in `docs/AUDIT-INTEGRITY.md` §5.1.
+
+Verified against PostgreSQL 16, each point by execution rather than by reading:
+
+| Claim | How it was checked |
+|---|---|
+| The guard refuses | Planted a version-1 checkpoint at schema 12, ran the migration: refused with the intended message |
+| A refusal changes nothing | After the refusal, `audit_events` still had `metadata` and none of the twelve columns |
+| The chain seals at version 2 | Sealed three real auth-failure events, `hash_schema_version` reads 2 |
+| The chain verifies | `verify-chain --full` reports OK |
+| The promoted columns are covered by the hash | Tampering with `api_key_prefix` produces a Merkle root mismatch; restoring it returns to OK |
+| A version it cannot recompute is not called tampering | Forced a checkpoint to version 1: reported as attested-but-unverifiable, alongside the expected checkpoint-hash mismatch, because the version is bound into the checkpoint hash |
+| The down migration refuses in reverse | Refused while a version-2 checkpoint existed |
+| The round trip is faithful | Down rebuilt `metadata` from the columns with `jsonb_strip_nulls`, up restored the columns, and a full down-to-zero and back up ran clean |
+
+Coverage is equivalent to version 1, not stronger: version 1 hashed the JSONB object, so
+its contents were already attested. What changed is that the data is typed and bounded, not
+that more of it is signed. Saying otherwise would be the kind of upgrade-flavoured claim
+this document exists to catch.
+
+**One correction to the plan, found by running it.** The refusal message first told
+operators to clear the dirty flag with `migrate force 12`. `cmd/migrate` has no `force`
+subcommand, so that instruction would have failed for the one person following it under
+pressure. It now names the `UPDATE schema_migrations` that this CLI actually needs, and
+says plainly that the dirty flag records a migration that did not run rather than one that
+ran halfway.
+
+The options considered, and why the third:
 
 #### 4.2.1 Two corrections to step 2, and what it actually costs
 
-**Correction 1: `metadata` does not carry two keys, it carries eleven.** Step 2 above said
+**Correction 1: `metadata` does not carry two keys, it carries twelve.** Step 2 above said
 `{"filter_type","reason"}` from `LogFilterBlock`. Six `Log*` methods in
 [`logger.go:145-260`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go#L145-L260)
 write six different shapes: `api_key_prefix`; `dimension` and `limit`; `spent_cents` and
 `limit_cents`; `filter_type` and `reason`; `provider`, `model` and `mode`; `operation` and
-`error`. All eleven are short and known, so the direction of step 2 survives. Its size
-does not: it is eleven nullable columns, not two.
+`error`. All twelve are short and known, so the direction of step 2 survives. Its size
+does not: it is twelve nullable columns, not two.
+
+(This paragraph first said eleven. That was a second miscount of the same list, by eye,
+when `grep -oE '"[a-z_]+":' | sort -u` was available and settles it in one line. The
+number is twelve.)
 
 **Correction 2: `metadata` is an input to the audit hash chain, so step 2 is not a
 migration.** It is one of the fifteen fields in the leaf hash at `hash_schema_version=1`

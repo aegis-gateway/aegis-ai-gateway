@@ -229,9 +229,17 @@ proof that no payload can ever be stored, and it should not be described as one.
 that no payload *is* stored remains the behavioural one, tested by
 `TestNoPayload_CanaryEndToEnd` and by the sweeps in `VERIFICATION.md` §5.3 and §6.3.
 
-**The part that is still not structural at all** is `metadata`. It stays a JSONB column
-because it is one of the fifteen fields the audit leaf hash covers at
-`hash_schema_version=1`, and dropping it would leave every sealed version-1 checkpoint
-unverifiable: a version-1 leaf cannot be recomputed once the column it hashes is gone.
-Replacing it with typed columns is a separate versioned change, described in
-`VERIFICATION.md` §4.2.1. Until then the 4096-byte constraint is the only thing bounding it.
+**`metadata` is now gone.** Migration 013 replaced it with twelve typed, bounded columns
+and cut `hash_schema_version=2`. No column on `audit_events` is untyped or unbounded any
+more, so the paragraph above now describes every column on the table rather than most of
+them.
+
+That change was possible in one release only because the migration refuses to run in a
+database holding version-1 checkpoints: a version-1 leaf hash cannot be recomputed once
+`metadata` is gone, so dropping it under an existing chain would have made every sealed
+checkpoint permanently unverifiable. A database that has run 013 provably has no
+version-1 chain, which is what lets the verifier compute one field set rather than two.
+
+The integrity coverage is unchanged by this, and it is worth being precise about that.
+Version 1 hashed the JSONB object, so its contents were already attested. Version 2 hashes
+the same data as separate fields. The gain is typing and bounding, not more signed data.

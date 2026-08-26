@@ -254,10 +254,7 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 
 		// Load and re-hash events.
 		rows, err := conn.Query(ctx, `
-			SELECT id, request_id, timestamp, event_type,
-			       organization_id, team_id, user_id, api_key_id,
-			       ip_address, user_agent, endpoint, method,
-			       status_code, error_message, metadata
+			SELECT `+EventColumns+`
 			FROM audit_events
 			WHERE id >= $1 AND id <= $2
 			ORDER BY id ASC
@@ -274,6 +271,20 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 			result.Anomalies = append(result.Anomalies,
 				fmt.Sprintf("checkpoint %d: expected %d events, found %d in range %d–%d",
 					cp.ID, cp.EventCount, len(events), cp.RangeStart, cp.RangeEnd))
+			continue
+		}
+
+		// This binary can only recompute leaves at hash_schema_version=2, the
+		// field set migration 013 established. A version-1 checkpoint cannot be
+		// reached from a schema that has run 013, because 013 refuses to run
+		// while one exists, so this is a can't-happen. Report it as unverifiable
+		// anyway: the failure mode worth designing against is not the impossible
+		// state, it is silently hashing the wrong field set and calling the
+		// resulting mismatch tampering.
+		if cp.HashSchemaVersion != controlplanev1.HashSchemaVersion2 {
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes version %d). Not a chain break: this checkpoint is attested but unverifiable here.",
+					cp.ID, cp.HashSchemaVersion, controlplanev1.HashSchemaVersion2))
 			continue
 		}
 
@@ -322,10 +333,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 
 	// Load all events in the checkpoint range.
 	rows, err := conn.Query(ctx, `
-		SELECT id, request_id, timestamp, event_type,
-		       organization_id, team_id, user_id, api_key_id,
-		       ip_address, user_agent, endpoint, method,
-		       status_code, error_message, metadata
+		SELECT `+EventColumns+`
 		FROM audit_events
 		WHERE id >= $1 AND id <= $2
 		ORDER BY id ASC

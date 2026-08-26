@@ -81,8 +81,8 @@ func insertTestEvent(t *testing.T, db *pgxpool.Pool, ts time.Time) int64 {
 	t.Helper()
 	var id int64
 	err := db.QueryRow(context.Background(), `
-		INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-		VALUES ($1, $2, 'test_event', '{}')
+		INSERT INTO audit_events (request_id, timestamp, event_type)
+		VALUES ($1, $2, 'test_event')
 		RETURNING id
 	`, "req-test-"+time.Now().Format(time.RFC3339Nano), ts).Scan(&id)
 	if err != nil {
