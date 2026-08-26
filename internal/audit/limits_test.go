@@ -231,3 +231,48 @@ func readMigrations(t *testing.T) string {
 	fmt.Fprintf(os.Stderr, "read %d up migrations\n", ups)
 	return b.String()
 }
+
+// TestClipReturnsValidUTF8 covers the substitution PostgreSQL forces on us.
+//
+// An invalid byte sequence is rejected outright ("invalid byte sequence for
+// encoding UTF8"), so a value carrying one costs the audit row. Before the
+// detail columns existed these values went through json.Marshal on their way
+// into the JSONB, which substituted U+FFFD; promoting them to columns removed
+// that step, so clip has to do it.
+func TestClipReturnsValidUTF8(t *testing.T) {
+	cases := []string{
+		"sk-\xc3",                       // truncated two-byte sequence
+		"\xff\xfe\xfd",                  // never valid
+		strings.Repeat("\xe4\xbd", 500), // truncated three-byte sequences, over the limit
+		"valid éé text",
+	}
+	for _, in := range cases {
+		for _, limit := range []int{1, 8, MaxUserAgent} {
+			out := clip(in, limit)
+			if !utf8.ValidString(out) {
+				t.Errorf("clip(%q, %d) returned invalid UTF-8: %q", in, limit, out)
+			}
+			if utf8.RuneCountInString(out) > limit {
+				t.Errorf("clip(%q, %d) returned %d runes", in, limit, utf8.RuneCountInString(out))
+			}
+		}
+	}
+}
+
+// TestTruncateAPIKeyIsRuneSafe pins the path that made this matter. The "key" on
+// an auth failure is whatever the caller sent, so slicing it at a byte offset
+// can split a character and produce a value the database refuses, costing the
+// audit row that records the failure.
+func TestTruncateAPIKeyIsRuneSafe(t *testing.T) {
+	for _, in := range []string{
+		"sk-ééééékey",
+		"\U0001F600\U0001F600\U0001F600\U0001F600\U0001F600\U0001F600",
+		"sk-ascii-key-1234567890",
+		"short",
+	} {
+		got := truncateAPIKey(in)
+		if !utf8.ValidString(got) {
+			t.Errorf("truncateAPIKey(%q) produced invalid UTF-8: %q", in, got)
+		}
+	}
+}

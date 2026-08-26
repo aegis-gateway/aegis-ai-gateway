@@ -84,11 +84,15 @@ for doc in "${docs[@]}"; do
     [ -n "$pair" ] || continue
     label=${pair%%$'\t'*}
     anchor=${pair#*$'\t'}
+    # Compare both endpoints, not just the first. A label reading file.go:10-20
+    # against an anchor of #L10-L30 is exactly the stale-label case this check
+    # exists to catch, and comparing only the start would wave it through.
     lline=${label#*:}
     lstart=${lline%%-*}
-    astart=${anchor%%-*}
-    astart=${astart#L}
-    if [ "$lstart" != "$astart" ]; then
+    lend=${lline#*-}                 # equals lstart when the label is one line
+    astart=${anchor%%-*}; astart=${astart#L}
+    aend=${anchor#*-}; aend=${aend#L} # equals astart when the anchor is one line
+    if [ "$lstart" != "$astart" ] || [ "$lend" != "$aend" ]; then
       echo "::error file=$doc::citation label \"$label\" disagrees with its own link anchor (#$anchor)"
       fail=1
     fi

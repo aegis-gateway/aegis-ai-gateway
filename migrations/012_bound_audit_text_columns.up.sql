@@ -54,7 +54,8 @@ ALTER TABLE audit_events ALTER COLUMN ip_address TYPE VARCHAR(64);
 -- reader can see it rather than in prose where they have to trust it. It does
 -- not make storing a prompt impossible, because 128-character prompts exist.
 -- ---------------------------------------------------------------------------
-ALTER TABLE audit_events ALTER COLUMN error_message TYPE VARCHAR(128);
+ALTER TABLE audit_events ALTER COLUMN error_message TYPE VARCHAR(128)
+    USING left(error_message, 128);
 
 -- ---------------------------------------------------------------------------
 -- 4. audit_events.user_agent, TEXT -> VARCHAR(256)
@@ -65,8 +66,24 @@ ALTER TABLE audit_events ALTER COLUMN error_message TYPE VARCHAR(128);
 -- client trips is not a safety property: it is the audit-suppression bug in
 -- section 2 with a different column name. Clipped in Go before the insert so
 -- that a longer header is recorded truncated rather than costing the row.
+--
+-- USING left(...) is required, not decorative. This column was unbounded and
+-- caller-controlled until now, so an upgrade from schema 11 can meet a stored
+-- value longer than the new width, and PostgreSQL raises an error on a narrowing
+-- ALTER rather than truncating. Without the USING clause one historical row is
+-- enough to fail migration 012, leave schema_migrations dirty at 12, and block
+-- migration 013 and the new binary from ever being deployed. Reproduced on
+-- PostgreSQL 16 against a schema-11 database holding a 900-character user_agent:
+-- the migration failed and left the version dirty.
+--
+-- Truncating history is the lesser loss here. The alternative is an upgrade an
+-- operator cannot complete, and the rows being shortened are user-agent strings
+-- rather than anything the audit trail attests to. error_message gets the same
+-- treatment for the same reason, though every value it holds is
+-- gateway-generated and short.
 -- ---------------------------------------------------------------------------
-ALTER TABLE audit_events ALTER COLUMN user_agent TYPE VARCHAR(256);
+ALTER TABLE audit_events ALTER COLUMN user_agent TYPE VARCHAR(256)
+    USING left(user_agent, 256);
 
 -- ---------------------------------------------------------------------------
 -- 5. Backstop on audit_events.metadata

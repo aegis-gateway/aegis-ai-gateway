@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -297,8 +298,12 @@ func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation stri
 
 // truncateAPIKey returns the first 8 characters of an API key for logging.
 func truncateAPIKey(apiKey string) string {
-	if len(apiKey) > 8 {
-		return apiKey[:8] + "..."
+	// Count runes, not bytes. A key is normally ASCII, but this runs on the
+	// unauthenticated auth-failure path where the "key" is whatever the caller
+	// sent, and slicing a multibyte character in half produces invalid UTF-8 that
+	// PostgreSQL refuses, costing the audit row that records the failure.
+	if utf8.RuneCountInString(apiKey) > 8 {
+		return string([]rune(apiKey)[:8]) + "..."
 	}
 	return apiKey
 }

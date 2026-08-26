@@ -15,6 +15,7 @@
 package audit
 
 import (
+	"strings"
 	"unicode/utf8"
 )
 
@@ -58,15 +59,28 @@ const (
 	MaxErrorDetail    = 512
 )
 
-// clip truncates s to at most max runes, never splitting a UTF-8 sequence.
+// clip truncates s to at most max runes, never splitting a UTF-8 sequence, and
+// returns valid UTF-8 whatever it was given.
 //
 // It counts runes rather than bytes because varchar(n) counts characters. A
 // clipped value is marked with a trailing ellipsis so a reader can tell a
 // truncated record from a short one, and the marker is included in the budget
 // rather than added past it.
+//
+// The validity pass is not belt and braces. PostgreSQL rejects an invalid byte
+// sequence outright ("invalid byte sequence for encoding UTF8"), and these
+// columns are fed from sources that can carry arbitrary bytes: the User-Agent
+// header, an API key prefix cut from a caller-supplied token, an error string.
+// Before migration 013 those values went through json.Marshal on their way into
+// the JSONB, which substituted U+FFFD; promoting them to columns removed that
+// step, so the substitution has to happen here or the insert fails and the audit
+// row is lost. Reproduced on PostgreSQL 16 with a single trailing 0xc3.
 func clip(s string, max int) string {
 	if max <= 0 {
 		return ""
+	}
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "\uFFFD")
 	}
 	if utf8.RuneCountInString(s) <= max {
 		return s
