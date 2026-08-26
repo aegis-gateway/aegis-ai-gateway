@@ -332,3 +332,65 @@ func TestMigrationGuardsArePresent(t *testing.T) {
 		}
 	}
 }
+
+// TestMigration012WidthsAgreeThroughout reconciles every copy of the bounded
+// widths inside migration 012.
+//
+// Each bounded column states its width in three places in that file: the
+// ALTER's VARCHAR(n), the left(col, n) in the same statement's USING clause, and
+// the char_length(col) > n threshold in the section-0 guard. Add the Go constant
+// and that is four copies of one number, and the existing tests reconcile only
+// the first and the last.
+//
+// The dangerous drift is the guard. If a width is tightened but the threshold is
+// left higher, a sealed row between the two numbers passes the guard, USING
+// left() rewrites it, and because user_agent and error_message are both in the
+// leaf hash, verify-chain reports the result as tampering. That is the exact
+// damage section 0 exists to prevent, reintroduced by an inconsistent edit.
+//
+// The left() argument drifting is less dangerous, because a mismatch there makes
+// PostgreSQL fail the ALTER loudly, but it is the same class and costs nothing to
+// pin here.
+func TestMigration012WidthsAgreeThroughout(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "migrations", "012_bound_audit_text_columns.up.sql"))
+	if err != nil {
+		t.Fatalf("read migration 012: %v", err)
+	}
+	sql := string(data)
+
+	for _, col := range []struct {
+		name string
+		want int
+	}{
+		{"user_agent", MaxUserAgent},
+		{"error_message", MaxErrorMessage},
+	} {
+		alterRe := regexp.MustCompile(`(?is)ALTER\s+COLUMN\s+` + col.name + `\s+TYPE\s+VARCHAR\((\d+)\)`)
+		usingRe := regexp.MustCompile(`(?is)left\(\s*` + col.name + `\s*,\s*(\d+)\s*\)`)
+		guardRe := regexp.MustCompile(`(?is)char_length\(\s*\w+\.` + col.name + `\s*\)\s*>\s*(\d+)`)
+
+		for _, site := range []struct {
+			what string
+			re   *regexp.Regexp
+		}{
+			{"ALTER ... TYPE VARCHAR(n)", alterRe},
+			{"USING left(col, n)", usingRe},
+			{"section-0 guard char_length(col) > n", guardRe},
+		} {
+			m := site.re.FindStringSubmatch(sql)
+			if m == nil {
+				t.Errorf("%s: no %s found in migration 012; limits.go declares %d", col.name, site.what, col.want)
+				continue
+			}
+			got, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Errorf("%s: unparseable width in %s: %v", col.name, site.what, err)
+				continue
+			}
+			if got != col.want {
+				t.Errorf("%s: %s says %d, limits.go says %d. Every copy of this width must agree, and the guard copy is the one whose drift is silent.",
+					col.name, site.what, got, col.want)
+			}
+		}
+	}
+}
