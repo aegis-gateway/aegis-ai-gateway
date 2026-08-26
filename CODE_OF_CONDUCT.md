@@ -20,7 +20,7 @@ We are committed to making participation in this project a welcoming, respectful
 
 ## Enforcement
 
-Instances of unacceptable behavior may be reported to **komlan@atlanticfrontier.com**.
+Instances of unacceptable behavior may be reported to **hello@aegisgateway.ai**.
 All reports will be reviewed confidentially. Maintainers have the right to remove, edit, or reject contributions that violate this code, and to ban contributors whose behavior is harmful.
 
 ## Attribution

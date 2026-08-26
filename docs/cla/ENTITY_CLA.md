@@ -97,7 +97,7 @@ This Agreement is the entire agreement of the parties regarding the assignment o
 
 ## 10. Acceptance
 
-This Agreement becomes effective upon countersignature by both parties. To initiate the Entity CLA process, contact: **komlan@atlanticfrontier.com**
+This Agreement becomes effective upon countersignature by both parties. To initiate the Entity CLA process, contact: **hello@aegisgateway.ai**
 
 ---
 
