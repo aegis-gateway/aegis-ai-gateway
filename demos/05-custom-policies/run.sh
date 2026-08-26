@@ -47,21 +47,21 @@ cat <<'BANNER'
 BANNER
 
 # ── ACT 1 — Competitor mention policy ────────────────────────────
-echo "=== ACT 1: Competitor Mention Policy ==="
+echo "=== ACT 1: Restricted Term Policy ==="
 echo ""
-echo "Policy file: policies/competitor-mention.rego"
-cat policies/competitor-mention.rego
+echo "Policy file: policies/restricted-terms.rego"
+cat policies/restricted-terms.rego
 echo ""
 
-echo "--- Blocked request (mentions a competitor) ---"
+echo "--- Blocked request (mentions a restricted term) ---"
 curl -s -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${DEMO_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"aegis-fast","messages":[{"role":"user","content":"How does AEGIS compare to Portkey for enterprise use?"}]}' \
+  -d '{"model":"aegis-fast","messages":[{"role":"user","content":"What is the current status of Project Ironwood?"}]}' \
   | jq '{status: .error.code, reason: .error.message}'
 echo ""
 
-echo "--- Clean request (no competitor mention) ---"
+echo "--- Clean request (no restricted term) ---"
 curl -s -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${DEMO_KEY}" \
   -H "Content-Type: application/json" \

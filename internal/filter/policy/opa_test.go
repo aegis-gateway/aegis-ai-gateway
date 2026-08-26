@@ -426,20 +426,20 @@ func TestDemoPolicies_CompileTogether(t *testing.T) {
 		t.Error("expected clean request to be allowed")
 	}
 
-	// A competitor mention should be denied.
+	// A restricted term should be denied.
 	allowed, reason, err := e.Evaluate(context.Background(), PolicyInput{
 		User:     PolicyUser{ID: "u1", Org: "org1", Team: "engineering"},
 		Request:  PolicyReq{Model: "gpt-4o", Classification: "INTERNAL"},
-		Messages: []PolicyMessage{{Role: "user", Content: "How does Portkey compare?"}},
+		Messages: []PolicyMessage{{Role: "user", Content: "What is the current status of Project Ironwood?"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if allowed {
-		t.Error("expected competitor mention to be denied")
+		t.Error("expected restricted term to be denied")
 	}
 	if reason == "" {
-		t.Error("expected non-empty reason for competitor denial")
+		t.Error("expected non-empty reason for restricted-term denial")
 	}
 }
 

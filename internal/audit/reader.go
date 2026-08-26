@@ -82,24 +82,41 @@ func (f ReadFilter) limit() int {
 //
 // It mirrors the table and deliberately carries no field that could hold
 // request or response content, because no such column exists to populate one.
-// Metadata is the filter decision detail the gateway writes (filter_type and
-// reason); reason is the filter's own message, which names a pattern and a
-// count and never the matched text.
+//
+// Migration 013 replaced the single `metadata` object with the typed fields
+// below, and this struct followed rather than synthesizing the old shape. A
+// response that still presented a `metadata` object would describe storage that
+// no longer exists, and this type's whole purpose is to mirror the table.
+//
+// Reason is the filter's or policy's own message. It names a pattern, a count or
+// a rule, and never the matched text.
 type EventRow struct {
-	ID             int64          `json:"id"`
-	RequestID      string         `json:"request_id"`
-	Timestamp      time.Time      `json:"timestamp"`
-	EventType      string         `json:"event_type"`
-	OrganizationID *string        `json:"organization_id"`
-	TeamID         *string        `json:"team_id"`
-	UserID         *string        `json:"user_id"`
-	APIKeyID       *string        `json:"api_key_id"`
-	IPAddress      *string        `json:"ip_address"`
-	Endpoint       *string        `json:"endpoint"`
-	Method         *string        `json:"method"`
-	StatusCode     *int           `json:"status_code"`
-	ErrorMessage   *string        `json:"error_message"`
-	Metadata       map[string]any `json:"metadata"`
+	ID             int64     `json:"id"`
+	RequestID      string    `json:"request_id"`
+	Timestamp      time.Time `json:"timestamp"`
+	EventType      string    `json:"event_type"`
+	OrganizationID *string   `json:"organization_id"`
+	TeamID         *string   `json:"team_id"`
+	UserID         *string   `json:"user_id"`
+	APIKeyID       *string   `json:"api_key_id"`
+	IPAddress      *string   `json:"ip_address"`
+	Endpoint       *string   `json:"endpoint"`
+	Method         *string   `json:"method"`
+	StatusCode     *int      `json:"status_code"`
+	ErrorMessage   *string   `json:"error_message"`
+
+	APIKeyPrefix   *string `json:"api_key_prefix"`
+	LimitDimension *string `json:"limit_dimension"`
+	LimitValue     *int64  `json:"limit_value"`
+	SpentCents     *int64  `json:"spent_cents"`
+	LimitCents     *int64  `json:"limit_cents"`
+	FilterType     *string `json:"filter_type"`
+	Reason         *string `json:"reason"`
+	Provider       *string `json:"provider"`
+	Model          *string `json:"model"`
+	Mode           *string `json:"mode"`
+	Operation      *string `json:"operation"`
+	ErrorDetail    *string `json:"error_detail"`
 }
 
 // LogRow is one row of audit_logs as returned to a reader.
@@ -143,7 +160,10 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		SELECT id, request_id, timestamp, event_type,
 		       organization_id, team_id, user_id, api_key_id,
 		       ip_address, endpoint, method, status_code,
-		       error_message, metadata
+		       error_message,
+		       api_key_prefix, limit_dimension, limit_value,
+		       spent_cents, limit_cents, filter_type, reason,
+		       provider, model, mode, operation, error_detail
 		FROM audit_events
 		WHERE organization_id = $1
 		  AND organization_id <> $8
@@ -170,7 +190,10 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		if err := rows.Scan(&e.ID, &e.RequestID, &e.Timestamp, &e.EventType,
 			&e.OrganizationID, &e.TeamID, &e.UserID, &e.APIKeyID,
 			&e.IPAddress, &e.Endpoint, &e.Method, &e.StatusCode,
-			&e.ErrorMessage, &e.Metadata); err != nil {
+			&e.ErrorMessage,
+			&e.APIKeyPrefix, &e.LimitDimension, &e.LimitValue,
+			&e.SpentCents, &e.LimitCents, &e.FilterType, &e.Reason,
+			&e.Provider, &e.Model, &e.Mode, &e.Operation, &e.ErrorDetail); err != nil {
 			return nil, fmt.Errorf("audit read: scanning event: %w", err)
 		}
 		out = append(out, e)

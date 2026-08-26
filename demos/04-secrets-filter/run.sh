@@ -122,11 +122,13 @@ echo ""
 
 # ── Audit events ──────────────────────────────────────────────────
 #
-# audit_events columns are event_type / timestamp / error_message /
-# metadata (JSONB). There is no action, reason, or created_at column.
+# audit_events columns are event_type / timestamp / error_message, plus the
+# twelve detail columns migration 013 promoted out of the old metadata JSONB,
+# of which filter_type and reason are the two a filter block populates. There is
+# no action or created_at column.
 echo "Recent audit_events (blocked requests):"
 docker compose exec -T postgres psql -U aegis -d aegis -c \
-  "SELECT timestamp, event_type, metadata->>'filter_type' AS filter, metadata->>'reason' AS reason
+  "SELECT timestamp, event_type, filter_type AS filter, reason
      FROM audit_events
     WHERE event_type = 'filter_block'
     ORDER BY timestamp DESC

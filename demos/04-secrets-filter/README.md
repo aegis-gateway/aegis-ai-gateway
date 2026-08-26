@@ -61,7 +61,7 @@ While the stack is running:
 
 ```bash
 docker compose exec -T postgres psql -U aegis -d aegis -c \
-  "SELECT timestamp, event_type, metadata->>'filter_type' AS filter, metadata->>'reason' AS reason
+  "SELECT timestamp, event_type, filter_type AS filter, reason
      FROM audit_events
     WHERE event_type = 'filter_block'
     ORDER BY timestamp DESC
@@ -70,8 +70,10 @@ docker compose exec -T postgres psql -U aegis -d aegis -c \
 
 `audit_events` stores `event_type`, `timestamp`, `error_message`, and a JSONB
 `metadata` column — there is no `action`, `reason`, or `created_at` column. The
-detector that fired is `metadata->>'filter_type'`, and the full block message is
-`metadata->>'reason'`.
+detector that fired is the `filter_type` column, and the full block message is the
+`reason` column. Both were keys in a `metadata` JSONB column until migration 013
+promoted them, along with the other ten, so that the audit table has no untyped
+column left.
 
 ## How the secrets filter works
 

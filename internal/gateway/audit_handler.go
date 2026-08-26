@@ -70,20 +70,22 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 		writeCSV(w, reqID, "audit_events",
 			[]string{"id", "request_id", "timestamp", "event_type", "organization_id",
 				"team_id", "user_id", "api_key_id", "ip_address", "endpoint", "method",
-				"status_code", "error_message", "metadata"},
+				"status_code", "error_message",
+				"api_key_prefix", "limit_dimension", "limit_value", "spent_cents",
+				"limit_cents", "filter_type", "reason", "provider", "model", "mode",
+				"operation", "error_detail"},
 			func(yield func([]string) error) error {
 				for _, e := range rows {
-					meta := ""
-					if len(e.Metadata) > 0 {
-						b, _ := json.Marshal(e.Metadata)
-						meta = string(b)
-					}
 					if err := yield([]string{
 						strconv.FormatInt(e.ID, 10), e.RequestID,
 						e.Timestamp.UTC().Format(time.RFC3339Nano), e.EventType,
 						deref(e.OrganizationID), deref(e.TeamID), deref(e.UserID),
 						deref(e.APIKeyID), deref(e.IPAddress), deref(e.Endpoint),
-						deref(e.Method), derefInt(e.StatusCode), deref(e.ErrorMessage), meta,
+						deref(e.Method), derefInt(e.StatusCode), deref(e.ErrorMessage),
+						deref(e.APIKeyPrefix), deref(e.LimitDimension), derefInt64(e.LimitValue),
+						derefInt64(e.SpentCents), derefInt64(e.LimitCents), deref(e.FilterType),
+						deref(e.Reason), deref(e.Provider), deref(e.Model), deref(e.Mode),
+						deref(e.Operation), deref(e.ErrorDetail),
 					}); err != nil {
 						return err
 					}
@@ -274,6 +276,16 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// derefInt64 renders a nullable counter column for CSV. An absent value becomes
+// an empty cell rather than "0", because a rate-limit event that carries no
+// limit is not an event whose limit was zero.
+func derefInt64(i *int64) string {
+	if i == nil {
+		return ""
+	}
+	return strconv.FormatInt(*i, 10)
 }
 
 func derefInt(i *int) string {

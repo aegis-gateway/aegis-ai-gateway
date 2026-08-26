@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,8 +82,8 @@ func insertTestEvent(t *testing.T, db *pgxpool.Pool, ts time.Time) int64 {
 	t.Helper()
 	var id int64
 	err := db.QueryRow(context.Background(), `
-		INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-		VALUES ($1, $2, 'test_event', '{}')
+		INSERT INTO audit_events (request_id, timestamp, event_type)
+		VALUES ($1, $2, 'test_event')
 		RETURNING id
 	`, "req-test-"+time.Now().Format(time.RFC3339Nano), ts).Scan(&id)
 	if err != nil {
@@ -305,5 +306,58 @@ func TestCheckpointIntegration_InclusionProof(t *testing.T) {
 	if _, _, err := checkpoint.RunVerify(context.Background(), db,
 		checkpoint.VerifyOptions{EventID: unsealed}); err == nil {
 		t.Error("expected an error for an unsealed event, got a proof")
+	}
+}
+
+// TestCheckpointIntegration_ProofRefusesUnknownHashSchema covers the guard on
+// the inclusion-proof path.
+//
+// The proof path recomputes leaves at hash_schema_version=2 and, on a root
+// mismatch, says the audit rows have been altered since sealing. That sentence
+// is an accusation, and it is the wrong one when the real cause is a checkpoint
+// sealed under a different field set: the rows may be untouched and the build
+// simply cannot hash them the way they were hashed.
+//
+// Migration 013 refuses to run while version-1 checkpoints exist, so this state
+// is not reachable through a supported upgrade. The guard is here because the
+// cost of being wrong is telling an operator their audit trail was tampered
+// with, and the cost of the check is one comparison on a value already loaded.
+func TestCheckpointIntegration_ProofRefusesUnknownHashSchema(t *testing.T) {
+	db := testDB(t)
+	resetCheckpoints(t, db)
+
+	past := time.Now().UTC().Add(-10 * time.Minute)
+	eventID := insertTestEvent(t, db, past)
+
+	opts := checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0), BatchSize: 100}
+	if err := checkpoint.RunSeal(context.Background(), db, opts); err != nil {
+		t.Fatalf("RunSeal: %v", err)
+	}
+
+	// It must work before the version is changed, or the assertion below would
+	// pass for the wrong reason.
+	if _, proof, err := checkpoint.RunVerify(context.Background(), db,
+		checkpoint.VerifyOptions{EventID: eventID}); err != nil || proof == nil {
+		t.Fatalf("proof should succeed at version 2 before the change: err=%v proof=%v", err, proof)
+	}
+
+	if _, err := db.Exec(context.Background(),
+		"UPDATE audit_checkpoints SET hash_schema_version = 1"); err != nil {
+		t.Fatalf("forcing hash_schema_version: %v", err)
+	}
+
+	_, proof, err := checkpoint.RunVerify(context.Background(), db,
+		checkpoint.VerifyOptions{EventID: eventID})
+	if err == nil {
+		t.Fatal("expected a refusal for a checkpoint this build cannot recompute, got a proof")
+	}
+	if proof != nil {
+		t.Error("no proof should be emitted for a checkpoint this build cannot recompute")
+	}
+	if !strings.Contains(err.Error(), "hash_schema_version=1") {
+		t.Errorf("the error should name the version it cannot handle, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "have been altered") {
+		t.Errorf("a version it cannot recompute must not be reported as tampering, got: %v", err)
 	}
 }

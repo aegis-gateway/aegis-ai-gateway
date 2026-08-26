@@ -233,7 +233,6 @@ func TestCheckpointTimestampFormat(t *testing.T) {
 		RequestID: "req-1",
 		Timestamp: ts,
 		EventType: "test",
-		Metadata:  []byte("{}"),
 	}
 	lh, err := checkpoint.EventLeafHash(row)
 	if err != nil {

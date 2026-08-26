@@ -3,7 +3,7 @@
 Every refusal the gateway can return, what triggers it, and what to do about it.
 
 Verified against commit
-[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a).
+[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1).
 Strings are quoted literally from source. Where a message is a format string, the
 literal template is given.
 
@@ -17,7 +17,7 @@ in `VERIFICATION.md` §6.
 ## The envelope
 
 Every refusal uses the same OpenAI-shaped body
-([`internal/httputil/errors.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/httputil/errors.go)):
+([`internal/httputil/errors.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/httputil/errors.go)):
 
 ```json
 {
@@ -53,7 +53,7 @@ request**, it is the join key to the audit trail.
 
 ## 1. Authentication: 401
 
-Stage: [`internal/auth/middleware.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/auth/middleware.go).
+Stage: [`internal/auth/middleware.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth/middleware.go).
 All emit `type: authentication_error`, `code: invalid_api_key`.
 
 | Literal string | Trigger | Operator action |
@@ -66,7 +66,7 @@ All emit `type: authentication_error`, `code: invalid_api_key`.
 
 ## 2. Rate limit and budget: 429 / 402 / 503
 
-Stage: [`internal/ratelimit/middleware.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/ratelimit/middleware.go).
+Stage: [`internal/ratelimit/middleware.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/ratelimit/middleware.go).
 
 | Literal string | Status / code | Trigger | Operator action |
 |---|---|---|---|
@@ -82,7 +82,7 @@ Stage: [`internal/ratelimit/middleware.go`](https://github.com/aegis-gateway/aeg
 
 ## 3. Validation: 400
 
-Stage: [`internal/validation/validator.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/validation/validator.go),
+Stage: [`internal/validation/validator.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/validation/validator.go),
 plus two direct checks in the handler. Type `invalid_request_error`, code `invalid_request`.
 
 Validation errors are `field: message`, joined with `; ` when several fail at once.
@@ -102,7 +102,7 @@ Fields validated with configurable limits: `model`, `messages`, `temperature`,
 
 ## 4. Content filters: 451
 
-Stage: the filter chain, [`internal/filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/filter.go).
+Stage: the filter chain, [`internal/filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/filter.go).
 Order is **secrets → injection → PII**, stopping at the first block.
 All emit `type: content_filter_error`, `code: content_blocked`.
 
@@ -121,7 +121,7 @@ All emit `type: content_filter_error`, `code: content_blocked`.
 
 ## 5. Policy: 451
 
-Stage: [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/policy/opa.go).
+Stage: [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy/opa.go).
 Runs **after** routing, because it needs the resolved provider. OPA `v1.13.2`, Rego v1.
 
 | Literal string | Trigger | Operator action |
@@ -131,7 +131,7 @@ Runs **after** routing, because it needs the resolved provider. OPA `v1.13.2`, R
 
 ### Deny reasons in the shipped bundle
 
-[`configs/policies/default.rego`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/policies/default.rego)
+[`configs/policies/default.rego`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/policies/default.rego)
 contains one deny message:
 
 | Reason text | Condition |
@@ -169,7 +169,7 @@ something this engine can produce.
 
 ## 6. Routing: 503
 
-Stage: [`internal/router`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/router/provider.go).
+Stage: [`internal/router`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/router/provider.go).
 Type `server_error`, code `service_unavailable`.
 
 | Literal string | Trigger | Operator action |

@@ -45,7 +45,21 @@ const CheckpointHashInputLen = 96
 
 // HashSchemaVersion1 is the serialization and hash-input specification
 // described in docs/AUDIT-INTEGRITY.md sections 3 through 5.
+//
+// Superseded by [HashSchemaVersion2]. The constant stays because removing a name
+// from this package is a breaking change to a shipped wire contract, and because
+// a verifier reading an archived version-1 checkpoint still needs to name what
+// it is reading.
 const HashSchemaVersion1 int32 = 1
+
+// HashSchemaVersion2 is the field set that replaced audit_events.metadata with
+// twelve typed columns, defined in docs/AUDIT-INTEGRITY.md section 5.1 and cut by
+// migration 013.
+//
+// The checkpoint hash construction is unchanged between versions 1 and 2: the
+// same 96 bytes in the same order, with this number in the version scalar. Only
+// the set of columns the leaf hash covers differs.
+const HashSchemaVersion2 int32 = 2
 
 // CheckpointHashInput returns the exact bytes hashed to produce a checkpoint
 // hash, per docs/AUDIT-INTEGRITY.md section 3:

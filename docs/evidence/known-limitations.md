@@ -5,7 +5,7 @@ that an operator building an evidence package finds these limits here rather tha
 discovering them during an audit.
 
 Verified against commit
-[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a).
+[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1).
 
 ---
 
@@ -27,7 +27,7 @@ anywhere in the repository. Rego bundles are compiled from `configs/policies/`, 
 they are **neither versioned nor digested**.
 
 The control plane protocol reserves both field names,
-[`ConfigHash` and `PolicyBundles`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/api/controlplane/v1/checkpoint.go#L146-L160)
+[`ConfigHash` and `PolicyBundles`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/api/controlplane/v1/checkpoint.go#L160-L174)
 in `api/controlplane/v1`, but their semantics are **unspecified in v1**, no v1 emitter
 may populate them, and validation **actively rejects** a submission that does:
 
@@ -36,7 +36,7 @@ config_hash is reserved in v1: its semantics are unspecified and no v1 emitter m
 ```
 
 This is a considered decision, recorded in
-[ADR 0004](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/docs/adr/0004-reserved-fields-must-not-be-populated.md).
+[ADR 0004](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/docs/adr/0004-reserved-fields-must-not-be-populated.md).
 Declaring the fields merely *optional* would invite a future emitter to fill them with
 something plausible, letting whoever populated them first define their meaning inside
 what is supposed to be a contract. Reserving them keeps the name available for a v2 that
@@ -123,7 +123,7 @@ These are not the provenance gap, but an operator reading this page will want th
 
 Every filter implements `ScanRequest` and runs on the **inbound** request only. There is
 no `ScanResponse` in the
-[`filter.Filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/filter.go#L43-L47)
+[`filter.Filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/filter.go#L43-L47)
 interface and no outbound filtering in the codebase. **Model output is not scanned** for
 secrets, PII, or injection.
 
@@ -147,7 +147,7 @@ at all until it was replaced.
 If you need a genuine external/internal distinction in policy, encode it in alias names
 and gate on `input.request.model`, as the default bundle now does.
 
-### 2.3 Zero-retention is enforced behaviourally, not structurally
+### 2.3 Zero-retention is enforced behaviourally, and now partly structurally
 
 `audit_logs.filter_results`, `audit_events.metadata` (both `JSONB`),
 `audit_events.error_message` and `audit_events.user_agent` (both `TEXT`) carry **no
@@ -205,3 +205,41 @@ and it is the failure mode most likely to survive unnoticed in production.
 Until this changes, an operator who relies on rate limiting should assert on the presence
 of the `redis` object in the health response, not just on `"status":"healthy"`, and should
 treat a non-decrementing `X-RateLimit-Remaining-Requests` as an outage signal.
+
+
+### 2.6 What the column bounds do and do not establish
+
+Migration `012_bound_audit_text_columns` bounds the free-text columns on `audit_events`:
+`error_message` to 128 characters, `user_agent` to 256, `ip_address` to 64, and the
+`metadata` JSONB to 4096 bytes by CHECK constraint. `internal/audit/limits.go` clips every
+value to those limits before the insert.
+
+**What this establishes.** These columns cannot hold a document, a conversation, or a
+transcript, and the limit is declared in the schema where a reader can check it in a few
+seconds rather than asserted in prose they have to trust. Combined with the clipping, an
+over-long value is now recorded truncated instead of costing the entire audit row.
+
+**What it does not establish.** It does not make storing a prompt impossible. A
+128-character prompt exists, and a bound tight enough to exclude every prompt would be
+tighter than a legitimate browser `User-Agent`, which routinely runs past 200 characters. A
+bound a real client trips is not a safety property, it is an audit-suppression bug.
+
+So the bound raises the floor and narrows what a future mistake could retain. It is not a
+proof that no payload can ever be stored, and it should not be described as one. The claim
+that no payload *is* stored remains the behavioural one, tested by
+`TestNoPayload_CanaryEndToEnd` and by the sweeps in `VERIFICATION.md` §5.3 and §6.3.
+
+**`metadata` is now gone.** Migration 013 replaced it with twelve typed, bounded columns
+and cut `hash_schema_version=2`. No column on `audit_events` is untyped or unbounded any
+more, so the paragraph above now describes every column on the table rather than most of
+them.
+
+That change was possible in one release only because the migration refuses to run in a
+database holding version-1 checkpoints: a version-1 leaf hash cannot be recomputed once
+`metadata` is gone, so dropping it under an existing chain would have made every sealed
+checkpoint permanently unverifiable. A database that has run 013 provably has no
+version-1 chain, which is what lets the verifier compute one field set rather than two.
+
+The integrity coverage is unchanged by this, and it is worth being precise about that.
+Version 1 hashed the JSONB object, so its contents were already attested. Version 2 hashes
+the same data as separate fields. The gain is typing and bounding, not more signed data.

@@ -3,7 +3,7 @@
 Verification of every factual claim on the landing page and in `README.md` against the
 AEGIS gateway source.
 
-**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a)
+**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1)
 **Date:** 2026-08-23
 
 All permalinks pin that SHA. None point at `main`. Where a finding has since been fixed
@@ -92,11 +92,11 @@ executed; §6 is the second run, and §6.0 lists the four deviations it required
 
 | Claim (quoted) | Where | Verified against | Verdict |
 |---|---|---|---|
-| `` `/aegis/v1/health` `` \| No \| Health check | `README.md:203` | [`main.go:343`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/cmd/gateway/main.go#L343) | **confirmed** |
-| "View Prometheus metrics: `http://localhost:9090/metrics`" | `README.md:42` | [`main.go:176-178`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/cmd/gateway/main.go#L176-L178), [`gateway.yaml:29`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/gateway.yaml#L29) | **confirmed** |
-| `aegis-gpt4` \| *(deprecated alias → aegis-balanced)* | `README.md:57` | [`models.yaml:5`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/configs/models.yaml#L5) | **confirmed**, and more accurate than the page, which omitted it |
-| "every denial ... is written to `audit_events` with request metadata, IP, and reason" | `README.md:149` | [`logger.go:92-99,186-202`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/logger.go#L92-L99) | **confirmed**, exactly right |
-| "Successful calls are recorded separately in `usage_records`" | `README.md:149` | [`internal/storage`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/storage) | **confirmed** |
+| `` `/aegis/v1/health` `` \| No \| Health check | `README.md:203` | [`main.go:344`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L344) | **confirmed** |
+| "View Prometheus metrics: `http://localhost:9090/metrics`" | `README.md:42` | [`main.go:176-178`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L176-L178), [`gateway.yaml:29`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/gateway.yaml#L29) | **confirmed** |
+| `aegis-gpt4` \| *(deprecated alias → aegis-balanced)* | `README.md:57` | [`models.yaml:5`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/models.yaml#L5) | **confirmed**, and more accurate than the page, which omitted it |
+| "every denial ... is written to `audit_events` with request metadata, IP, and reason" | `README.md:149` | [`logger.go:92-99,186-202`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go#L92-L99) | **confirmed**, exactly right |
+| "Successful calls are recorded separately in `usage_records`" | `README.md:149` | [`internal/storage`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/storage) | **confirmed** |
 | "**LiteLLM and Bifrost** route traffic and report what it cost." | `README.md:5` | Shared rule 3 | **RULE VIOLATION**, see below |
 | "Teams that need SSO, multi-tenant policy management ... **can access** the AEGIS control plane." | `README.md:221` | Shared rule 6 | **RULE VIOLATION**, see below |
 
@@ -131,7 +131,7 @@ positioning, not defects in the code.
 | `internal/auth` | **confirmed** |
 | `internal/validation` | **confirmed** |
 | `internal/filter` | **confirmed** |
-| `internal/policy` | **wrong.** No such package. Policy lives at [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/policy) |
+| `internal/policy` | **wrong.** No such package. Policy lives at [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy) |
 | `internal/ratelimit` | **confirmed** |
 | `internal/router` | **confirmed** |
 | `internal/cost` | **confirmed** |
@@ -143,7 +143,7 @@ Two structural errors in the capability table, both corrected:
    implements `filter.Filter` like any other filter.
 2. The page attributed **classification gating** to `internal/policy` as well.
    Classification gating is not policy at all: it is
-   [`router.routeEligible`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/router/provider.go),
+   [`router.routeEligible`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/router/provider.go),
    which skips any route whose `classification_ceiling` sits below the caller's
    clearance. Two separate mechanisms were shown as one package that does not exist.
 
@@ -152,7 +152,7 @@ are four subpackages of `internal/filter` behind one `filter.Chain`, not four pe
 
 ### 2.2 `filter.Result`
 
-Real definition, [`filter.go:33-39`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/filter.go#L33-L39):
+Real definition, [`filter.go:33-39`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/filter.go#L33-L39):
 
 ```go
 type Result struct {
@@ -182,9 +182,9 @@ The no-matched-string assertion holds through the whole chain:
    every value is built from pattern names and counts. The secrets filter is the sharp
    case: it collects `d.PatternName` into a set and formats
    `"Request blocked: detected %d secret(s) of type: %s"`, the type name, never the value
-   ([`scanner.go:84-101`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/secrets/scanner.go#L84-L101)).
+   ([`scanner.go:84-101`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/secrets/scanner.go#L84-L101)).
 3. **Every log and audit statement.** The block path
-   ([`handler.go:152-165`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L152-L165))
+   ([`handler.go:152-165`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L152-L165))
    logs `FilterName`, `Detections`, `Score`, and passes `Message` to `LogFilterBlock`.
 
 **Runtime corroboration.** The CI gateway log for the canary request shows exactly this
@@ -206,13 +206,13 @@ that could quietly hold it**.*
 
 **Verdict: wrong as worded.** Four columns are structurally capable of holding payload.
 
-[Migration 002](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/migrations/002_create_audit_logs.up.sql):
+[Migration 002](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/migrations/002_create_audit_logs.up.sql):
 
 ```sql
 filter_results  JSONB NOT NULL DEFAULT '{}',
 ```
 
-[Migration 005](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/migrations/005_create_audit_events.up.sql):
+[Migration 005](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/migrations/005_create_audit_events.up.sql):
 
 ```sql
 user_agent      TEXT,
@@ -256,7 +256,7 @@ The page showed `403` with
 `{"error":{"message":"content blocked by secrets filter","type":"policy_violation"}}`.
 
 **Wrong in four ways**
-([`errors.go:41-90`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/httputil/errors.go#L41-L90)):
+([`errors.go:41-90`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/httputil/errors.go#L41-L90)):
 
 1. Status is **451**, not 403.
 2. `type` is `content_filter_error`. There is no `policy_violation` type in the codebase.
@@ -290,7 +290,7 @@ shape right and the content wrong, which is exactly the failure mode running it 
 
 | Claim | Verdict |
 |---|---|
-| `deny contains msg if` v1 syntax | **confirmed.** `import rego.v1`, OPA [`v1.13.2`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/go.mod#L10) |
+| `deny contains msg if` v1 syntax | **confirmed.** `import rego.v1`, OPA [`v1.13.2`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/go.mod#L10) |
 | `package aegis.authz` | **wrong.** The real package is `aegis.policy` |
 | `input.filters.pii.detections` | **wrong.** `PolicyInput` has no `filters` field |
 | `data.providers[input.route.provider].eu_hosted` | **wrong.** No `route` field, and no such data document |
@@ -299,7 +299,7 @@ shape right and the content wrong, which is exactly the failure mode running it 
 
 The real input document is
 `{user:{id,org,team}, request:{model,classification,provider_type}, messages, time:{hour,day}}`
-([`opa.go:225-243`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/filter/policy/opa.go#L225-L243)).
+([`opa.go:225-243`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy/opa.go#L225-L243)).
 The sample referenced three paths that do not exist, so it could not have fired as
 printed.
 
@@ -310,7 +310,7 @@ not individually named in Rego, so no rule name is available to emit. Copy of th
 
 **And the shipped rule was dead.** The sole deny rule in `default.rego` required
 `input.request.provider_type == "external"`. That field is set from `adapter.Name()`
-([`handler.go:190`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L190)),
+([`handler.go:190`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L190)),
 which returns the adapter implementation, `"openai"` or `"anthropic"`, and never
 `"external"`. `azure_openai` and `internal_vllm` both route through the OpenAI adapter and
 both report `"openai"`. **The shipped default bundle could not deny anything.**
@@ -329,7 +329,7 @@ both report `"openai"`. **The shipped default bundle could not deny anything.**
 > The new rule is **not** reachable on the shipped configuration either, for a different
 > reason: policy is evaluated after routing, because it needs the resolved provider, so
 > `ResolveRoute` fails first and returns `503 No provider available` before the rule is
-> consulted ([`handler.go:178-181`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/handler.go#L178-L181)).
+> consulted ([`handler.go:178-181`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L178-L181)).
 > It fires once an operator adds a route whose ceiling admits `RESTRICTED`.
 >
 > That is still a real improvement on what it replaced, which could not fire under **any**
@@ -350,7 +350,7 @@ product statement, but it is routable and `GET /v1/models` returns four. The dem
 run script advertises it. Page corrected to say three current plus one deprecated.
 
 On vendor names: `ListModels`
-([`handler.go:441-446`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/gateway/handler.go#L441-L446))
+([`handler.go:441-446`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/handler.go#L441-L446))
 emits only the alias as `id` with `owned_by: "aegis"`. The upstream mapping is never
 serialised. The API surface is clean. The one cosmetic caveat is that the alias
 `aegis-gpt4` embeds a vendor product name and is returned publicly; deprecating it out of
@@ -365,7 +365,7 @@ serialised. The API surface is clean. The one cosmetic caveat is that the alias
 | OpenTelemetry is transitive only | **confirmed** |
 
 Every `go.opentelemetry.io/*` entry in
-[`go.mod:52-56`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/go.mod#L52-L56)
+[`go.mod:52-56`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/go.mod#L52-L56)
 is `// indirect`, pulled in by OPA. No tracer provider, exporter, span, or configuration
 exists. `audit_logs.trace_id` is a plausible future hook, not OTel integration, and is not
 described as such anywhere. **Nothing on the page implies tracing**, so nothing to flag.
@@ -376,7 +376,7 @@ described as such anywhere. **Nothing on the page implies tracing**, so nothing 
 control; the evidence is in §6.1. What follows is the source reading that test confirms.
 
 The code implements the documented asymmetry
-([`middleware.go:78-155`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/ratelimit/middleware.go#L78-L155)):
+([`middleware.go:78-155`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/ratelimit/middleware.go#L78-L155)):
 Redis configured but unreachable yields `503`, a `redis_unavailable` metric, and a
 `LogRedisFailure` audit row. Redis *not* configured skips limits entirely, which is the
 fail-open development path.
@@ -390,9 +390,9 @@ test that was asked for; §6.1 is that test, and it agrees with this reading.
 
 | Test | File | Asserts |
 |---|---|---|
-| `TestNoPayload_SchemaIntrospection` | [`no_payload_test.go:69`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_test.go#L69) | Scans every `*.up.sql`; fails on payload-indicative column **names** in `audit_*` |
-| `TestNoPayload_FilterResultStruct` | [`no_payload_test.go:160`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_test.go#L160) | Reflects over `filter.Result`; fails on payload-ish field names or JSON tags |
-| `TestNoPayload_CanaryEndToEnd` | [`no_payload_integration_test.go:55`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/no_payload_integration_test.go#L55) | Sends a canary, asserts `451`, asserts a row **was** written, then asserts the canary is in no row |
+| `TestNoPayload_SchemaIntrospection` | [`no_payload_test.go:70`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_test.go#L70) | Scans every `*.up.sql`; fails on payload-indicative column **names** in `audit_*` |
+| `TestNoPayload_FilterResultStruct` | [`no_payload_test.go:161`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_test.go#L161) | Reflects over `filter.Result`; fails on payload-ish field names or JSON tags |
+| `TestNoPayload_CanaryEndToEnd` | [`no_payload_integration_test.go:66`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_integration_test.go#L66) | Sends a canary, asserts `451`, asserts a row **was** written, then asserts the canary is in no row |
 
 **Run-history evidence.** CI run
 [`32546647855`](https://github.com/aegis-gateway/aegis-ai-gateway/actions/runs/32546647855),
@@ -515,8 +515,8 @@ directly.
 
 > **RESOLVED.** The endpoint was built: `GET /aegis/v1/audit/events` and
 > `GET /aegis/v1/audit/logs`, authenticated and organization-scoped, with `?format=csv`.
-> See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/audit/reader.go)
-> and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/internal/gateway/audit_handler.go).
+> See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go)
+> and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/audit_handler.go).
 > The `BUILD NOTE, BLOCKER` markers are removed and the claim now has code behind it.
 
 **2. `docs/COMPLIANCE-MAPPING.md` does not exist.** Cited three times: as a receipt in the
@@ -525,7 +525,7 @@ team to start from it. A dead receipt is worse than no receipt, and this one is 
 bearing for the "we do not claim compliance, we produce evidence" position. Options were: write the document, or cut all three citations.
 
 > **RESOLVED.** The document was written:
-> [`docs/COMPLIANCE-MAPPING.md`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/c74fa7a13930b8fe0322b3eea067c8c78ba42e21/docs/COMPLIANCE-MAPPING.md).
+> [`docs/COMPLIANCE-MAPPING.md`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/docs/COMPLIANCE-MAPPING.md).
 > All three citations resolve.
 
 **3. Fonts load from the Google Fonts CDN.** Three tags in `<head>` fetch IBM Plex and
@@ -541,7 +541,7 @@ for the Astro port; it needs the font files, which were not supplied.
 |---|---|
 | "All six demos are runnable" | Could not run any (§0.3). Plausible, unconfirmed |
 | Digital Omnibus dates and article numbers | Regulatory facts, outside the scope of a source verification. The page frames them correctly, explicitly disclaiming deadline urgency, which satisfies rule 5 |
-| "An offline sealer seals events into Merkle checkpoints that chain to each other" | **confirmed** in [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/0344929a98dae0377c0c974412d2ecdcf460a42a/internal/audit/checkpoint) (RFC 6962 Merkle root, `prev_checkpoint_hash` chain) |
+| "An offline sealer seals events into Merkle checkpoints that chain to each other" | **confirmed** in [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint) (RFC 6962 Merkle root, `prev_checkpoint_hash` chain) |
 | "It does not scan model responses" | **confirmed**, and correctly stated as a limitation. Only `ScanRequest` exists in the `filter.Filter` interface |
 
 ---
@@ -561,25 +561,152 @@ exercised, but they do not *confirm* the page's wording, because both things tha
 them are missing inputs rather than defects (§6.2). That leaves one claim at
 **unverifiable**, carried below as §4.5.
 
-### 4.2 The zero-retention guarantee is not yet structural
+### 4.2 The zero-retention guarantee, **ALL FOUR STEPS DONE**
 
 The copy now states what is true, so this no longer blocks publication. The schema work
 agreed for v0.1.0, in the order decided:
 
 1. **Drop `filter_results`.** Unused by any code path. Nothing to migrate.
-2. **Remove or type the JSONB.** `audit_events.metadata` currently carries
-   `{"filter_type","reason"}` from `LogFilterBlock`. Both are short and known, so they
-   should be real columns and the JSONB should go. A `CHECK` on JSONB is the weakest
-   option available: a key denylist is bypassed by renaming the key, and an allowlist
-   needs an `IMMUTABLE` function because `CHECK` cannot hold a subquery, which relocates
-   the guarantee into a function someone can alter.
+2. **Remove or type the JSONB.** **This step is larger than this list said, and the two
+   corrections below are mine.** See §4.2.1.
 3. **Bound the TEXT columns.** `error_message` and `user_agent` are short by nature.
    `varchar(128)` cannot hold a prompt, and a reader who knows nothing about the codebase
    can confirm that in ten seconds. This is the change that actually makes the claim
    structural.
 4. **Constraints last**, as a backstop for anything left over.
 
-Cannot be validated without a database, so it lands after §4.1 is unblocked.
+A database is now available, so the blocker named here is gone.
+
+**Steps 1, 3 and 4 shipped as migration `012_bound_audit_text_columns`,** validated
+against PostgreSQL 16 rather than reasoned about: `filter_results` dropped,
+`error_message` bound to `varchar(128)`, `user_agent` to `varchar(256)`, and a
+`pg_column_size(metadata) <= 4096` constraint as the backstop. Full down-and-up round trip
+from an empty database, and the constraint verified to reject a 5000-byte metadata blob and
+accept a real one.
+
+Three things came out of writing it that the plan had not anticipated.
+
+**A shipped defect, found and fixed.** `ip_address` was `varchar(45)`, sized for the
+longest IPv6 literal, but it is written from Go's `RemoteAddr`, which is `host:port` with
+the host bracketed for IPv6. An ordinary full-form IPv6 address with a port is 47
+characters and the widest is 53. PostgreSQL errors on overflow rather than truncating, and
+`writeEvent` can only log that error, so the row is discarded. `LogAuthFailure` is on that
+path and is reachable unauthenticated. Reproduced before the fix:
+
+```
+INSERT INTO audit_events (..., ip_address, ...) VALUES (..., '[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:65535', ...);
+ERROR:  value too long for type character varying(45)
+```
+
+**Every IPv6 client that failed authentication did so without leaving an audit row.** The
+column is now `varchar(64)`, and the same insert succeeds.
+
+**Bounds without clipping would have created a second one.** `user_agent` is
+caller-controlled on that same unauthenticated path. Narrowing it to a `varchar` without
+truncating first would have handed any caller a way to suppress their own audit record by
+sending a long header. `internal/audit/limits.go` now clips every value that reaches a
+bounded column, rune-safe and marked with an ellipsis so a truncated record is
+distinguishable from a short one. Confirmed end to end against a running gateway: an
+840-character `User-Agent` on the auth-failure path returns `401` and leaves a surviving
+row holding 256 characters, rather than no row.
+
+**Two numbers describing one limit will drift.** `TestSchemaLimitsMatchMigration` parses
+the migrations and fails if the constants and the column widths disagree, because the
+drift is silent in the direction that matters: Go clips to the larger number and PostgreSQL
+rejects the row. Verified by control, changing one constant by one makes it fail.
+
+The down migration deliberately does not narrow `ip_address` back. Reinstating a width that
+discards audit rows is a regression rather than a rollback, and it is one a rollback cannot
+perform safely: the first attempt failed partway and left `schema_migrations` dirty at 11.
+
+**Step 2 shipped as migration `013_promote_audit_metadata`,** taking the third of the
+options below by decision of the author: expand and contract in one release, behind a
+guard. The reasoning that produced those options is left in place below, because the
+constraint it describes is what the guard exists to enforce.
+
+`metadata` is gone. The twelve keys are twelve typed, bounded columns, and no column on
+`audit_events` is untyped or unbounded any more. Events seal at
+`hash_schema_version=2`, whose field set is defined in `docs/AUDIT-INTEGRITY.md` §5.1.
+
+Verified against PostgreSQL 16, each point by execution rather than by reading:
+
+| Claim | How it was checked |
+|---|---|
+| The guard refuses | Planted a version-1 checkpoint at schema 12, ran the migration: refused with the intended message |
+| A refusal changes nothing | After the refusal, `audit_events` still had `metadata` and none of the twelve columns |
+| The chain seals at version 2 | Sealed three real auth-failure events, `hash_schema_version` reads 2 |
+| The chain verifies | `verify-chain --full` reports OK |
+| The promoted columns are covered by the hash | Tampering with `api_key_prefix` produces a Merkle root mismatch; restoring it returns to OK |
+| A version it cannot recompute is not called tampering | Forced a checkpoint to version 1: reported as attested-but-unverifiable, alongside the expected checkpoint-hash mismatch, because the version is bound into the checkpoint hash |
+| The down migration refuses in reverse | Refused while a version-2 checkpoint existed |
+| The round trip is faithful | Down rebuilt `metadata` from the columns with `jsonb_strip_nulls`, up restored the columns, and a full down-to-zero and back up ran clean |
+
+Coverage is equivalent to version 1, not stronger: version 1 hashed the JSONB object, so
+its contents were already attested. What changed is that the data is typed and bounded, not
+that more of it is signed. Saying otherwise would be the kind of upgrade-flavoured claim
+this document exists to catch.
+
+**One correction to the plan, found by running it.** The refusal message first told
+operators to clear the dirty flag with `migrate force 12`. `cmd/migrate` has no `force`
+subcommand, so that instruction would have failed for the one person following it under
+pressure. It now names the `UPDATE schema_migrations` that this CLI actually needs, and
+says plainly that the dirty flag records a migration that did not run rather than one that
+ran halfway.
+
+The options considered, and why the third:
+
+#### 4.2.1 Two corrections to step 2, and what it actually costs
+
+**Correction 1: `metadata` does not carry two keys, it carries twelve.** Step 2 above said
+`{"filter_type","reason"}` from `LogFilterBlock`. Six `Log*` methods in
+[`logger.go:145-260`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go#L145-L260)
+write six different shapes: `api_key_prefix`; `dimension` and `limit`; `spent_cents` and
+`limit_cents`; `filter_type` and `reason`; `provider`, `model` and `mode`; `operation` and
+`error`. All twelve are short and known, so the direction of step 2 survives. Its size
+does not: it is twelve nullable columns, not two.
+
+(This paragraph first said eleven. That was a second miscount of the same list, by eye,
+when `grep -oE '"[a-z_]+":' | sort -u` was available and settles it in one line. The
+number is twelve.)
+
+**Correction 2: `metadata` is an input to the audit hash chain, so step 2 is not a
+migration.** It is one of the fifteen fields in the leaf hash at `hash_schema_version=1`
+([`event.go:66-88`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint/event.go#L66-L88)),
+and `hash_schema_version` lives in `api/controlplane/v1`, which this repository's own rules
+freeze once it ships in a tagged release. `v0.1.0` has now shipped.
+
+That is not a dead end, because the versioning exists for exactly this.
+`docs/AUDIT-INTEGRITY.md` §204-209 says to increment `hash_schema_version` when a column is
+added, and that old checkpoints stay verifiable under the old rules "regardless of what
+columns exist in the current schema". **Adding the eleven columns is supported. Dropping
+`metadata` is not**, because a v1 leaf cannot be recomputed once the column it hashes is
+gone, so every previously sealed checkpoint becomes unverifiable.
+
+So step 2 is an expand and contract across two releases:
+
+- **Expand,** now: add the eleven bounded columns, backfill from `metadata`, stop writing
+  `metadata`, and cut `hash_schema_version=2` with a new section in `AUDIT-INTEGRITY.md`
+  defining the v2 field set.
+- **Contract,** later: drop `metadata` only once no `hash_schema_version=1` checkpoint
+  needs verifying.
+
+**A third finding, about step 3, which is the one that would have caused harm.** Bounding
+`user_agent` looks harmless and is not. It is written from `r.UserAgent()` on the
+*unauthenticated* auth-failure path
+([`middleware.go:42-98`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth/middleware.go#L42-L98)),
+nothing truncates it before the insert, and PostgreSQL raises an error on `varchar(n)`
+overflow rather than truncating. A `varchar(128)` bound therefore hands any unauthenticated
+caller a way to suppress their own audit row: send a long `User-Agent`, the insert fails,
+and the only trace is an `slog` line. Any bound on this column must be paired with
+truncation at the write site.
+
+**And a claim in step 3 that does not hold.** It said `varchar(128)` "cannot hold a prompt".
+A 128-character prompt exists, and a legitimate browser `User-Agent` already runs to about
+200 characters, so no bound both fits real user agents and excludes all prompts. What
+bounding actually buys is that these columns cannot hold a document, a conversation, or a
+transcript, and that the limit is visible in the schema rather than asserted in prose. That
+is worth having and it is not the same as making payload storage impossible. The sentence
+should say the former.
 
 ### 4.3 Unsupported claims on the page, **RESOLVED**
 
@@ -625,6 +752,11 @@ cannot ship, and under rule 9 the fix is not to soften the wording. Two ways to 
    the sentence is confirmed and this blocker closes with evidence.
 2. **Decide the sentence should say something narrower** that this run does support. That
    is a positioning change and therefore a human decision, not a copy edit.
+
+**Option 1, by decision of the author.** The run is a human action, because it needs a
+provider credential and egress this environment does not have. What to run, what to send
+back, and the two results that will look like failures and are not, are in
+[`docs/evidence/demo-run-checklist.md`](docs/evidence/demo-run-checklist.md).
 
 Option 1 is one run away and is the only one that keeps the claim.
 
@@ -775,7 +907,7 @@ Four, none of which change the code under test.
 
 **Method.** The probe is `GET /v1/models`, not a chat completion. It sits behind the same
 `auth` then `ratelimit` middleware chain
-([`main.go:347-351`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/cmd/gateway/main.go#L347-L351))
+([`main.go:347-351`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/cmd/gateway/main.go#L347-L351))
 and calls no provider, so nothing but the limiter can produce its status code. A chat
 completion would have confounded a limiter 503 with a provider 503.
 
@@ -803,7 +935,7 @@ what establishes that the 503 came from the limiter and not from the auth layer.
 the next returned 200 about three seconds later, with the breaker passing through
 `half-open` to `closed`. That is faster than the 30 second half-open timeout because the
 background health checker probes every five seconds
-([`circuit_breaker.go:80-84`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/aea3168eee05e4a230e44bedbb6731d79365225f/internal/ratelimit/circuit_breaker.go#L80-L84)),
+([`circuit_breaker.go:80-84`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/ratelimit/circuit_breaker.go#L80-L84)),
 and it closes the breaker before the timeout is reached.
 
 **D, the negative control.** Redis was left stopped and `redis.addresses` emptied. Every
@@ -925,16 +1057,30 @@ narrower than the audit row.
 - The deny string, competitor name included, is then written to `audit_events.metadata`.
 
 Rule 3 is "never name a competitor in any user-facing text." A demo script printed to a
-terminal is user-facing text. Rule 9 says to report rather than reword, so nothing here is
-changed. Options, for a decision:
+terminal is user-facing text. Rule 9 says to report rather than reword, so it was reported
+here and left alone until decided.
 
-1. Replace the policy's subject with a generic denylist, for example internal project
-   codenames, keeping the demo's shape and losing nothing pedagogically.
-2. Keep the competitor policy as the example but source the names from a config file that
-   ships empty, so the repository names nobody.
-3. Accept it as an internal demo and decide rule 3 covers only published copy.
+**RESOLVED 2026-08-25, by decision of the author: option 1, a generic denylist.**
 
-Option 1 looks smallest, but this is a positioning call and not a copy edit.
+`policies/competitor-mention.rego` is now `policies/restricted-terms.rego`, and the three
+competitor names are three invented project codenames. The rule is unchanged in shape, so
+the demo teaches exactly what it taught before: a denylist of terms an organization does
+not want sent to a third-party model. The prompt in `run.sh` and the act title changed to
+match.
+
+Two things this touched that a rename alone would have broken:
+
+- `internal/filter/policy/opa_test.go` loads the demo bundle and asserted the old term was
+  denied. It would have failed against the renamed policy, so it was updated with it.
+- Verified against a running gateway rather than the unit test alone. The new term denies
+  with `Request denied by policy: restricted term detected: project ironwood`, the old
+  competitor prompt now passes the filter chain and fails only at the provider, and the
+  unrelated topic-restriction policy still fires.
+
+The competitor names that remain in this document are quotations inside violation
+reports, here and in §1. §6.2 quotes the deny string captured from the run that predates
+this fix; it is left as captured, because rewriting recorded evidence to match a later
+change is the thing this document exists to prevent.
 
 ### 6.5 What parts two and three of the brief now establish
 

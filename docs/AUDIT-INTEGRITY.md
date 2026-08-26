@@ -122,6 +122,76 @@ The canonicalization spec identifier to include in API responses (Section 9) is 
 
 ---
 
+## 5.1 Field set, schema version 2
+
+Version 2 is the field set migration 013 established. It replaced the single
+`metadata` JSONB field with twelve typed columns, so that no column on the audit
+table is untyped or unbounded.
+
+**Everything in Section 5 still applies unchanged**: RFC 8785, keys in Unicode code
+point order, microsecond UTC timestamps, ECMAScript numbers, JSON `null` for
+absent values. The canonicalization spec identifier is still `"rfc8785-v1"`; it
+names the canonicalization, not the field set. The checkpoint hash construction of
+Section 3 is also unchanged, the same 96 bytes in the same order, carrying `2` in
+the version scalar.
+
+The leaf is the SHA-256 of `0x00 || JCS(event)` over these twenty-six fields:
+
+| Field | Source | Notes |
+|---|---|---|
+| `api_key_id` | v1 | |
+| `api_key_prefix` | **v2** | promoted from `metadata."api_key_prefix"` |
+| `endpoint` | v1 | |
+| `error_detail` | **v2** | promoted from `metadata."error"`, renamed to stay distinct from `error_message` |
+| `error_message` | v1 | |
+| `event_type` | v1 | |
+| `filter_type` | **v2** | promoted from `metadata."filter_type"` |
+| `id` | v1 | |
+| `ip_address` | v1 | |
+| `limit_cents` | **v2** | promoted from `metadata."limit_cents"` |
+| `limit_dimension` | **v2** | promoted from `metadata."dimension"`, renamed because a bare "dimension" does not say what it dimensions |
+| `limit_value` | **v2** | promoted from `metadata."limit"`, renamed because `LIMIT` is a reserved word |
+| `method` | v1 | |
+| `mode` | **v2** | promoted from `metadata."mode"` |
+| `model` | **v2** | promoted from `metadata."model"` |
+| `operation` | **v2** | promoted from `metadata."operation"` |
+| `organization_id` | v1 | |
+| `provider` | **v2** | promoted from `metadata."provider"` |
+| `reason` | **v2** | promoted from `metadata."reason"` |
+| `request_id` | v1 | |
+| `spent_cents` | **v2** | promoted from `metadata."spent_cents"` |
+| `status_code` | v1 | |
+| `team_id` | v1 | |
+| `timestamp` | v1 | |
+| `user_agent` | v1 | |
+| `user_id` | v1 | |
+
+`metadata` is gone. It is the one field of version 1 that version 2 does not carry.
+
+The twelve counters and strings are nullable, and an absent value is JSON `null`
+rather than `0` or `""`. That distinction is load-bearing: a rate-limit event
+that carries no limit is not an event whose limit was zero, and encoding it as
+zero would make two different events hash the same.
+
+### Why version 2 supersedes version 1 rather than joining it
+
+Section 8 says a version-1 checkpoint stays verifiable "regardless of what columns
+exist in the current schema". That holds only while the columns a version-1 leaf
+reads still exist, and version 2 drops one of them. A version-1 leaf hash cannot
+be recomputed without `metadata`.
+
+Migration 013 resolves this by refusing to run in a database that holds any
+version-1 checkpoint, rather than by carrying `metadata` forever or by dropping it
+and hoping. The consequence is worth stating, because it is what keeps the
+verifier simple: **any database that has run migration 013 provably has no
+version-1 checkpoints**, so a build that requires schema 13 never needs a
+version-1 leaf implementation. `Verifier` still checks each checkpoint's
+`hash_schema_version` and reports anything it cannot recompute as
+attested-but-unverifiable, rather than hashing the wrong field set and reporting
+the mismatch as tampering.
+
+---
+
 ## 6. Sealer (`aegis-migrate seal`)
 
 ### Visibility watermark
@@ -204,9 +274,11 @@ Both are written in the same transaction as the delete. If the transaction rolls
 `hash_schema_version` in `audit_checkpoints` records which serialization spec applies. Rules:
 
 - **Version 1:** columns defined in the initial `audit_events` migration, using JCS/RFC 8785 with the field rules in Section 5.
+- **Version 2:** the field set in Section 5.1, established by migration 013.
 - **When a new column is added to `audit_events`:** increment `hash_schema_version`, define the new serialization rules in a new section of this document, and note in the migration file which schema version takes effect for events from that migration forward.
+- **When a column the leaf hash reads is removed or renamed:** the same, plus one thing more. Older checkpoints become unverifiable rather than merely old, because their leaves cannot be recomputed from a schema that no longer has the column. Such a migration must refuse to run while checkpoints at the older version exist, as 013 does, so the loss is a blocked upgrade a human decides about rather than a chain break discovered months later.
 - Events sealed before the schema change remain under their original version. The sealer writes new checkpoints under the new version.
-- `verify-chain` reads each checkpoint's `hash_schema_version` and applies the matching spec. Version 1 checkpoints are always verifiable with version 1 rules, regardless of what columns exist in the current schema.
+- `verify-chain` reads each checkpoint's `hash_schema_version` and applies the matching spec, and reports a version it cannot recompute as attested-but-unverifiable rather than as a chain break. A version whose columns the current schema still has is verifiable with that version's rules; a version whose columns have been dropped is not, which is why the preceding rule exists.
 
 ---
 

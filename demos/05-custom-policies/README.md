@@ -1,6 +1,6 @@
 # 05 — Custom OPA Policies
 
-Three custom Rego policies — competitor mentions, token budgets, topic restrictions — enforced at the gateway with no code changes and hot-reloaded without restart.
+Three custom Rego policies, restricted terms, token budgets and topic restrictions, enforced at the gateway with no code changes and hot-reloaded without restart.
 
 ## Prerequisites
 

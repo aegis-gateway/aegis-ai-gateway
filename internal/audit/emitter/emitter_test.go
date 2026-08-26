@@ -245,8 +245,8 @@ func sealFixture(t *testing.T, db *pgxpool.Pool, events, batchSize int) {
 	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := range events {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-			VALUES ($1, $2, 'test_event', '{}')
+			INSERT INTO audit_events (request_id, timestamp, event_type)
+			VALUES ($1, $2, 'test_event')
 		`, "req-emitter-test", base.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatalf("inserting an audit event: %v", err)
 		}
@@ -341,17 +341,19 @@ func TestEmitterCarriesNoPayload(t *testing.T) {
 	}
 
 	// An event carrying distinctive strings in every column that could hold
-	// them, including the JSONB metadata the leaf hash covers.
+	// them, including the promoted detail columns the leaf hash covers.
 	// Short enough for request_id, which is VARCHAR(50). The point is that the
 	// string appears in every column of the event that could hold content,
-	// including the JSONB metadata the leaf hash covers.
+	// including the two widest columns migration 013 promoted out of the old
+	// metadata JSONB. Those are where a future mistake would most plausibly put
+	// caller text, so they are the ones worth planting a canary in.
 	const canary = "CANARY-NEVER-LEAVES"
 	if _, err := db.Exec(ctx, `
 		INSERT INTO audit_events (request_id, timestamp, event_type, organization_id,
-		                          user_agent, endpoint, error_message, metadata)
-		VALUES ($1, NOW() - INTERVAL '1 hour', 'test_event', $2, $3, $4, $5, $6)
+		                          user_agent, endpoint, error_message, reason, error_detail)
+		VALUES ($1, NOW() - INTERVAL '1 hour', 'test_event', $2, $3, $4, $5, $6, $7)
 	`, "req-"+canary, "org-"+canary, "ua-"+canary, "/v1/"+canary, "err-"+canary,
-		`{"prompt":"`+canary+`"}`); err != nil {
+		"reason-"+canary, "detail-"+canary); err != nil {
 		t.Fatalf("inserting the canary event: %v", err)
 	}
 	if err := checkpoint.RunSeal(ctx, db, checkpoint.SealOptions{LagSeconds: checkpoint.SealLag(0)}); err != nil {
@@ -570,8 +572,8 @@ func TestEmitterReportsAGapPause(t *testing.T) {
 	base := time.Now().UTC().Add(-time.Hour)
 	for i := range 2 {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-			VALUES ($1, $2, 'test_event', '{}')
+			INSERT INTO audit_events (request_id, timestamp, event_type)
+			VALUES ($1, $2, 'test_event')
 		`, "req-gap", base.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatalf("inserting an audit event: %v", err)
 		}
@@ -634,8 +636,8 @@ func TestEmitterReportsNeverSealed(t *testing.T) {
 		t.Fatalf("resetting: %v", err)
 	}
 	if _, err := db.Exec(ctx, `
-		INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-		VALUES ('req-unsealed', NOW() - INTERVAL '1 hour', 'test_event', '{}')
+		INSERT INTO audit_events (request_id, timestamp, event_type)
+		VALUES ('req-unsealed', NOW() - INTERVAL '1 hour', 'test_event')
 	`); err != nil {
 		t.Fatalf("inserting an audit event: %v", err)
 	}
@@ -725,8 +727,8 @@ func TestEmitterReportsAGapStillInsideTheLagWindow(t *testing.T) {
 	// written just now and is therefore well inside any sane lag window.
 	for range 2 {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-			VALUES ('req-fresh-gap', NOW(), 'test_event', '{}')
+			INSERT INTO audit_events (request_id, timestamp, event_type)
+			VALUES ('req-fresh-gap', NOW(), 'test_event')
 		`); err != nil {
 			t.Fatalf("inserting an audit event: %v", err)
 		}
@@ -771,8 +773,8 @@ func TestSealStateRespectsADeclaredWindow(t *testing.T) {
 	sealFixture(t, db, 4, 4)
 	for range 2 {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-			VALUES ('req-window', NOW() - INTERVAL '30 seconds', 'test_event', '{}')
+			INSERT INTO audit_events (request_id, timestamp, event_type)
+			VALUES ('req-window', NOW() - INTERVAL '30 seconds', 'test_event')
 		`); err != nil {
 			t.Fatalf("inserting an audit event: %v", err)
 		}
@@ -830,8 +832,8 @@ func TestSealStateFollowsTheSealerWhenTimestampsAreNotMonotonic(t *testing.T) {
 	// at — beyond the hole, which stops sealing now.
 	for _, age := range []string{"1 second", "10 seconds", "1 hour"} {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO audit_events (request_id, timestamp, event_type, metadata)
-			VALUES ('req-nonmonotonic', NOW() - $1::interval, 'test_event', '{}')
+			INSERT INTO audit_events (request_id, timestamp, event_type)
+			VALUES ('req-nonmonotonic', NOW() - $1::interval, 'test_event')
 		`, age); err != nil {
 			t.Fatalf("inserting an audit event aged %s: %v", age, err)
 		}
