@@ -3,10 +3,66 @@
 --
 -- Hash schema: this migration does NOT change hash_schema_version. Section 8 of
 -- docs/AUDIT-INTEGRITY.md ties a version bump to a change in the set of columns
--- the leaf hash covers. The set is unchanged here: no column that the hash reads
--- is added, removed, or renamed, and no stored value is rewritten. Narrowing a
--- column's declared type does not alter the JCS encoding of the string it holds,
--- so every previously sealed checkpoint still verifies under version 1.
+-- the leaf hash covers, and that set is unchanged here: no column the hash reads
+-- is added, removed, or renamed. Narrowing a column's declared type does not
+-- alter the JCS encoding of the string it holds.
+--
+-- It does rewrite stored values, in one case: the USING clauses below truncate a
+-- user_agent or error_message that exceeds the new width. Both of those columns
+-- ARE covered by the leaf hash, so rewriting one that is already sealed would
+-- change attested content and make verify-chain report a Merkle mismatch as
+-- tampering. That is why section 0 refuses instead. Given it, every previously
+-- sealed checkpoint still verifies under version 1.
+--
+-- (An earlier draft of this file asserted "no stored value is rewritten" and,
+-- next to the user_agent ALTER, that these strings are not attested. Both were
+-- false once the USING clauses were added, and both were caught in review. The
+-- claim a migration makes about integrity has to survive the migration's own
+-- later edits, which is the whole reason to state it here rather than assume it.)
+
+-- ---------------------------------------------------------------------------
+-- 0. Refuse rather than rewrite attested content.
+--
+-- Two requirements meet here and they conflict in exactly one case.
+--
+-- The USING clauses below have to exist, because user_agent was unbounded and
+-- caller-controlled: without them one historical row longer than the new width
+-- fails the migration and leaves schema_migrations dirty, blocking the upgrade
+-- entirely.
+--
+-- But user_agent and error_message are both in the leaf hash field set, so
+-- truncating a row that is already covered by a checkpoint changes attested
+-- content. verify-chain then reports a Merkle root mismatch, and the words it
+-- uses are "event rows have been tampered". Reproduced on PostgreSQL 16 by
+-- truncating one sealed 200-character user_agent: OK before, that anomaly after.
+--
+-- The conflict is only over rows that are both over-long AND sealed. Rows that
+-- are not yet covered by any checkpoint are not attested to anything, so
+-- truncating those costs nothing and the USING clauses handle them. For the
+-- intersection, refusing is the only honest option: silently rewriting attested
+-- audit content to make an upgrade succeed is the failure this whole table
+-- exists to make detectable.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    sealed_overlong BIGINT;
+BEGIN
+    SELECT count(*) INTO sealed_overlong
+      FROM audit_events e
+     WHERE (char_length(e.user_agent) > 256 OR char_length(e.error_message) > 128)
+       AND EXISTS (
+             SELECT 1 FROM audit_checkpoints c
+              WHERE e.id >= c.range_start AND e.id <= c.range_end);
+
+    IF sealed_overlong > 0 THEN
+        RAISE EXCEPTION
+            'refusing to truncate % sealed audit row(s): user_agent and error_message are covered by the leaf hash, so shortening a row already inside a checkpoint would change attested content and make verify-chain report tampering.',
+            sealed_overlong
+        USING ERRCODE = 'raise_exception',
+              HINT = 'The schema is unchanged: this check runs before any DDL. Clear the dirty flag with UPDATE schema_migrations SET version=11, dirty=false. Then verify the chain (cmd/migrate verify-chain --full) and archive the affected checkpoints and events before re-running, or stay on schema 11.';
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 1. audit_logs.filter_results
@@ -76,11 +132,12 @@ ALTER TABLE audit_events ALTER COLUMN error_message TYPE VARCHAR(128)
 -- PostgreSQL 16 against a schema-11 database holding a 900-character user_agent:
 -- the migration failed and left the version dirty.
 --
--- Truncating history is the lesser loss here. The alternative is an upgrade an
--- operator cannot complete, and the rows being shortened are user-agent strings
--- rather than anything the audit trail attests to. error_message gets the same
--- treatment for the same reason, though every value it holds is
--- gateway-generated and short.
+-- The USING clause only ever fires on rows that section 0 has established are
+-- not covered by any checkpoint. Those rows are not attested to anything yet, so
+-- shortening them changes no hash and loses only the tail of a user-agent
+-- string. Anything sealed reaches section 0 first and stops there.
+-- error_message gets the same treatment for the same reason, though every value
+-- it holds is gateway-generated and short enough that it should never fire.
 -- ---------------------------------------------------------------------------
 ALTER TABLE audit_events ALTER COLUMN user_agent TYPE VARCHAR(256)
     USING left(user_agent, 256);

@@ -276,3 +276,59 @@ func TestTruncateAPIKeyIsRuneSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrationGuardsArePresent fails if either migration loses the check that
+// makes it safe.
+//
+// This is a structural test, not a behavioural one, and it is worth being clear
+// about the difference. It cannot tell you the guards work; the three branches
+// of each were verified by hand against PostgreSQL 16 and are recorded in the
+// migration comments. What it catches is the realistic regression: someone
+// tidying a migration, seeing a DO block that "does nothing" on their machine
+// because their database is empty, and deleting it.
+//
+// Both guards protect the same thing from opposite directions. 012 refuses to
+// truncate a hashed column on a row that is already sealed; 013 refuses to drop
+// a hashed column while any checkpoint that hashes it exists. Losing either one
+// turns an upgrade into silent, permanent damage to the audit chain, which is
+// exactly the damage the chain exists to make visible.
+func TestMigrationGuardsArePresent(t *testing.T) {
+	for _, want := range []struct {
+		file   string
+		needle string
+		why    string
+	}{
+		{
+			file:   "012_bound_audit_text_columns.up.sql",
+			needle: "refusing to truncate",
+			why:    "012 must refuse to truncate user_agent or error_message on a sealed row: both are in the leaf hash",
+		},
+		{
+			file:   "012_bound_audit_text_columns.up.sql",
+			needle: "audit_checkpoints",
+			why:    "012's guard has to consult audit_checkpoints to know which rows are attested",
+		},
+		{
+			file:   "013_promote_audit_metadata.up.sql",
+			needle: "refusing to drop audit_events.metadata",
+			why:    "013 must refuse while version-1 checkpoints exist: a version-1 leaf cannot be recomputed without metadata",
+		},
+		{
+			file:   "013_promote_audit_metadata.down.sql",
+			needle: "refusing to restore audit_events.metadata",
+			why:    "013's down must refuse while version-2 checkpoints exist, for the mirror-image reason",
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "migrations", want.file))
+		if err != nil {
+			t.Errorf("read %s: %v", want.file, err)
+			continue
+		}
+		if !strings.Contains(string(data), want.needle) {
+			t.Errorf("%s no longer contains %q.\n%s", want.file, want.needle, want.why)
+		}
+		if !strings.Contains(string(data), "RAISE EXCEPTION") {
+			t.Errorf("%s has no RAISE EXCEPTION: a guard that does not abort is not a guard", want.file)
+		}
+	}
+}
