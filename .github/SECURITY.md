@@ -10,7 +10,7 @@
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Email us at **komlan@atlanticfrontier.com** with:
+Email us at **security@aegisgateway.ai** with:
 
 - A description of the vulnerability
 - Steps to reproduce

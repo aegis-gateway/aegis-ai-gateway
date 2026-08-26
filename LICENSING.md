@@ -34,7 +34,7 @@ The commercial tier is planned for teams that need organizational-scale operatio
 - **Long-horizon WORM archive** with external anchoring (RFC 3161 / notary integration) — planned
 - **Support with SLA and indemnity** — planned
 
-None of this is in the repo today. Interested? Email [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com)
+None of this is in the repo today. Interested? Email [hello@aegisgateway.ai](mailto:hello@aegisgateway.ai)
 
 ## Why this split
 

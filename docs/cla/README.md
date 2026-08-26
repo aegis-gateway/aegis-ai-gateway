@@ -14,14 +14,14 @@ AEGIS is Apache 2.0 open source. The CLA ensures Atlantic Frontier has clear own
 If you are contributing as an individual (not on behalf of an employer), sign the [Individual CLA](INDIVIDUAL_CLA.md).
 
 **How to sign:**
-CLA Assistant enforcement is being set up. Until it is active, please email [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com) with the subject line `CLA: [your GitHub username]` and confirm you have read and agree to the Individual CLA.
+CLA Assistant enforcement is being set up. Until it is active, please email [hello@aegisgateway.ai](mailto:hello@aegisgateway.ai) with the subject line `CLA: [your GitHub username]` and confirm you have read and agree to the Individual CLA.
 
 ## Corporate / Entity contributors
 
 If you are contributing on behalf of an employer or organization, your organization must sign the [Entity CLA](ENTITY_CLA.md).
 
 **How to sign:**
-Email [komlan@atlanticfrontier.com](mailto:komlan@atlanticfrontier.com) with the subject line `Entity CLA: [organization name]`. Atlantic Frontier will countersign and return a copy.
+Email [hello@aegisgateway.ai](mailto:hello@aegisgateway.ai) with the subject line `Entity CLA: [organization name]`. Atlantic Frontier will countersign and return a copy.
 
 ## Do not submit pull requests until your CLA is confirmed.
 

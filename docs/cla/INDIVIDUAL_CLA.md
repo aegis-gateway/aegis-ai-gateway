@@ -91,7 +91,7 @@ This Agreement is the entire agreement of the parties regarding the assignment o
 
 By submitting a Contribution (e.g., opening a pull request), you confirm that you have read this Agreement and agree to its terms.
 
-For questions or to discuss contributions before the automated CLA process is in place, contact: **komlan@atlanticfrontier.com**
+For questions or to discuss contributions before the automated CLA process is in place, contact: **hello@aegisgateway.ai**
 
 ---
 
