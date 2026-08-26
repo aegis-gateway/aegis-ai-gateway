@@ -331,6 +331,24 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 		return nil, fmt.Errorf("verify: find checkpoint for event %d: %w", eventID, err)
 	}
 
+	// Same guard as the full verification path, for the same reason and stated
+	// before any work is done: this build recomputes leaves at
+	// hash_schema_version=2, and hashing a checkpoint sealed under a different
+	// field set produces a root that will not match. Without this the mismatch
+	// below reports that the audit rows have been altered, which would be a false
+	// accusation of tampering against an operator whose data is intact.
+	//
+	// The version is already loaded, and already returned in the result. Refusing
+	// on it costs nothing and is the difference between "this build cannot check
+	// that" and "someone tampered with your audit trail".
+	if cp.HashSchemaVersion != controlplanev1.HashSchemaVersion2 {
+		return nil, fmt.Errorf(
+			"verify: event %d is in checkpoint %d, which is sealed at hash_schema_version=%d; "+
+				"this build recomputes leaves at version %d and cannot produce a proof against "+
+				"that checkpoint. It is attested but unverifiable here, not tampered",
+			eventID, cp.ID, cp.HashSchemaVersion, controlplanev1.HashSchemaVersion2)
+	}
+
 	// Load all events in the checkpoint range.
 	rows, err := conn.Query(ctx, `
 		SELECT `+EventColumns+`
