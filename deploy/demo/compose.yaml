@@ -79,7 +79,7 @@ services:
     # Published multi-arch image. Nothing here is built, so no Go toolchain and
     # no clone are needed. The image is built and pushed by the docker job in
     # .github/workflows/ci.yml.
-    image: ghcr.io/aegis-gateway/aegis-ai-gateway:v0.1.0
+    image: ghcr.io/aegis-gateway/aegis-ai-gateway:0.1.1
     container_name: aegis-demo-gateway
     depends_on:
       postgres:

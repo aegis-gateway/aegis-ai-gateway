@@ -104,10 +104,18 @@ Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an S
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/aegis/v1/health` | No | Health, including whether the mock provider is active |
-| POST | `/v1/chat/completions` | Yes | Chat completions, OpenAI-compatible |
+| POST | `/v1/chat/completions` | Yes | Chat completions — an OpenAI-compatible **subset**, see below |
 | GET | `/v1/models` | Yes | List available models |
 | GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
 | GET | `/aegis/v1/audit/logs` | Yes | Read the per-request decision record. `?format=csv` to export |
+
+`model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop` and `stream`
+are honoured. Anything else an SDK sends — `n`, `response_format`, `seed`,
+`logprobs`, `logit_bias`, presence/frequency penalties, `tools` and
+`tool_choice` — is **silently discarded**, and `message.content` must be a
+string, so multimodal content arrays are rejected at decode. Requests using
+those options do not fail; they succeed with different behaviour than the
+caller asked for, which is harder to notice than an error.
 
 ### Model aliases
 

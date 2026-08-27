@@ -49,18 +49,13 @@ What is actually true: a `v0.1.0` tag existed on `2809594a`, but it sat on
 `00b15bf2`, with 51 commits on that branch absent from `main` and 147 on `main` absent
 from it, and trees differing across 207 files. It was a mis-tag on a feature branch.
 
-By decision of the author it is to be moved to `main` at `aea3168` as an annotated tag, so
-that `v0.1.0` names the line that actually ships and matches the version every public
-surface already claims.
-
-**That move has not happened.** Verified against the remote on 2026-08-25:
-`git ls-remote --tags origin` still returns `2809594a` for `refs/tags/v0.1.0`. Tag pushes
-are rejected for this session, creation and mutation alike, while branch pushes succeed,
-so it needs a hand at a terminal. Until it is done, anyone who checks out `v0.1.0` gets
-the divergent feature-branch tree described above and not the tree verified in this
-document. Every reference to `v0.1.0` below means the intended tag, and every claim
-verified here is anchored to `aea3168` by commit rather than by tag name for exactly this
-reason.
+The tag was not moved. Two published GitHub Releases reference `v0.1.0`, so the tag must
+remain where it is; deleting or moving it would orphan those release pages. **`v0.1.0`
+remains on `2809594a` (the divergent `chore/bump-vulnerable-deps` branch) and must not be
+used for verification, because it does not contain the code verified in this document.**
+**`v0.1.1` is the release that corresponds to this verification baseline; it lands on
+[v0.1.1 HEAD — to be updated after tag] and is the tag that should be used when
+reproducing any result recorded here.**
 
 > **Update, 2026-08-27. The move has happened.** `git ls-remote --tags origin` now returns
 > `86f1d5b9` for `refs/tags/v0.1.0` and `ea72971186eb5c316966b065bf710f2d85f578b1` for
@@ -107,6 +102,7 @@ executed; §6 is the second run, and §6.0 lists the four deviations it required
 | "Successful calls are recorded separately in `usage_records`" | `README.md:149` | [`internal/storage`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/storage) | **confirmed** |
 | "**LiteLLM and Bifrost** route traffic and report what it cost." | `README.md:5` | Shared rule 3 | **RULE VIOLATION**, see below |
 | "Teams that need SSO, multi-tenant policy management ... **can access** the AEGIS control plane." | `README.md:221` | Shared rule 6 | **RULE VIOLATION**, see below |
+| "OpenAI-compatible" (`README.md:3`, and the endpoints table) | [`internal/types/request.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/types/request.go) — `AegisRequest` has no `Tools`, `ToolChoice`, `Functions`, or `FunctionCall` fields; they are silently stripped on ingress | **WRONG — a subset, not a drop-in**. `AegisRequest` also omits `n`, `response_format`, `seed`, `logprobs`, `logit_bias` and the penalties, and `Message.Content` is a string so multimodal arrays fail at decode. All are silently discarded rather than rejected. `README.md` now lists the supported subset explicitly instead of naming tools as the only gap |
 
 No capability claim in `README.md` overstates the code. Two shared-rule violations do
 need fixing, and neither is a code question:
