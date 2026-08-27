@@ -186,8 +186,12 @@ func (sh *StreamingHandler) HandleStream(
 		"estimated_cost_usd", metrics.EstimatedCostUSD,
 		"duration_ms", totalDuration.Milliseconds(),
 		"time_to_first_token_ms", metrics.FirstChunkTime.Sub(metrics.StartTime).Milliseconds(),
+		// The same pair the non-streaming path logs, so the two are comparable.
+		// tools_returned is reconstructed from the stream's index-keyed deltas,
+		// which is the only place a streamed response records it.
 		"tools_offered", len(aegisReq.Tools),
-		"tools_called", len(metrics.ToolCallNames),
+		"tools_called", len(aegisReq.CalledToolNames()),
+		"tools_returned", len(metrics.ToolCallNames),
 		"org_id", authInfo.OrganizationID,
 	)
 

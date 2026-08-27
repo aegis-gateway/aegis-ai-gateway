@@ -152,3 +152,20 @@ func (a *toolCallAccumulator) Calls() []types.ToolCall {
 	}
 	return out
 }
+
+// countReturnedToolCalls counts the tool calls a completed response asked for.
+//
+// Distinct from the count of tools already called in the request history: one
+// says what the conversation had done before it arrived, the other says what
+// the model wants done next. Logging both under one name made a streamed
+// request and a non-streamed one report different things under the same key.
+func countReturnedToolCalls(resp *types.AegisResponse) int {
+	if resp == nil {
+		return 0
+	}
+	n := 0
+	for _, c := range resp.Choices {
+		n += len(c.Message.ToolCalls)
+	}
+	return n
+}

@@ -393,8 +393,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"duration_ms", totalDuration.Milliseconds(),
 		"status_code", http.StatusOK,
 		"stream", false,
+		// Two counts, because they are two different facts. tools_called is
+		// what the conversation had already invoked when it arrived;
+		// tools_returned is what the model asked for in this response. The
+		// streaming path logs the same pair, reconstructed from the deltas.
 		"tools_offered", len(aegisReq.Tools),
 		"tools_called", len(aegisReq.CalledToolNames()),
+		"tools_returned", countReturnedToolCalls(aegisResp),
 		"classification", string(authInfo.MaxClassification),
 		"org_id", authInfo.OrganizationID,
 		"team_id", authInfo.TeamID,

@@ -1,0 +1,80 @@
+# Model routing configuration for demos/06-agent-compatibility.
+#
+# A copy of configs/models.yaml with one alias added: aegis-tools.
+#
+# Every shipped alias routes to Anthropic first, and the Anthropic adapter does
+# not carry tool definitions, tool calls or tool results (it would have to
+# translate them into tool_use and tool_result content blocks, which it does
+# not do). Rather than forward a tool request with its tools quietly removed,
+# which is the defect this demo exists to show has been fixed, the gateway
+# refuses it with HTTP 400 and tools_unsupported_by_provider.
+#
+# So the tool act needs an OpenAI-primary alias. That is aegis-tools. It has no
+# fallback: falling back to Anthropic would turn a working tool call into a
+# refusal halfway through the demo, which reads as a flake rather than as the
+# documented limit it is.
+#
+# See docs/evidence/known-limitations.md §2.8.
+models:
+  aegis-tools:
+    display_name: "AEGIS Tools (OpenAI-primary, for tool calling)"
+    primary:
+      provider: openai
+      model: gpt-5.6-luna
+      classification_ceiling: INTERNAL
+
+  # Deprecation alias: remove in the next minor version after aegis-gpt4 consumers migrate.
+  aegis-gpt4:
+    display_name: "AEGIS Balanced (deprecated alias → aegis-balanced)"
+    deprecated_alias: "aegis-balanced"
+    primary:
+      provider: anthropic
+      model: claude-sonnet-5
+      classification_ceiling: CONFIDENTIAL
+    fallback:
+      - provider: openai
+        model: gpt-5.6-terra
+        classification_ceiling: CONFIDENTIAL
+
+  aegis-fast:
+    display_name: "AEGIS Fast (Low Latency)"
+    primary:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      classification_ceiling: INTERNAL
+    fallback:
+      - provider: openai
+        model: gpt-5.6-luna
+        classification_ceiling: INTERNAL
+
+  aegis-balanced:
+    display_name: "AEGIS Balanced"
+    primary:
+      provider: anthropic
+      model: claude-sonnet-5
+      classification_ceiling: CONFIDENTIAL
+    fallback:
+      - provider: openai
+        model: gpt-5.6-terra
+        classification_ceiling: CONFIDENTIAL
+
+  aegis-reasoning:
+    display_name: "AEGIS Reasoning (Complex Tasks)"
+    primary:
+      provider: anthropic
+      model: claude-opus-5
+      classification_ceiling: CONFIDENTIAL
+    fallback:
+      - provider: openai
+        model: gpt-5.6-sol
+        classification_ceiling: CONFIDENTIAL
+
+  # aegis-internal requires a running vLLM server — uncomment when available.
+  # aegis-internal:
+  #   display_name: "AEGIS Internal (Air-Gapped)"
+  #   primary:
+  #     provider: internal_vllm
+  #     model: llama-3.1-70b
+  #     endpoint: "http://vllm.internal:8000/v1"
+  #     classification_ceiling: RESTRICTED
+  #   fallback: []
