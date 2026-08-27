@@ -20,6 +20,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
 )
 
 func TestGenerateRequestID_Format(t *testing.T) {
@@ -151,4 +155,65 @@ func TestMakeHealthHandler_ContentType(t *testing.T) {
 	if ct != "application/json" {
 		t.Errorf("expected Content-Type application/json, got %s", ct)
 	}
+}
+
+// TestMakeHealthHandler_ReportsMockProvider covers the requirement that a
+// gateway answering from the mock says so on the health endpoint. Somebody
+// evaluating this project needs to be able to tell a real provider call from a
+// canned one without reading the process environment, and "did that response
+// come from a model?" is exactly the question a mock makes hard to answer.
+func TestMakeHealthHandler_ReportsMockProvider(t *testing.T) {
+	provCfg := &config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+		},
+	}
+
+	t.Run("mock active", func(t *testing.T) {
+		t.Setenv(router.MockProviderEnvVar, "true")
+		resp := healthWithRegistry(t, router.BuildFromConfig(provCfg))
+
+		if !resp.MockProvider {
+			t.Error("mock_provider is false while every provider is served by the mock")
+		}
+		// Per provider as well as in aggregate, so a partially mocked gateway
+		// could not report itself as fully real.
+		for name, status := range resp.Providers.Details {
+			if status.Adapter != "mock" {
+				t.Errorf("provider %q reports adapter %q, want mock", name, status.Adapter)
+			}
+		}
+	})
+
+	t.Run("real providers", func(t *testing.T) {
+		t.Setenv(router.MockProviderEnvVar, "")
+		resp := healthWithRegistry(t, router.BuildFromConfig(provCfg))
+
+		if resp.MockProvider {
+			t.Error("mock_provider is true without the opt-in set")
+		}
+		if got := resp.Providers.Details["anthropic"].Adapter; got != "anthropic" {
+			t.Errorf("anthropic reports adapter %q, want anthropic", got)
+		}
+	})
+}
+
+func healthWithRegistry(t *testing.T, registry *router.Registry) healthResponse {
+	t.Helper()
+
+	tracker := router.NewHealthTracker(5, time.Second)
+	handler := makeHealthHandler(nil, nil, nil, registry, tracker)
+	req := httptest.NewRequest("GET", "/aegis/v1/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var resp healthResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if resp.Providers == nil {
+		t.Fatal("health response carries no providers block")
+	}
+	return resp
 }

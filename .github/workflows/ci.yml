@@ -328,6 +328,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # QEMU so the arm64 half of the manifest can be built on an amd64 runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -336,10 +340,31 @@ jobs:
         with:
           context: .
           push: true
+          # The documented no-clone path is `docker compose up` against a file
+          # that names this image, and the people most likely to run it are on
+          # Apple Silicon. An amd64-only image leaves them emulating a Go binary
+          # for no reason, or failing outright on a strict daemon.
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # A published image nobody can pull is worse than no image: the quickstart
+      # would silently fall back to building from source and the two-minute
+      # claim would quietly stop being true. Pull the tag that was just pushed,
+      # anonymously, from a clean context.
+      - name: Assert the pushed image is pullable and runs
+        run: |
+          set -euo pipefail
+          tag=$(head -1 <<<"${{ steps.meta.outputs.tags }}")
+          echo "checking $tag"
+          docker logout ghcr.io
+          for arch in amd64 arm64; do
+            docker manifest inspect "$tag" | grep -q "\"architecture\": \"$arch\"" \
+              || { echo "::error::$tag has no linux/$arch entry"; exit 1; }
+          done
+          docker run --rm --entrypoint gateway "$tag" -version
 
   goreleaser:
     name: Release Config
