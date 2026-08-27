@@ -25,8 +25,11 @@ import (
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 var (
@@ -393,8 +396,28 @@ func (s *slowReader) Close() error {
 // persists the wrong provider on the usage record. The non-streaming path in
 // handler.go has always used the configured name; this asserts the streaming
 // path agrees.
+//
+// It drives HandleStream rather than streamWithMonitoring, because the defect
+// was in what HandleStream passed down, not in what the inner function did with
+// it. A test that calls the inner function and hands it the right key itself
+// cannot fail when the call site regresses, which is the only regression there
+// is to catch here.
+//
+// The assertion is on the resulting cost rather than on a field, because the
+// consequence is what matters: the pricing table below has a row for the
+// configured provider and none for the adapter type, exactly as
+// configs/pricing.yaml does, so a stream attributed to the adapter type is
+// priced at zero.
 func TestStreamMetricsUsesProviderKeyNotAdapterName(t *testing.T) {
-	streamData := `data: {"model":"claude-haiku-4-5-20251001","choices":[{"delta":{"content":"Hi"}}]}
+	const (
+		configuredProvider = "anthropic"
+		adapterType        = "mock"
+		servedModel        = "claude-haiku-4-5-20251001"
+	)
+
+	streamData := `data: {"model":"` + servedModel + `","choices":[{"delta":{"content":"Hi"}}]}
+
+data: {"model":"` + servedModel + `","choices":[{"delta":{}}],"usage":{"prompt_tokens":1000,"completion_tokens":1000,"total_tokens":2000}}
 
 data: [DONE]
 
@@ -406,35 +429,72 @@ data: [DONE]
 	}
 	mockResp.Header.Set("Content-Type", "text/event-stream")
 
-	// The adapter reports "mock", as it does whenever AEGIS_MOCK_PROVIDER=true.
-	adapter := &mockStreamAdapter{name: "mock", response: mockResp}
-
-	streamingHandler := NewStreamingHandler(
-		&Handler{metrics: getTestMetrics()},
-		StreamingConfig{
-			PerChunkTimeout: 5 * time.Second,
-			TotalTimeout:    30 * time.Second,
-			BufferSize:      64 * 1024,
-			MaxBufferSize:   1024 * 1024,
+	// Priced under the configured provider name only, which is how
+	// configs/pricing.yaml is keyed. There is deliberately no "mock" section.
+	pricing := &config.PricingConfig{
+		Providers: map[string]config.ProviderPricing{
+			configuredProvider: {
+				Models: map[string]config.PriceEntry{
+					servedModel: {Input: 1.00, Output: 5.00},
+				},
+			},
 		},
+	}
+
+	handler := &Handler{
+		metrics:  getTestMetrics(),
+		costCalc: cost.NewCalculator(func() *config.PricingConfig { return pricing }),
+	}
+	streamingHandler := NewStreamingHandler(handler, StreamingConfig{
+		PerChunkTimeout: 5 * time.Second,
+		TotalTimeout:    30 * time.Second,
+		BufferSize:      64 * 1024,
+		MaxBufferSize:   1024 * 1024,
+	})
+
+	// The adapter reports "mock", as every adapter does when
+	// AEGIS_MOCK_PROVIDER is set, and as azure_openai and internal_vllm
+	// already did by reporting "openai".
+	adapter := &mockStreamAdapter{name: adapterType, response: mockResp}
+	if adapter.Name() == configuredProvider {
+		t.Fatalf("test is vacuous: the adapter type and the configured provider are both %q", configuredProvider)
+	}
+
+	// getTestMetrics returns one process-wide registry, so a fresh org label
+	// keeps this test's counters its own rather than reading another test's.
+	const org = "test-org-provider-key-attribution"
+	const alias = "aegis-fast"
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	providerReq, _ := http.NewRequest("POST", "http://mock-provider.invalid", nil)
+
+	streamingHandler.HandleStream(
+		w, req, "test-req-id", providerReq, adapter,
+		configuredProvider, // what routing resolved, and what pricing is keyed by
+		alias,
+		&auth.AuthInfo{OrganizationID: org},
+		&types.AegisRequest{Model: alias, Stream: true},
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	pricedUnder := func(provider string) float64 {
+		return testutil.ToFloat64(
+			handler.metrics.CostUSDTotal.WithLabelValues(org, "", alias, provider))
+	}
 
-	metrics := streamingHandler.streamWithMonitoring(
-		ctx,
-		httptest.NewRecorder(),
-		"test-req-id",
-		mockResp,
-		adapter,
-		// The configured provider name, which is what routing resolved.
-		"anthropic",
-		&auth.AuthInfo{OrganizationID: "test-org"},
-	)
+	// 1000 input at $1/M plus 1000 output at $5/M.
+	const wantCost = 0.006
 
-	if metrics.Provider != "anthropic" {
-		t.Errorf("streaming attributed to %q; want the configured provider key %q (adapter.Name() is %q)",
-			metrics.Provider, "anthropic", adapter.Name())
+	if got := pricedUnder(configuredProvider); got == 0 {
+		t.Errorf("nothing was priced against the configured provider %q: HandleStream "+
+			"attributed the stream to the adapter type %q, for which there is no pricing "+
+			"row, so the request cost zero", configuredProvider, adapterType)
+	} else if diff := got - wantCost; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("stream priced at %v under %q, want %v", got, configuredProvider, wantCost)
+	}
+
+	if got := pricedUnder(adapterType); got != 0 {
+		t.Errorf("%v was attributed to the adapter type %q; usage records and cost "+
+			"dashboards must key off the configured provider name", got, adapterType)
 	}
 }
