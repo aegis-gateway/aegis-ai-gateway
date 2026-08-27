@@ -92,15 +92,14 @@ fi
 
 # ── Provider selection ───────────────────────────────────────────
 
-# Keys may already be in the shell, or in a .env left by an earlier run.
-if [ -f "${DEMO_DIR}/.env" ]; then
-  # shellcheck disable=SC1091
-  set -a && . "${DEMO_DIR}/.env" && set +a
-elif [ -f "${SCRIPT_DIR}/.env" ]; then
+# Keys may already be in the shell, or in a .env left by an earlier run. A key
+# exported in the shell wins over one in the file, so that a .env copied from
+# .env.example, which carries empty key lines, does not mask a real one.
+if [ ! -f "${DEMO_DIR}/.env" ] && [ -f "${SCRIPT_DIR}/.env" ]; then
   cp "${SCRIPT_DIR}/.env" "${DEMO_DIR}/.env"
-  # shellcheck disable=SC1091
-  set -a && . "${DEMO_DIR}/.env" && set +a
 fi
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/demos/shared/load-env.sh" "${DEMO_DIR}/.env"
 
 PROVIDER_NOTICE=""
 if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
