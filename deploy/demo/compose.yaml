@@ -87,10 +87,17 @@ services:
       redis:
         condition: service_healthy
     ports:
+      # Bound to the loopback interface, not 0.0.0.0. This file seeds a
+      # well-known API key and publishes its own pepper below, on the stated
+      # basis that nothing here is reachable from outside the machine. A plain
+      # "8080:8080" publishes on every interface and makes that false on any
+      # shared workstation or cloud host, where anyone who can reach the host
+      # could then issue authenticated requests against the demo.
+      #
       # The gateway, OpenAI-compatible.
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
       # Prometheus metrics, all prefixed aegis_.
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     environment:
       DATABASE_URL: postgres://aegis:aegis-dev@postgres:5432/aegis?sslmode=disable
       DB_HOST: postgres
