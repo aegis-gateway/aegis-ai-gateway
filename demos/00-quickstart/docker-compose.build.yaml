@@ -1,0 +1,16 @@
+# Overlay that builds the gateway from this working tree instead of pulling the
+# published image. Applied by `./quickstart.sh --build`, which runs:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+#
+# This is the contributor path. Use it to see a local change running; the
+# default path pulls a released image and needs no Go toolchain.
+
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    # Overrides the published tag so a local build never masquerades as a
+    # release, in `docker images` or in anything reading the image reference.
+    image: aegis-ai-gateway:local
