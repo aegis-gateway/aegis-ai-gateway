@@ -38,6 +38,16 @@ jobs:
       - name: Documentation citations
         run: ./scripts/check-citations.sh
 
+      # The README model table names upstream providers and the exact models
+      # each alias routes to. Those names go stale, and a stale table on the
+      # front page of a project whose argument is that every claim points at a
+      # file is worse than no table. It is generated from configs/models.yaml,
+      # so this fails when the two disagree.
+      - name: README model table is generated, not drifted
+        run: |
+          python3 -m pip install --quiet pyyaml
+          ./scripts/gen-model-table.sh --check
+
       - name: golangci-lint
         run: golangci-lint run ./...
 

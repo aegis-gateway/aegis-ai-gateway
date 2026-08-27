@@ -14,7 +14,7 @@ test:
 	go test ./... -v -race -cover
 
 test-integration:
-	go test ./test/integration/... -v -tags=integration
+	go test ./... -v -tags=integration -count=1 -p 1
 
 lint:
 	golangci-lint run ./...

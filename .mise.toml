@@ -97,7 +97,10 @@ run = "go test ./... -v -race -cover"
 [tasks."test:integration"]
 description = "Run integration tests (starts services and migrates first)"
 depends = ["services:up", "db:migrate"]
-run = "go test ./test/integration/... -v -tags=integration -count=1"
+# ./test/integration/ does not exist and never has. The integration tests live
+# beside the code they cover, behind the `integration` build tag, so select them
+# by tag across the tree rather than by a directory that is not there.
+run = "go test ./... -v -tags=integration -count=1 -p 1"
 
 # ── Lint / Format ─────────────────────────────────────────────────
 
@@ -133,3 +136,13 @@ go run ./cmd/keygen \
   -classification INTERNAL \
   -expires 365d
 """
+
+# ── Docs ──────────────────────────────────────────────────────────
+
+[tasks."docs:models"]
+description = "Regenerate the README model alias table from configs/models.yaml"
+run = "./scripts/gen-model-table.sh"
+
+[tasks."docs:models:check"]
+description = "Fail if the README model table is out of date (CI)"
+run = "./scripts/gen-model-table.sh --check"
