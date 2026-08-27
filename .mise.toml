@@ -124,14 +124,28 @@ key=$(go run ./cmd/keygen -org mise-org -team mise-team -name integration \
 [ -n "$key" ] || { echo "could not issue an API key" >&2; exit 1; }
 export TEST_API_KEY="$key"
 
-go run ./cmd/gateway > /tmp/aegis-integration-gateway.log 2>&1 &
+# Build first and run the binary directly. `go run` execs the compiled
+# program as a *child*, so trapping the `go run` PID would leave the gateway
+# holding GATEWAY_PORT after the task finished — and the next run would either
+# fail to bind or, worse, silently test against the stale process.
+bin=$(mktemp -t aegis-gateway-XXXXXX)
+go build -o "$bin" ./cmd/gateway
+"$bin" > /tmp/aegis-integration-gateway.log 2>&1 &
 gw=$!
-trap 'kill $gw 2>/dev/null || true' EXIT
+trap 'kill "$gw" 2>/dev/null || true; wait "$gw" 2>/dev/null || true; rm -f "$bin"' EXIT
+
+ready=0
 for _ in $(seq 1 60); do
-  curl -fsS "http://localhost:${GATEWAY_PORT}/aegis/v1/health" >/dev/null 2>&1 && break
-  kill -0 $gw 2>/dev/null || { echo "gateway exited early:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
+  if curl -fsS "http://localhost:${GATEWAY_PORT}/aegis/v1/health" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  kill -0 "$gw" 2>/dev/null || { echo "gateway exited before becoming healthy:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
   sleep 1
 done
+# Without this the loop falls through on timeout and the tests run against a
+# gateway that never came up, reporting connection errors as test failures.
+[ "$ready" = "1" ] || { echo "gateway did not become healthy within 60s:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
 
 go test ./internal/audit/... ./internal/purge/... -v -tags=integration -count=1 -p 1
 """
