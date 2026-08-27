@@ -104,8 +104,15 @@ fi
 
 PROVIDER_NOTICE=""
 if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  # Compose reaches the gateway container through env_file only:
+  # docker-compose.yaml does not list the provider keys under `environment`, so
+  # a key exported in this shell and nowhere else never arrives. Without this
+  # the documented `export OPENAI_API_KEY=... && ./quickstart.sh` path turns the
+  # mock off and then starts real adapters with no credentials. Merged rather
+  # than written, so an existing .env keeps the rest of its contents.
+  "${SCRIPT_DIR}/demos/shared/merge-env.sh" "${DEMO_DIR}/.env"
   export AEGIS_MOCK_PROVIDER=""
-  PROVIDER_NOTICE="Using a real provider: a key was found in the environment."
+  PROVIDER_NOTICE="Using a real provider: a key was found."
 else
   export AEGIS_MOCK_PROVIDER="true"
   PROVIDER_NOTICE="Running against a mock provider. No request will reach a real one. Set OPENAI_API_KEY or ANTHROPIC_API_KEY to use a real provider."
