@@ -147,6 +147,15 @@ func main() {
 		providerRegistry.ReplaceFrom(newRegistry)
 		logger.Info("provider registry reloaded")
 	})
+	// Stated at startup as well as on the health endpoint. A gateway that is
+	// not calling any provider should say so in the first few lines of its log,
+	// not only when somebody thinks to ask it.
+	if providerRegistry.UsesMockProvider() {
+		logger.Warn("MOCK PROVIDER ACTIVE: completions are answered locally and no request reaches a provider",
+			"opt_in", router.MockProviderEnvVar+"=true",
+			"disable", "unset "+router.MockProviderEnvVar+" and set OPENAI_API_KEY or ANTHROPIC_API_KEY",
+		)
+	}
 
 	// Initialize metrics
 	metrics := telemetry.NewMetrics()
@@ -404,6 +413,13 @@ type healthResponse struct {
 	Database  *databaseHealth  `json:"database,omitempty"`
 	Redis     *redisHealth     `json:"redis,omitempty"`
 	Providers *providersHealth `json:"providers,omitempty"`
+
+	// MockProvider is true when every provider is served by the mock adapter,
+	// meaning no request reaches a real provider. It is reported here so that
+	// "is this gateway actually calling out?" is answerable without reading the
+	// process environment, and it is emitted even when false so that its
+	// absence from a response means an old build rather than a real provider.
+	MockProvider bool `json:"mock_provider"`
 }
 
 type databaseHealth struct {
@@ -430,6 +446,10 @@ type providersHealth struct {
 type providerStatus struct {
 	Healthy bool   `json:"healthy"`
 	State   string `json:"state,omitempty"`
+	// Adapter is the adapter type serving this provider ("openai",
+	// "anthropic", "mock"). A provider registered under one name and served by
+	// the mock adapter is visible here per provider, not only in aggregate.
+	Adapter string `json:"adapter,omitempty"`
 }
 
 func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit.Limiter, registry *router.Registry, healthTracker *router.HealthTracker) http.HandlerFunc {
@@ -488,6 +508,10 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 			resp.Redis = redisHealth
 		}
 
+		if registry != nil {
+			resp.MockProvider = registry.UsesMockProvider()
+		}
+
 		// Check provider availability using health tracker
 		if registry != nil && healthTracker != nil {
 			provHealth := &providersHealth{
@@ -508,6 +532,7 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 				provHealth.Details[provName] = providerStatus{
 					Healthy: healthy,
 					State:   state,
+					Adapter: registry.AdapterType(provName),
 				}
 			}
 
