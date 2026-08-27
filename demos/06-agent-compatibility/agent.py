@@ -125,7 +125,7 @@ try:
             }
         ],
     )
-    print("  UNEXPECTED: request succeeded — secrets filter may be disabled")
+    record("1. Secrets filter", "FAIL", "request succeeded — the secrets filter did not block it")
     print(f"  Response: {resp.choices[0].message.content[:200]}")
 except APIStatusError as e:
     if e.status_code == 451:
@@ -135,7 +135,7 @@ except APIStatusError as e:
         print("  The audit row records event_type='filter_block'.")
         print("  The key value is NOT stored — only the detection label.")
     else:
-        print(f"  UNEXPECTED status {e.status_code}")
+        record("1. Secrets filter", "FAIL", f"expected 451, got HTTP {e.status_code}")
         show_error(e)
 
 
@@ -161,6 +161,7 @@ try:
             }
         ],
     )
+    record("2. Policy denial", "FAIL", "request succeeded — the policy did not deny it")
     print("  UNEXPECTED: request succeeded — policy may not be loaded")
     print(f"  Response: {resp.choices[0].message.content[:200]}")
 except APIStatusError as e:
@@ -171,6 +172,7 @@ except APIStatusError as e:
         print("  The reason is the Rego deny message — fully readable by the agent.")
         print("  Agent behaviour: surfaces error to user, does NOT retry 451.")
     else:
+        record("2. Policy denial", "FAIL", f"expected 451, got HTTP {e.status_code}")
         print(f"  UNEXPECTED status {e.status_code}")
         show_error(e)
 
@@ -252,8 +254,12 @@ messages = [
     {"role": "user", "content": "Read src/main.go and tell me the package name."},
     {
         "role": "assistant",
-        # tool_calls is silently dropped — no field in AegisRequest
-        "content": None,
+        # tool_calls is silently dropped — no field in AegisRequest.
+        # content must be a non-empty string: once tool_calls is stripped this
+        # is all that remains of the turn, and Anthropic (the primary route for
+        # every alias) rejects an empty text block. With content=None the act
+        # errored upstream and never reached the finding it exists to record.
+        "content": "I'll read that file.",
         "tool_calls": [
             {
                 "id": "call_demo_001",
@@ -361,6 +367,10 @@ try:
 except APIStatusError as e:
     record("5. Long context", "FAIL", f"HTTP {e.status_code}")
     show_error(e)
+except Exception as ex:
+    # Without this the act raises, the script dies mid-run, and no summary is
+    # printed at all — the same silent outcome the ledger exists to prevent.
+    record("5. Long context", "ERROR", f"{type(ex).__name__}: {ex}")
 
 
 # ── ACT 6: Denial behaviour ──────────────────────────────────────
@@ -372,6 +382,7 @@ print("  Verifying: agent surfaces error once, does not retry.")
 print()
 
 attempt_count = 0
+denial_outcome = ("ERROR", "the retry loop did not reach a conclusion")
 MAX_ATTEMPTS = 3
 
 for attempt in range(MAX_ATTEMPTS):
@@ -387,25 +398,33 @@ for attempt in range(MAX_ATTEMPTS):
             ],
         )
         print(f"  Attempt {attempt+1}: UNEXPECTED success — aborting retry check")
+        denial_outcome = ("FAIL", "request succeeded — the policy did not deny it")
         break
     except APIStatusError as e:
         if e.status_code == 451:
             print(f"  Attempt {attempt+1}: blocked (451) — not retrying")
+            denial_outcome = ("PASS", "agent stopped after first denial, no retry loop")
             if attempt == 0:
                 show_error(e)
             break
         else:
             print(f"  Attempt {attempt+1}: error {e.status_code} — continuing")
+            denial_outcome = ("FAIL", f"expected 451, got HTTP {e.status_code}")
     except Exception as ex:
         print(f"  Attempt {attempt+1}: error — {ex}")
+        denial_outcome = ("ERROR", f"{type(ex).__name__}: {ex}")
         break
 
 print()
 print(f"  Total attempts: {attempt_count}")
-if attempt_count == 1:
-    record("6. Denial behaviour", "PASS", "agent stopped after first denial, no retry loop")
-else:
-    print(f"  NOTE: {attempt_count} attempts — review retry config if > 1 was unintentional")
+
+# The outcome is what happened, not how many attempts it took. A single
+# attempt also covers "succeeded immediately" and "failed for an unrelated
+# reason", both of which were previously reported as a clean stop.
+outcome, detail = denial_outcome
+if outcome == "PASS" and attempt_count > 1:
+    outcome, detail = "FAIL", f"denied, but only after {attempt_count} attempts — expected no retry"
+record("6. Denial behaviour", outcome, detail)
 
 
 # ── Summary ──────────────────────────────────────────────────────
