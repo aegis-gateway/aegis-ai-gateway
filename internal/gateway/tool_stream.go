@@ -16,6 +16,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sort"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
@@ -87,10 +88,20 @@ func (a *toolCallAccumulator) Observe(chunk []byte) {
 	}
 	for _, choice := range parsed.Choices {
 		for _, tc := range choice.Delta.ToolCalls {
-			idx := 0
-			if tc.Index != nil {
-				idx = *tc.Index
+			// Index is a pointer so that "absent" is distinguishable from 0.
+			// Defaulting a missing index to 0 folds the delta into the first
+			// tool call, corrupting a call that was otherwise correct — the
+			// exact merge the pointer exists to prevent. Every provider that
+			// streams parallel tool calls sends the index; a delta without one
+			// is malformed, so drop the fragment rather than damage a good
+			// call, and say so, because a silent drop is its own failure.
+			if tc.Index == nil {
+				slog.Warn("tool call delta has no index; dropping the fragment",
+					"reason", "attaching it to index 0 would corrupt the first tool call",
+					"tool_call_id", tc.ID, "function", tc.Function.Name)
+				continue
 			}
+			idx := *tc.Index
 			call, ok := a.byIndex[idx]
 			if !ok {
 				call = &accumulatedCall{}

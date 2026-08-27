@@ -483,3 +483,47 @@ func TestToolNames_AreNamesOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeChatCompletion_RejectsNestedToolFields asserts the fail-closed
+// contract reaches inside the tool structures. Checking only the top level and
+// the message level left `tools[].function.strcit` — a plausible typo for
+// `strict` — silently dropped, which is the same silent-drop this decoder
+// exists to stop: the provider gets a materially different tool definition and
+// nothing tells the caller.
+func TestDecodeChatCompletion_RejectsNestedToolFields(t *testing.T) {
+	cases := map[string]string{
+		"typo inside tools[].function": `{"model":"m","messages":[{"role":"user","content":"hi"}],
+			"tools":[{"type":"function","function":{"name":"f","strcit":true}}]}`,
+		"unknown key on tools[]": `{"model":"m","messages":[{"role":"user","content":"hi"}],
+			"tools":[{"type":"function","function":{"name":"f"},"cache":true}]}`,
+		"unknown key inside tool_calls[].function": `{"model":"m","messages":[
+			{"role":"assistant","tool_calls":[{"id":"c1","type":"function",
+			 "function":{"name":"f","arguments":"{}","extra":1}}]}]}`,
+		"unknown key on tool_calls[]": `{"model":"m","messages":[
+			{"role":"assistant","tool_calls":[{"id":"c1","type":"function",
+			 "function":{"name":"f","arguments":"{}"},"bogus":1}]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeChatCompletion([]byte(body)); err == nil {
+				t.Error("accepted an unknown nested field; it would be dropped silently " +
+					"and the provider would receive a different tool definition")
+			}
+		})
+	}
+}
+
+// TestDecodeChatCompletion_AcceptsValidToolShapes guards the other direction:
+// the new allowlists must not reject legitimate requests.
+func TestDecodeChatCompletion_AcceptsValidToolShapes(t *testing.T) {
+	body := `{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","tool_calls":[{"id":"c1","type":"function",
+		  "function":{"name":"f","arguments":"{\"a\":1}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"ok"}],
+		"tools":[{"type":"function","function":{
+		  "name":"f","description":"d","parameters":{"type":"object"},"strict":true}}]}`
+	if _, err := DecodeChatCompletion([]byte(body)); err != nil {
+		t.Errorf("rejected a valid tool-calling request: %v", err)
+	}
+}

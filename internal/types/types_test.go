@@ -218,3 +218,40 @@ func TestMessage_OmitsEmptyName(t *testing.T) {
 		t.Error("expected name to be omitted when empty")
 	}
 }
+
+// TestTextSegments_ScansToolNames asserts that tool and tool-call names reach
+// the filter chain. OpenAI accepts ^[a-zA-Z0-9_-]{1,64}$ for a tool name, which
+// admits an AWS access key id verbatim — so treating names as unscannable
+// metadata let a credential egress through the one field nothing inspected.
+func TestTextSegments_ScansToolNames(t *testing.T) {
+	const awsKey = "AKIAIOSFODNN7EXAMPLE" // 20 chars, alphanumeric: a legal tool name
+
+	req := &AegisRequest{
+		Messages: []Message{{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:       "call_1",
+				Function: FunctionCallSpec{Name: awsKey, Arguments: `{"x":1}`},
+			}},
+		}},
+		Tools: []Tool{{
+			Function: FunctionDef{Name: awsKey, Description: "harmless"},
+		}},
+	}
+
+	var names []string
+	for _, seg := range req.TextSegments() {
+		if seg.Text == awsKey {
+			names = append(names, string(seg.Kind))
+		}
+	}
+	if len(names) != 2 {
+		t.Fatalf("expected the key to appear as scannable text in both the tool "+
+			"definition name and the tool-call name; got %d segment(s): %v", len(names), names)
+	}
+	for _, k := range names {
+		if k != string(SegmentToolName) {
+			t.Errorf("name segment has kind %q, want %q", k, SegmentToolName)
+		}
+	}
+}

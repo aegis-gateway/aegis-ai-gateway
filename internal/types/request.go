@@ -104,6 +104,12 @@ const (
 	SegmentToolResult SegmentKind = "tool_result"
 	// SegmentToolDefinition is a tool's name, description or parameter schema.
 	SegmentToolDefinition SegmentKind = "tool_definition"
+	// SegmentToolName is a tool or tool-call *name*. Names are metadata for
+	// routing and policy, but they are still client-supplied text that reaches
+	// the provider: OpenAI accepts ^[a-zA-Z0-9_-]{1,64}$, which admits an AWS
+	// access key id verbatim. Treating a name as unscannable metadata let a
+	// credential egress through the one field the filters never looked at.
+	SegmentToolName SegmentKind = "tool_name"
 )
 
 // TextSegment is one text-bearing element of a request, with enough context to
@@ -161,6 +167,11 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 	}
 
 	for _, tc := range m.ToolCalls {
+		if tc.Function.Name != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolName, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Name,
+			})
+		}
 		if tc.Function.Arguments == "" {
 			continue
 		}
@@ -178,7 +189,9 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 //
 // Tool definitions are included because they are client-supplied text that
 // reaches the provider. A credential pasted into a tool description egresses
-// exactly as readily as one pasted into a prompt.
+// exactly as readily as one pasted into a prompt — and so does one pasted into
+// a tool *name*, which is why names are emitted as segments rather than used
+// only as the Ref label.
 func (r *AegisRequest) TextSegments() []TextSegment {
 	var segs []TextSegment
 	for i, m := range r.Messages {
@@ -186,6 +199,11 @@ func (r *AegisRequest) TextSegments() []TextSegment {
 	}
 	for _, t := range r.Tools {
 		name := t.Function.Name
+		if name != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolName, MessageIndex: -1, Ref: name, Text: name,
+			})
+		}
 		if t.Function.Description != "" {
 			segs = append(segs, TextSegment{
 				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: t.Function.Description,

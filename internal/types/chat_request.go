@@ -125,6 +125,27 @@ var messageFields = map[string]bool{
 	"tool_calls": true, "tool_call_id": true,
 }
 
+// The tool structures need their own allowlists. Checking only the top level
+// and the message level left `tools[].function.strcit` — a plausible typo for
+// `strict` — silently dropped by ordinary unmarshal, which is precisely the
+// failure this decoder exists to stop: the provider receives a materially
+// different tool definition and nothing says so.
+var toolFields = map[string]bool{
+	"type": true, "function": true,
+}
+
+var toolFunctionFields = map[string]bool{
+	"name": true, "description": true, "parameters": true, "strict": true,
+}
+
+var toolCallFields = map[string]bool{
+	"index": true, "id": true, "type": true, "function": true,
+}
+
+var toolCallFunctionFields = map[string]bool{
+	"name": true, "arguments": true,
+}
+
 // refusalReasons explains, per field, what accepting-and-ignoring would have
 // cost the caller. Any field not listed gets the generic message.
 //
@@ -211,6 +232,50 @@ func DecodeChatCompletion(data []byte) (*AegisRequest, error) {
 		}
 	}
 
+	// tools[] and their nested function objects.
+	if rawTools, ok := top["tools"]; ok {
+		var elems []map[string]json.RawMessage
+		if err := json.Unmarshal(rawTools, &elems); err != nil {
+			return nil, fmt.Errorf("tools: %w", err)
+		}
+		for i, t := range elems {
+			path := fmt.Sprintf("tools[%d]", i)
+			if err := checkFields(t, toolFields, nil, path); err != nil {
+				return nil, err
+			}
+			if err := checkNested(t, "function", toolFunctionFields, path); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// messages[].tool_calls[] and their nested function objects.
+	if rawMsgs, ok := top["messages"]; ok {
+		var elems []map[string]json.RawMessage
+		if err := json.Unmarshal(rawMsgs, &elems); err != nil {
+			return nil, fmt.Errorf("messages: %w", err)
+		}
+		for i, m := range elems {
+			rawCalls, ok := m["tool_calls"]
+			if !ok {
+				continue
+			}
+			var calls []map[string]json.RawMessage
+			if err := json.Unmarshal(rawCalls, &calls); err != nil {
+				return nil, fmt.Errorf("messages[%d].tool_calls: %w", i, err)
+			}
+			for j, c := range calls {
+				path := fmt.Sprintf("messages[%d].tool_calls[%d]", i, j)
+				if err := checkFields(c, toolCallFields, nil, path); err != nil {
+					return nil, err
+				}
+				if err := checkNested(c, "function", toolCallFunctionFields, path); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	var wire ChatCompletionRequest
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, err
@@ -269,4 +334,19 @@ func MetricFieldLabel(field string) string {
 		return field
 	}
 	return "other"
+}
+
+// checkNested applies an allowlist to an object nested under key inside parent.
+// A missing or null key is not an error — the field is optional; only its
+// contents are constrained.
+func checkNested(parent map[string]json.RawMessage, key string, allowed map[string]bool, path string) error {
+	raw, ok := parent[key]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return fmt.Errorf("%s.%s: %w", path, key, err)
+	}
+	return checkFields(obj, allowed, nil, path+"."+key)
 }

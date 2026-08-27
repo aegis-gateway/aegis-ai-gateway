@@ -187,3 +187,28 @@ func splitForTest(s string, n int) []string {
 	}
 	return out
 }
+
+// TestToolCallAccumulator_MissingIndexDoesNotMergeIntoFirstCall covers the case
+// the Index pointer exists for. Defaulting an absent index to 0 folded the
+// delta into the first tool call, corrupting a call that was otherwise
+// correct — and the existing test for this never actually omitted the field.
+func TestToolCallAccumulator_MissingIndexDoesNotMergeIntoFirstCall(t *testing.T) {
+	acc := newToolCallAccumulator()
+	for _, chunk := range []string{
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c0","type":"function","function":{"name":"read_file","arguments":"{\"p\":"}}]}}]}`,
+		// No index: malformed, and must not land on call 0.
+		`{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"\"/etc/shadow\"}"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a.go\"}"}}]}}]}`,
+	} {
+		acc.Observe([]byte(chunk))
+	}
+
+	calls := acc.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 accumulated call, got %d", len(calls))
+	}
+	if got := calls[0].Function.Arguments; got != `{"p":"a.go"}` {
+		t.Errorf("arguments = %q, want %q — the indexless fragment was merged into the first call",
+			got, `{"p":"a.go"}`)
+	}
+}
