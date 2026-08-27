@@ -36,7 +36,11 @@ type RouterProcessor struct {
 
 // RouteResult contains the routing decision and transformed request.
 type RouteResult struct {
-	Adapter       adapters.ProviderAdapter
+	Adapter adapters.ProviderAdapter
+	// ProviderKey is the configured provider name from configs/providers.yaml.
+	// It is not interchangeable with Adapter.Name(), which is only the adapter
+	// type; pricing and usage attribution must use this.
+	ProviderKey   string
 	ProviderModel string
 	ProviderReq   *http.Request
 }
@@ -62,7 +66,7 @@ func (rp *RouterProcessor) RouteToProvider(
 			"No provider available: "+err.Error(),
 		)
 	}
-	adapter, providerModel := route.Adapter, route.Model
+	adapter, providerKey, providerModel := route.Adapter, route.ProviderKey, route.Model
 
 	// Override model with the provider-specific model name
 	originalModel := aegisReq.Model
@@ -85,6 +89,7 @@ func (rp *RouterProcessor) RouteToProvider(
 
 	return &RouteResult{
 		Adapter:       adapter,
+		ProviderKey:   providerKey,
 		ProviderModel: providerModel,
 		ProviderReq:   providerReq,
 	}, nil

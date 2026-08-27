@@ -144,7 +144,7 @@ data: [DONE]
 	providerReq, _ := http.NewRequest("POST", "http://mock-provider.com", nil)
 
 	// Execute streaming
-	streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "gpt-4", authInfo, aegisReq)
+	streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", authInfo, aegisReq)
 
 	// Verify response
 	if w.Code != http.StatusOK {
@@ -236,7 +236,7 @@ func TestStreamTimeouts(t *testing.T) {
 
 			// Execute streaming
 			start := time.Now()
-			streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "gpt-4", authInfo, aegisReq)
+			streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", authInfo, aegisReq)
 			duration := time.Since(start)
 
 			// Verify timeout behavior
@@ -380,4 +380,61 @@ func (s *slowReader) Read(p []byte) (n int, err error) {
 
 func (s *slowReader) Close() error {
 	return nil
+}
+
+// TestStreamMetricsUsesProviderKeyNotAdapterName pins the attribution used for
+// streaming pricing and usage records.
+//
+// adapter.Name() is the adapter type, not the configured provider. It is shared
+// across providers (azure_openai and internal_vllm both report "openai") and it
+// is "mock" for every provider when AEGIS_MOCK_PROVIDER is set. Pricing rows in
+// configs/pricing.yaml are keyed by the configured name, so attributing a
+// stream to the adapter type prices it against a row that does not exist and
+// persists the wrong provider on the usage record. The non-streaming path in
+// handler.go has always used the configured name; this asserts the streaming
+// path agrees.
+func TestStreamMetricsUsesProviderKeyNotAdapterName(t *testing.T) {
+	streamData := `data: {"model":"claude-haiku-4-5-20251001","choices":[{"delta":{"content":"Hi"}}]}
+
+data: [DONE]
+
+`
+	mockResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewBufferString(streamData)),
+		Header:     make(http.Header),
+	}
+	mockResp.Header.Set("Content-Type", "text/event-stream")
+
+	// The adapter reports "mock", as it does whenever AEGIS_MOCK_PROVIDER=true.
+	adapter := &mockStreamAdapter{name: "mock", response: mockResp}
+
+	streamingHandler := NewStreamingHandler(
+		&Handler{metrics: getTestMetrics()},
+		StreamingConfig{
+			PerChunkTimeout: 5 * time.Second,
+			TotalTimeout:    30 * time.Second,
+			BufferSize:      64 * 1024,
+			MaxBufferSize:   1024 * 1024,
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	metrics := streamingHandler.streamWithMonitoring(
+		ctx,
+		httptest.NewRecorder(),
+		"test-req-id",
+		mockResp,
+		adapter,
+		// The configured provider name, which is what routing resolved.
+		"anthropic",
+		&auth.AuthInfo{OrganizationID: "test-org"},
+	)
+
+	if metrics.Provider != "anthropic" {
+		t.Errorf("streaming attributed to %q; want the configured provider key %q (adapter.Name() is %q)",
+			metrics.Provider, "anthropic", adapter.Name())
+	}
 }
