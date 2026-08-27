@@ -61,7 +61,7 @@ func TestClient_NoPII_Pass(t *testing.T) {
 	}
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "Hello world"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("Hello world")}},
 		Classification: "INTERNAL",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -83,7 +83,7 @@ func TestClient_PIIDetected_Confidential_Block(t *testing.T) {
 	}
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "John Doe lives at 123 Main St"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("John Doe lives at 123 Main St")}},
 		Classification: "CONFIDENTIAL",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -108,7 +108,7 @@ func TestClient_PIIDetected_Restricted_Block(t *testing.T) {
 	}
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "Email: john@example.com"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("Email: john@example.com")}},
 		Classification: "RESTRICTED",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -130,7 +130,7 @@ func TestClient_PIIDetected_Internal_Flag(t *testing.T) {
 	}
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "Contact me at john@example.com"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("Contact me at john@example.com")}},
 		Classification: "INTERNAL",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -147,7 +147,7 @@ func TestClient_GRPCError_FailClosed(t *testing.T) {
 	}
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "test"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("test")}},
 		Classification: "INTERNAL",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -164,7 +164,7 @@ func TestClient_GRPCError_FailOpen(t *testing.T) {
 	}
 	c := clientWithMock(mock, true)
 	req := &types.AegisRequest{
-		Messages:       []types.Message{{Role: "user", Content: "test"}},
+		Messages:       []types.Message{{Role: "user", Content: types.TextContent("test")}},
 		Classification: "INTERNAL",
 	}
 	result := c.ScanRequest(context.Background(), req)
@@ -181,7 +181,7 @@ func TestClient_NotConnected_FailClosed(t *testing.T) {
 		}
 	})
 	req := &types.AegisRequest{
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("test")}},
 	}
 	result := c.ScanRequest(context.Background(), req)
 	if result.Action != filter.ActionBlock {
@@ -197,7 +197,7 @@ func TestClient_NotConnected_FailOpen(t *testing.T) {
 		}
 	})
 	req := &types.AegisRequest{
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("test")}},
 	}
 	result := c.ScanRequest(context.Background(), req)
 	if result.Action != filter.ActionPass {
@@ -253,8 +253,8 @@ func TestClient_MultipleMessages_FirstPIIBlocks(t *testing.T) {
 	c := clientWithMock(mock, false)
 	req := &types.AegisRequest{
 		Messages: []types.Message{
-			{Role: "user", Content: "Hello there"},
-			{Role: "user", Content: "Call 555-123-4567"},
+			{Role: "user", Content: types.TextContent("Hello there")},
+			{Role: "user", Content: types.TextContent("Call 555-123-4567")},
 		},
 		Classification: "RESTRICTED",
 	}

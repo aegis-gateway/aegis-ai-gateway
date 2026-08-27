@@ -57,7 +57,7 @@ func TestMockAdapter_RoundTripReturnsDeterministicCompletion(t *testing.T) {
 	m := newTestMock()
 	req := &types.AegisRequest{
 		Model:    "claude-haiku-4-5-20251001",
-		Messages: []types.Message{{Role: "user", Content: "Hello from AEGIS!"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("Hello from AEGIS!")}},
 	}
 
 	first := mockRoundTrip(t, m, req)
@@ -66,8 +66,8 @@ func TestMockAdapter_RoundTripReturnsDeterministicCompletion(t *testing.T) {
 	if len(first.Choices) != 1 {
 		t.Fatalf("got %d choices, want 1", len(first.Choices))
 	}
-	if first.Choices[0].Message.Content != mockCompletionText {
-		t.Errorf("content = %q, want the canned completion", first.Choices[0].Message.Content)
+	if first.Choices[0].Message.Content.Flatten() != mockCompletionText {
+		t.Errorf("content = %q, want the canned completion", first.Choices[0].Message.Content.Flatten())
 	}
 	if first.Choices[0].FinishReason != "stop" {
 		t.Errorf("finish_reason = %q, want %q", first.Choices[0].FinishReason, "stop")
@@ -81,7 +81,7 @@ func TestMockAdapter_RoundTripReturnsDeterministicCompletion(t *testing.T) {
 
 	// Deterministic: the quickstart's verify mode asserts on this response, and
 	// a body that varied run to run would make that assertion worthless.
-	if first.Choices[0].Message.Content != second.Choices[0].Message.Content ||
+	if first.Choices[0].Message.Content.Flatten() != second.Choices[0].Message.Content.Flatten() ||
 		first.Usage != second.Usage {
 		t.Errorf("two identical requests produced different responses:\n%+v\n%+v", first, second)
 	}
@@ -92,13 +92,13 @@ func TestMockAdapter_TokenCountsArePlausibleAndVaryWithInput(t *testing.T) {
 
 	short := mockRoundTrip(t, m, &types.AegisRequest{
 		Model:    "claude-haiku-4-5-20251001",
-		Messages: []types.Message{{Role: "user", Content: "Hi"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("Hi")}},
 	})
 	long := mockRoundTrip(t, m, &types.AegisRequest{
 		Model: "claude-haiku-4-5-20251001",
 		Messages: []types.Message{{
 			Role:    "user",
-			Content: strings.Repeat("the quick brown fox jumps over the lazy dog. ", 40),
+			Content: types.TextContent(strings.Repeat("the quick brown fox jumps over the lazy dog. ", 40)),
 		}},
 	})
 
@@ -126,7 +126,7 @@ func TestMockAdapter_StreamingEmitsOpenAIFormatSSE(t *testing.T) {
 
 	httpReq, err := m.TransformRequest(context.Background(), &types.AegisRequest{
 		Model:    "claude-haiku-4-5-20251001",
-		Messages: []types.Message{{Role: "user", Content: "stream please"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("stream please")}},
 		Stream:   true,
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestMockAdapter_MakesNoOutboundRequest(t *testing.T) {
 	m := newTestMock()
 	httpReq, err := m.TransformRequest(context.Background(), &types.AegisRequest{
 		Model:    "claude-haiku-4-5-20251001",
-		Messages: []types.Message{{Role: "user", Content: "hello"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("hello")}},
 	})
 	if err != nil {
 		t.Fatalf("TransformRequest: %v", err)
@@ -236,7 +236,7 @@ func TestMockAdapter_CarriesNoRequestPayloadIntoMetadata(t *testing.T) {
 	m := newTestMock()
 	resp := mockRoundTrip(t, m, &types.AegisRequest{
 		Model:    "claude-haiku-4-5-20251001",
-		Messages: []types.Message{{Role: "user", Content: canary + " please echo that"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent(canary + " please echo that")}},
 	})
 
 	// Everything the handler carries forward from a response into usage_records

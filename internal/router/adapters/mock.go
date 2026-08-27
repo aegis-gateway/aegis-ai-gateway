@@ -80,19 +80,29 @@ func (a *MockAdapter) ProviderKey() string { return a.providerKey }
 
 func (a *MockAdapter) SupportsStreaming() bool { return true }
 
+// SupportsTools reports true. The mock speaks AEGIS's canonical OpenAI format,
+// and answering a tool-bearing request with a tool call is what lets the
+// agent-compatibility demo show the working path with no provider credential.
+func (a *MockAdapter) SupportsTools() bool { return true }
+
 // TransformRequest builds the same OpenAI-format request body a real adapter
 // would, so a malformed canonical request fails here exactly as it would
 // against a provider. The URL is a mock:// scheme that no HTTP client will
 // dial; SendRequest intercepts before it can be sent.
 func (a *MockAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
 	body := openAIRequestBody{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		TopP:        req.TopP,
-		Stop:        req.Stop,
+		Model:             req.Model,
+		Messages:          req.Messages,
+		Stream:            req.Stream,
+		Temperature:       req.Temperature,
+		MaxTokens:         req.MaxTokens,
+		TopP:              req.TopP,
+		Stop:              req.Stop,
+		Tools:             req.Tools,
+		ParallelToolCalls: req.ParallelToolCalls,
+	}
+	if req.ToolChoice.IsSet() {
+		body.ToolChoice = &req.ToolChoice
 	}
 
 	data, err := json.Marshal(body)
@@ -139,8 +149,12 @@ func (a *MockAdapter) TransformResponse(ctx context.Context, resp *http.Response
 	}
 	for _, c := range oaiResp.Choices {
 		aegisResp.Choices = append(aegisResp.Choices, types.Choice{
-			Index:        c.Index,
-			Message:      types.Message{Role: c.Message.Role, Content: c.Message.Content},
+			Index: c.Index,
+			Message: types.Message{
+				Role:      c.Message.Role,
+				Content:   c.Message.Content,
+				ToolCalls: c.Message.ToolCalls,
+			},
 			FinishReason: c.FinishReason,
 		})
 	}
@@ -169,7 +183,21 @@ func (a *MockAdapter) SendRequest(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	promptTokens := estimateTokens(sent.Messages)
+	promptTokens := estimateTokens(sent.Messages) + estimateToolTokens(sent.Tools)
+
+	// A tool-bearing request is answered with a tool call, so that the whole
+	// agent loop is exercisable with no provider credential: offer a tool, get
+	// a call back, return a result, get a final answer. Answering with prose
+	// instead would reproduce the exact symptom this change fixes and make the
+	// demo unable to tell a working gateway from a broken one.
+	if call, ok := mockToolCall(sent); ok {
+		completionTokens := estimateTokenCount(call.Function.Arguments) + estimateTokenCount(call.Function.Name)
+		if sent.Stream {
+			return a.streamToolCallResponse(req, sent.Model, call, promptTokens, completionTokens), nil
+		}
+		return a.toolCallResponse(req, sent.Model, call, promptTokens, completionTokens)
+	}
+
 	completionTokens := estimateTokenCount(mockCompletionText)
 
 	if sent.Stream {
@@ -247,6 +275,136 @@ func (a *MockAdapter) streamResponse(req *http.Request, model string, promptToke
 	return newMockHTTPResponse(req, "text/event-stream", buf.Bytes())
 }
 
+// mockToolCallID is fixed for the same reason mockCreatedUnix is: the demo and
+// the quickstart assert on the response, and a random id would make those
+// assertions either flaky or vacuous.
+const mockToolCallID = "call_aegis_mock_0"
+
+// mockToolCall decides whether to answer with a tool call, and builds it.
+//
+// It calls the first offered tool with empty JSON arguments, or the named tool
+// when tool_choice pins one. It declines once the conversation already contains
+// a tool result, so the loop terminates rather than calling forever.
+func mockToolCall(sent openAIRequestBody) (types.ToolCall, bool) {
+	if len(sent.Tools) == 0 {
+		return types.ToolCall{}, false
+	}
+	if sent.ToolChoice != nil && sent.ToolChoice.Mode == types.ToolChoiceNone {
+		return types.ToolCall{}, false
+	}
+	for _, m := range sent.Messages {
+		if m.Role == types.RoleTool {
+			return types.ToolCall{}, false
+		}
+	}
+
+	name := sent.Tools[0].Function.Name
+	if sent.ToolChoice != nil && sent.ToolChoice.Function != "" {
+		name = sent.ToolChoice.Function
+	}
+
+	return types.ToolCall{
+		ID:       mockToolCallID,
+		Type:     types.ToolTypeFunction,
+		Function: types.FunctionCallSpec{Name: name, Arguments: "{}"},
+	}, true
+}
+
+func (a *MockAdapter) toolCallResponse(req *http.Request, model string, call types.ToolCall, promptTokens, completionTokens int) (*http.Response, error) {
+	payload := map[string]any{
+		"id":      "chatcmpl-mock",
+		"object":  "chat.completion",
+		"created": mockCreatedUnix,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role":       "assistant",
+				"content":    nil,
+				"tool_calls": []types.ToolCall{call},
+			},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     promptTokens,
+			"completion_tokens": completionTokens,
+			"total_tokens":      promptTokens + completionTokens,
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal mock tool call response: %w", err)
+	}
+	return newMockHTTPResponse(req, "application/json", data), nil
+}
+
+// streamToolCallResponse emits the tool call the way a provider does: an
+// index-keyed first delta carrying the id, the type and the function name, then
+// the arguments split across further deltas that carry only the index. A client
+// that does not accumulate by index sees a call with no name; that is what the
+// index-based accumulation in the streaming path exists to handle, and
+// splitting the arguments here is what makes the demo exercise it.
+func (a *MockAdapter) streamToolCallResponse(req *http.Request, model string, call types.ToolCall, promptTokens, completionTokens int) *http.Response {
+	var buf bytes.Buffer
+	idx := 0
+
+	write := func(delta map[string]any, finish any, usage map[string]int) {
+		chunk := map[string]any{
+			"id":      "chatcmpl-mock",
+			"object":  "chat.completion.chunk",
+			"created": mockCreatedUnix,
+			"model":   model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         delta,
+				"finish_reason": finish,
+			}},
+		}
+		if usage != nil {
+			chunk["usage"] = usage
+		}
+		data, _ := json.Marshal(chunk)
+		buf.WriteString("data: ")
+		buf.Write(data)
+		buf.WriteString("\n\n")
+	}
+
+	write(map[string]any{"role": "assistant"}, nil, nil)
+	write(map[string]any{"tool_calls": []map[string]any{{
+		"index":    idx,
+		"id":       call.ID,
+		"type":     call.Type,
+		"function": map[string]string{"name": call.Function.Name, "arguments": ""},
+	}}}, nil, nil)
+	for _, frag := range splitArguments(call.Function.Arguments) {
+		write(map[string]any{"tool_calls": []map[string]any{{
+			"index":    idx,
+			"function": map[string]string{"arguments": frag},
+		}}}, nil, nil)
+	}
+	write(map[string]any{}, "tool_calls", map[string]int{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+		"total_tokens":      promptTokens + completionTokens,
+	})
+	buf.WriteString("data: [DONE]\n\n")
+
+	return newMockHTTPResponse(req, "text/event-stream", buf.Bytes())
+}
+
+// splitArguments cuts the arguments string into single-character fragments so
+// that even a two-character payload arrives across more than one delta.
+func splitArguments(args string) []string {
+	if args == "" {
+		return nil
+	}
+	out := make([]string, 0, len(args))
+	for _, r := range args {
+		out = append(out, string(r))
+	}
+	return out
+}
+
 // mockCreatedUnix is a fixed timestamp. The mock's whole value is being
 // reproducible, and a wall-clock value would make two otherwise identical
 // responses differ.
@@ -276,9 +434,29 @@ func newMockHTTPResponse(req *http.Request, contentType string, body []byte) *ht
 // are exercised with realistic values rather than a constant.
 func estimateTokens(messages []types.Message) int {
 	total := 0
-	for _, m := range messages {
-		total += estimateTokenCount(m.Content)
+	for i, m := range messages {
+		for _, seg := range m.TextSegments(i) {
+			total += estimateTokenCount(seg.Text)
+		}
 		total += 4 // per-message role and delimiter overhead, as OpenAI documents it
+	}
+	return total
+}
+
+// estimateToolTokens approximates the input tokens a tool definition consumes.
+//
+// Tool definitions are billed as input, so a mock that ignored them would
+// report prompt token counts that do not move when a request carries fifty
+// tools, and the cost figure derived from them would be wrong in the direction
+// that matters. Cost on a real provider comes from provider-reported usage, so
+// this approximation affects the mock only.
+func estimateToolTokens(tools []types.Tool) int {
+	total := 0
+	for _, t := range tools {
+		total += estimateTokenCount(t.Function.Name)
+		total += estimateTokenCount(t.Function.Description)
+		total += estimateTokenCount(string(t.Function.Parameters))
+		total += 8 // per-tool schema overhead
 	}
 	return total
 }

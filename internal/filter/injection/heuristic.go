@@ -65,11 +65,32 @@ func (s *Scanner) Scan(text string) []Detection {
 }
 
 // ScanMessages scans all messages and returns detections and the max severity score.
+//
+// It walks types.Message.TextSegments rather than reading Content directly, so
+// structured content parts, tool call arguments and tool result content are all
+// covered.
 func (s *Scanner) ScanMessages(messages []types.Message) ([]Detection, float64) {
+	var segs []types.TextSegment
+	for i, m := range messages {
+		segs = append(segs, m.TextSegments(i)...)
+	}
+	return s.ScanSegments(segs)
+}
+
+// ScanSegments scans every text-bearing element of a request and returns the
+// detections and the highest severity seen.
+//
+// Tool result segments are the reason this function exists in this shape. A
+// tool result is content fetched from outside the model and handed back into
+// the prompt, which makes it the arrival point for indirect prompt injection:
+// an agent that reads a web page and returns it to the model is carrying
+// attacker-controlled text. Scanning only what the user typed would leave the
+// detector running everywhere except where the risk is.
+func (s *Scanner) ScanSegments(segments []types.TextSegment) ([]Detection, float64) {
 	var allDetections []Detection
 	maxScore := 0.0
-	for _, m := range messages {
-		detections := s.Scan(m.Content)
+	for _, seg := range segments {
+		detections := s.Scan(seg.Text)
 		allDetections = append(allDetections, detections...)
 		for _, d := range detections {
 			if d.Severity > maxScore {
@@ -82,7 +103,7 @@ func (s *Scanner) ScanMessages(messages []types.Message) ([]Detection, float64) 
 
 // ScanRequest implements filter.Filter.
 func (s *Scanner) ScanRequest(_ context.Context, req *types.AegisRequest) filter.Result {
-	detections, score := s.ScanMessages(req.Messages)
+	detections, score := s.ScanSegments(req.TextSegments())
 	cfg := s.cfg()
 
 	if score >= cfg.BlockThreshold {

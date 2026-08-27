@@ -25,8 +25,8 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 	req := AegisRequest{
 		Model: "gpt-4o",
 		Messages: []Message{
-			{Role: "system", Content: "You are helpful."},
-			{Role: "user", Content: "Hello"},
+			{Role: "system", Content: TextContent("You are helpful.")},
+			{Role: "user", Content: TextContent("Hello")},
 		},
 		Temperature: &temp,
 		MaxTokens:   &maxTok,
@@ -51,7 +51,7 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 	if len(decoded.Messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(decoded.Messages))
 	}
-	if decoded.Messages[0].Role != "system" || decoded.Messages[0].Content != "You are helpful." {
+	if decoded.Messages[0].Role != "system" || decoded.Messages[0].Content.Flatten() != "You are helpful." {
 		t.Errorf("unexpected first message: %+v", decoded.Messages[0])
 	}
 	if decoded.Temperature == nil || *decoded.Temperature != 0.7 {
@@ -74,7 +74,7 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 func TestAegisRequest_OmitsOptionalFields(t *testing.T) {
 	req := AegisRequest{
 		Model:    "gpt-4o",
-		Messages: []Message{{Role: "user", Content: "Hi"}},
+		Messages: []Message{{Role: "user", Content: TextContent("Hi")}},
 	}
 
 	data, err := json.Marshal(req)
@@ -114,7 +114,7 @@ func TestAegisResponse_JSONRoundTrip(t *testing.T) {
 		Choices: []Choice{
 			{
 				Index:        0,
-				Message:      Message{Role: "assistant", Content: "Hello!"},
+				Message:      Message{Role: "assistant", Content: TextContent("Hello!")},
 				FinishReason: "stop",
 			},
 		},
@@ -147,8 +147,8 @@ func TestAegisResponse_JSONRoundTrip(t *testing.T) {
 	if len(decoded.Choices) != 1 {
 		t.Fatalf("expected 1 choice, got %d", len(decoded.Choices))
 	}
-	if decoded.Choices[0].Message.Content != "Hello!" {
-		t.Errorf("unexpected content: %s", decoded.Choices[0].Message.Content)
+	if decoded.Choices[0].Message.Content.Flatten() != "Hello!" {
+		t.Errorf("unexpected content: %s", decoded.Choices[0].Message.Content.Flatten())
 	}
 	if decoded.Usage.TotalTokens != 150 {
 		t.Errorf("expected total_tokens 150, got %d", decoded.Usage.TotalTokens)
@@ -196,7 +196,7 @@ func TestUsage_ZeroValues(t *testing.T) {
 }
 
 func TestMessage_WithName(t *testing.T) {
-	m := Message{Role: "user", Content: "Hi", Name: "alice"}
+	m := Message{Role: "user", Content: TextContent("Hi"), Name: "alice"}
 	data, _ := json.Marshal(m)
 
 	var raw map[string]interface{}
@@ -208,7 +208,7 @@ func TestMessage_WithName(t *testing.T) {
 }
 
 func TestMessage_OmitsEmptyName(t *testing.T) {
-	m := Message{Role: "user", Content: "Hi"}
+	m := Message{Role: "user", Content: TextContent("Hi")}
 	data, _ := json.Marshal(m)
 
 	var raw map[string]interface{}

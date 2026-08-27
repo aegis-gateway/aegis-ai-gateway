@@ -60,8 +60,8 @@ func TestValidator_ValidateMessages(t *testing.T) {
 		{
 			name: "valid messages",
 			messages: []types.Message{
-				{Role: "user", Content: "Hello"},
-				{Role: "assistant", Content: "Hi there!"},
+				{Role: "user", Content: types.TextContent("Hello")},
+				{Role: "assistant", Content: types.TextContent("Hi there!")},
 			},
 			wantErr: false,
 		},
@@ -73,35 +73,35 @@ func TestValidator_ValidateMessages(t *testing.T) {
 		{
 			name: "missing role",
 			messages: []types.Message{
-				{Content: "Hello"},
+				{Content: types.TextContent("Hello")},
 			},
 			wantErr: true,
 		},
 		{
 			name: "invalid role",
 			messages: []types.Message{
-				{Role: "admin", Content: "Hello"},
+				{Role: "admin", Content: types.TextContent("Hello")},
 			},
 			wantErr: true,
 		},
 		{
 			name: "message too long",
 			messages: []types.Message{
-				{Role: "user", Content: strings.Repeat("a", 200000)},
+				{Role: "user", Content: types.TextContent(strings.Repeat("a", 200000))},
 			},
 			wantErr: true,
 		},
 		{
 			name: "null byte in content",
 			messages: []types.Message{
-				{Role: "user", Content: "Hello\x00World"},
+				{Role: "user", Content: types.TextContent("Hello\x00World")},
 			},
 			wantErr: true,
 		},
 		{
 			name: "valid system message",
 			messages: []types.Message{
-				{Role: "system", Content: "You are a helpful assistant."},
+				{Role: "system", Content: types.TextContent("You are a helpful assistant.")},
 			},
 			wantErr: false,
 		},
@@ -233,7 +233,7 @@ func TestValidator_Validate_FullRequest(t *testing.T) {
 			req: &types.AegisRequest{
 				Model: "gpt-4",
 				Messages: []types.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: types.TextContent("Hello")},
 				},
 				Temperature: &temp,
 				MaxTokens:   &maxTokens,
@@ -246,7 +246,7 @@ func TestValidator_Validate_FullRequest(t *testing.T) {
 			req: &types.AegisRequest{
 				Model: "gpt-3.5-turbo",
 				Messages: []types.Message{
-					{Role: "user", Content: "Test"},
+					{Role: "user", Content: types.TextContent("Test")},
 				},
 			},
 			wantErr: false,
@@ -255,7 +255,7 @@ func TestValidator_Validate_FullRequest(t *testing.T) {
 			name: "missing model",
 			req: &types.AegisRequest{
 				Messages: []types.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: types.TextContent("Hello")},
 				},
 			},
 			wantErr: true,
@@ -273,7 +273,7 @@ func TestValidator_Validate_FullRequest(t *testing.T) {
 			req: &types.AegisRequest{
 				Model: "gpt-4",
 				Messages: []types.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: types.TextContent("Hello")},
 				},
 				Temperature: floatPtr(3.0),
 			},
@@ -284,7 +284,7 @@ func TestValidator_Validate_FullRequest(t *testing.T) {
 			req: &types.AegisRequest{
 				Model: "gpt-4",
 				Messages: []types.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: types.TextContent("Hello")},
 				},
 				MaxTokens: intPtr(-100),
 			},

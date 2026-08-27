@@ -88,6 +88,10 @@ func (m *mockStreamAdapter) SupportsStreaming() bool {
 	return true
 }
 
+func (m *mockStreamAdapter) SupportsTools() bool {
+	return true
+}
+
 func TestStreamMetricsTracking(t *testing.T) {
 	// Create mock streaming response
 	streamData := `data: {"model":"gpt-4","choices":[{"delta":{"content":"Hello"}}]}

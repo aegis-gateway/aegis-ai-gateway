@@ -62,6 +62,9 @@ type StreamMetrics struct {
 	EstimatedCostUSD float64
 	Provider         string
 	Model            string
+	// ToolCallNames are the tool names reconstructed from the stream's tool
+	// call deltas, in index order. Names only, never arguments.
+	ToolCallNames []string
 }
 
 // StreamingHandler manages enhanced streaming with metrics, timeouts, and cost tracking.
@@ -183,6 +186,8 @@ func (sh *StreamingHandler) HandleStream(
 		"estimated_cost_usd", metrics.EstimatedCostUSD,
 		"duration_ms", totalDuration.Milliseconds(),
 		"time_to_first_token_ms", metrics.FirstChunkTime.Sub(metrics.StartTime).Milliseconds(),
+		"tools_offered", len(aegisReq.Tools),
+		"tools_called", len(metrics.ToolCallNames),
 		"org_id", authInfo.OrganizationID,
 	)
 
@@ -247,7 +252,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	adapter adapters.ProviderAdapter,
 	providerKey string,
 	authInfo *auth.AuthInfo,
-) StreamMetrics {
+) (result StreamMetrics) {
 	defer func() { _ = providerResp.Body.Close() }()
 
 	flusher, ok := w.(http.Flusher)
@@ -268,6 +273,18 @@ func (sh *StreamingHandler) streamWithMonitoring(
 		// The configured provider name, not adapter.Name(). See HandleStream.
 		Provider: providerKey,
 	}
+
+	// Tool calls arrive as index-keyed fragments across many chunks. The relay
+	// below forwards every chunk byte for byte, so the client reconstructs them
+	// itself; this accumulator exists so the gateway's own record of the
+	// request can say which tools were called, which on a streamed response is
+	// a fact that exists nowhere else.
+	toolCalls := newToolCallAccumulator()
+
+	// A stream can end at any of six points below, including a timeout and a
+	// client disconnect. Attaching the reconstructed names on the way out
+	// rather than at each return means a path added later cannot forget to.
+	defer func() { result.ToolCallNames = toolCalls.ToolNames() }()
 
 	scanner := bufio.NewScanner(providerResp.Body)
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
@@ -349,7 +366,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		case line := <-lineChan:
 			// Process chunk
-			if err := sh.processChunk(w, flusher, line, adapter, &metrics); err != nil {
+			if err := sh.processChunk(w, flusher, line, adapter, &metrics, toolCalls); err != nil {
 				slog.Error("error processing chunk", "error", err)
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
@@ -372,6 +389,7 @@ func (sh *StreamingHandler) processChunk(
 	line string,
 	adapter adapters.ProviderAdapter,
 	metrics *StreamMetrics,
+	toolCalls *toolCallAccumulator,
 ) error {
 	// SSE format: lines starting with "data: "
 	if !strings.HasPrefix(line, "data: ") {
@@ -421,6 +439,14 @@ func (sh *StreamingHandler) processChunk(
 	if err := sh.extractTokensFromChunk(transformed, metrics); err != nil {
 		// Non-fatal - just log
 		slog.Debug("failed to extract tokens from chunk", "error", err)
+	}
+
+	// Fold any tool call delta into the accumulator. This observes the bytes
+	// that are about to be forwarded and never alters them: the client gets
+	// the provider's chunk exactly as it arrived, which is what lets a client
+	// doing its own index-based accumulation reconstruct the call.
+	if toolCalls != nil {
+		toolCalls.Observe(transformed)
 	}
 
 	// Forward to client

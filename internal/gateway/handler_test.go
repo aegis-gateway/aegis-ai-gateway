@@ -405,7 +405,7 @@ func TestAegisResponseFormat(t *testing.T) {
 				Index: 0,
 				Message: types.Message{
 					Role:    "assistant",
-					Content: "Hello! How can I help you?",
+					Content: types.TextContent("Hello! How can I help you?"),
 				},
 				FinishReason: "stop",
 			},

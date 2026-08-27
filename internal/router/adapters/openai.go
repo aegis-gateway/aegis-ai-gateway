@@ -41,15 +41,25 @@ func (a *OpenAIAdapter) Name() string { return "openai" }
 
 func (a *OpenAIAdapter) SupportsStreaming() bool { return true }
 
+// SupportsTools reports that this adapter carries tool definitions, tool calls
+// and tool results to the provider unchanged. AEGIS's canonical format is the
+// OpenAI one, so there is nothing to translate.
+func (a *OpenAIAdapter) SupportsTools() bool { return true }
+
 func (a *OpenAIAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
 	body := openAIRequestBody{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		TopP:        req.TopP,
-		Stop:        req.Stop,
+		Model:             req.Model,
+		Messages:          req.Messages,
+		Stream:            req.Stream,
+		Temperature:       req.Temperature,
+		MaxTokens:         req.MaxTokens,
+		TopP:              req.TopP,
+		Stop:              req.Stop,
+		Tools:             req.Tools,
+		ParallelToolCalls: req.ParallelToolCalls,
+	}
+	if req.ToolChoice.IsSet() {
+		body.ToolChoice = &req.ToolChoice
 	}
 
 	data, err := json.Marshal(body)
@@ -105,8 +115,9 @@ func (a *OpenAIAdapter) TransformResponse(ctx context.Context, resp *http.Respon
 		aegisResp.Choices = append(aegisResp.Choices, types.Choice{
 			Index: c.Index,
 			Message: types.Message{
-				Role:    c.Message.Role,
-				Content: c.Message.Content,
+				Role:      c.Message.Role,
+				Content:   c.Message.Content,
+				ToolCalls: c.Message.ToolCalls,
 			},
 			FinishReason: c.FinishReason,
 		})
@@ -132,6 +143,12 @@ type openAIRequestBody struct {
 	MaxTokens   *int            `json:"max_tokens,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
 	Stop        []string        `json:"stop,omitempty"`
+
+	// Tool calling. ToolChoice is a pointer because its zero value marshals to
+	// null, and a null tool_choice is not the same request as an absent one.
+	Tools             []types.Tool      `json:"tools,omitempty"`
+	ToolChoice        *types.ToolChoice `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
 }
 
 type openAIResponseBody struct {

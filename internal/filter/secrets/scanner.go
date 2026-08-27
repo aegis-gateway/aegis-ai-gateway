@@ -56,10 +56,27 @@ func (s *Scanner) Scan(text string) []Detection {
 }
 
 // ScanMessages scans all messages for secrets. Returns all detections found.
+//
+// It walks types.Message.TextSegments rather than reading Content, so a message
+// whose content is an array of parts and a message carrying tool calls are both
+// scanned in full. Reading Content directly would skip both.
 func (s *Scanner) ScanMessages(messages []types.Message) []Detection {
 	var detections []Detection
-	for _, m := range messages {
-		detections = append(detections, s.Scan(m.Content)...)
+	for i, m := range messages {
+		for _, seg := range m.TextSegments(i) {
+			detections = append(detections, s.Scan(seg.Text)...)
+		}
+	}
+	return detections
+}
+
+// ScanSegments scans every text-bearing element of a request: message content
+// in either shape, the arguments of every tool call, the content of every tool
+// result, and the tool definitions themselves.
+func (s *Scanner) ScanSegments(segments []types.TextSegment) []Detection {
+	var detections []Detection
+	for _, seg := range segments {
+		detections = append(detections, s.Scan(seg.Text)...)
 	}
 	return detections
 }
@@ -79,7 +96,7 @@ func (f *SecretsFilter) Name() string  { return "secrets" }
 func (f *SecretsFilter) Enabled() bool { return f.enabled() }
 
 func (f *SecretsFilter) ScanRequest(_ context.Context, req *types.AegisRequest) filter.Result {
-	detections := f.scanner.ScanMessages(req.Messages)
+	detections := f.scanner.ScanSegments(req.TextSegments())
 	if len(detections) == 0 {
 		return filter.Result{Action: filter.ActionPass, FilterName: "secrets"}
 	}

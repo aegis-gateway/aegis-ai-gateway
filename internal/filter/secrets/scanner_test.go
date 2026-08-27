@@ -190,8 +190,8 @@ func TestScanMessages(t *testing.T) {
 	s := NewScanner()
 
 	messages := []types.Message{
-		{Role: "system", Content: "You are a helpful assistant."},
-		{Role: "user", Content: "Here is my key: AKIAIOSFODNN7EXAMPLE"},
+		{Role: "system", Content: types.TextContent("You are a helpful assistant.")},
+		{Role: "user", Content: types.TextContent("Here is my key: AKIAIOSFODNN7EXAMPLE")},
 	}
 
 	detections := s.ScanMessages(messages)
@@ -207,8 +207,8 @@ func TestScanMessages_Clean(t *testing.T) {
 	s := NewScanner()
 
 	messages := []types.Message{
-		{Role: "system", Content: "You are a helpful assistant."},
-		{Role: "user", Content: "What is the capital of France?"},
+		{Role: "system", Content: types.TextContent("You are a helpful assistant.")},
+		{Role: "user", Content: types.TextContent("What is the capital of France?")},
 	}
 
 	detections := s.ScanMessages(messages)
