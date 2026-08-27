@@ -36,7 +36,7 @@ step "Step 1 — Same prompt, three cost tiers"
 
 PROMPT="Say hi in one word"
 
-echo "Request A: aegis-fast (cheapest — Claude Haiku / GPT-4o-mini)"
+echo "Request A: aegis-fast (cheapest: claude-haiku-4-5, falling back to gpt-5.6-luna)"
 echo ""
 RESP_A=$(curl -s -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${DEMO_KEY}" \
@@ -49,7 +49,7 @@ COST_A=$(echo "${RESP_A}" | jq -r '.usage.estimated_cost_usd // .estimated_cost_
 echo "  estimated_cost_usd: ${COST_A}"
 echo ""
 
-echo "Request B: aegis-gpt4 (mid-tier — GPT-4o)"
+echo "Request B: aegis-gpt4 (mid-tier: alias for aegis-balanced, claude-sonnet-5)"
 echo ""
 RESP_B=$(curl -s -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${DEMO_KEY}" \
@@ -62,7 +62,7 @@ COST_B=$(echo "${RESP_B}" | jq -r '.usage.estimated_cost_usd // .estimated_cost_
 echo "  estimated_cost_usd: ${COST_B}"
 echo ""
 
-echo "Request C: aegis-reasoning (most expensive — Claude Opus / o3)"
+echo "Request C: aegis-reasoning (most expensive: claude-opus-5, falling back to gpt-5.6-sol)"
 echo ""
 RESP_C=$(curl -s -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H "Authorization: Bearer ${DEMO_KEY}" \

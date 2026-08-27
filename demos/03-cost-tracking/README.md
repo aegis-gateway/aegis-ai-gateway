@@ -4,7 +4,7 @@ Track per-request cost across models and providers, all in one place.
 
 ## Prerequisites
 
-- **00-quickstart** running (`cd demos/00-quickstart && ./run.sh`)
+- The gateway running (`./quickstart.sh` from the repo root; no provider key needed)
 - `jq` installed
 
 ## How to run
@@ -27,38 +27,45 @@ The script walks through four interactive steps with pause prompts between them.
 
 ## Sample output
 
-**Step 1 — Three model tiers, same prompt:**
+Captured from an actual run against the mock provider. Token counts and therefore costs
+depend on the response, so your numbers will differ; the point is that the three tiers
+differ from each other.
+
+**Step 1, three model tiers, same prompt:**
 
 ```
-Request A: aegis-fast (cheapest — Claude Haiku / GPT-4o-mini)
-  estimated_cost_usd: 0.000028
+Request A: aegis-fast (cheapest: claude-haiku-4-5, falling back to gpt-5.6-luna)
+  estimated_cost_usd: 0.000193
 
-Request B: aegis-gpt4 (mid-tier — GPT-4o)
-  estimated_cost_usd: 0.000175
+Request B: aegis-gpt4 (mid-tier: alias for aegis-balanced, claude-sonnet-5)
+  estimated_cost_usd: 0.000386
 
-Request C: aegis-reasoning (most expensive — Claude Opus / o3)
-  estimated_cost_usd: 0.000600
+Request C: aegis-reasoning (most expensive: claude-opus-5, falling back to gpt-5.6-sol)
+  estimated_cost_usd: 0.0009649999999999999
 
 Same prompt, three different cost tiers.
 ```
 
-**Step 2 — Per-model breakdown:**
+**Step 2, per-model breakdown:**
 
 ```
-    model_served     | requests | total_tokens | total_cost_usd
----------------------+----------+--------------+----------------
- claude-opus-4-5     |        1 |           14 |   0.00060000
- gpt-4o              |        1 |           16 |   0.00017500
- claude-haiku-4-5    |        1 |           12 |   0.00002800
+       model_served        | requests | total_tokens | total_cost_usd
+---------------------------+----------+--------------+----------------
+ claude-opus-5             |        2 |          104 |     0.00096500
+ claude-haiku-4-5-20251001 |        4 |          211 |     0.00059600
+ claude-sonnet-5           |        1 |           45 |     0.00038600
 (3 rows)
 ```
 
-**Step 4 — Session total:**
+Note the `model_served` column: `aegis-gpt4` is a deprecated alias, and the row records
+`claude-sonnet-5`, the model actually served, not the alias that was asked for.
+
+**Step 4, session total:**
 
 ```
  total_requests | session_cost_usd
 ----------------+------------------
-              3 |       0.00080300
+              7 |       0.00194700
 (1 row)
 ```
 
