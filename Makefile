@@ -13,8 +13,11 @@ build:
 test:
 	go test ./... -v -race -cover
 
+# Integration tests need a running gateway and database; `mise run
+# test:integration` provides both. Delegate rather than keep a second,
+# subtly different invocation here that fails on a clean machine.
 test-integration:
-	go test ./... -v -tags=integration -count=1 -p 1
+	mise run test:integration
 
 lint:
 	golangci-lint run ./...

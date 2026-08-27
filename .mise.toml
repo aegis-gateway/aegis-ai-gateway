@@ -98,9 +98,43 @@ run = "go test ./... -v -race -cover"
 description = "Run integration tests (starts services and migrates first)"
 depends = ["services:up", "db:migrate"]
 # ./test/integration/ does not exist and never has. The integration tests live
-# beside the code they cover, behind the `integration` build tag, so select them
-# by tag across the tree rather than by a directory that is not there.
-run = "go test ./... -v -tags=integration -count=1 -p 1"
+# beside the code they cover, behind the `integration` build tag.
+#
+# Two things stop `go test ./... -tags=integration` from working:
+#
+#  1. internal/gateway/integration_test.go does not compile — it references
+#     config.RateLimitConfig, config.RetryConfig and config.ValidationConfig,
+#     none of which exist. It has never built under the integration tag, so it
+#     provides no coverage today. Repairing it needs a decision about what it
+#     was meant to assert, so it is left out of this task rather than deleted
+#     or silently "fixed" into something that passes.
+#  2. TestNoPayload_CanaryEndToEnd fails rather than skips without a running
+#     gateway, deliberately, because it backs a public claim. So the task has
+#     to provide one.
+run = """
+set -euo pipefail
+export AEGIS_KEY_PEPPER="${AEGIS_KEY_PEPPER:-mise-local-integration-pepper-not-for-production}"
+export TEST_DATABASE_URL="${DATABASE_URL}"
+export GATEWAY_PORT="${GATEWAY_PORT:-18080}"
+export TEST_SERVER_URL="http://localhost:${GATEWAY_PORT}"
+
+key=$(go run ./cmd/keygen -org mise-org -team mise-team -name integration \
+        -env dev -classification INTERNAL -expires 1d \
+      | grep -oE 'aegis-dev-[a-z0-9]{32}' | head -1)
+[ -n "$key" ] || { echo "could not issue an API key" >&2; exit 1; }
+export TEST_API_KEY="$key"
+
+go run ./cmd/gateway > /tmp/aegis-integration-gateway.log 2>&1 &
+gw=$!
+trap 'kill $gw 2>/dev/null || true' EXIT
+for _ in $(seq 1 60); do
+  curl -fsS "http://localhost:${GATEWAY_PORT}/aegis/v1/health" >/dev/null 2>&1 && break
+  kill -0 $gw 2>/dev/null || { echo "gateway exited early:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
+  sleep 1
+done
+
+go test ./internal/audit/... ./internal/purge/... -v -tags=integration -count=1 -p 1
+"""
 
 # ── Lint / Format ─────────────────────────────────────────────────
 

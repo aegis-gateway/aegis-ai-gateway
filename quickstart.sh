@@ -102,7 +102,14 @@ fi
 . "${SCRIPT_DIR}/demos/shared/load-env.sh" "${DEMO_DIR}/.env"
 
 PROVIDER_NOTICE=""
-if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+# Only an Anthropic key can actually serve a request today. Every alias in
+# configs/models.yaml lists Anthropic as its primary route with OpenAI as a
+# fallback, and ResolveRoute does not fail over on an upstream auth error — a
+# provider with an empty key stays registered and eligible, returns 401, and
+# the request surfaces as a 500. Disabling the mock on a lone OPENAI_API_KEY
+# would therefore turn a working quickstart into upstream errors, which is
+# worse than the mock it replaced.
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   # Compose reaches the gateway container through env_file only:
   # docker-compose.yaml does not list the provider keys under `environment`, so
   # a key exported in this shell and nowhere else never arrives. Without this
@@ -114,7 +121,11 @@ if [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   PROVIDER_NOTICE="Using a real provider: a key was found."
 else
   export AEGIS_MOCK_PROVIDER="true"
-  PROVIDER_NOTICE="Running against a mock provider. No request will reach a real one. Set OPENAI_API_KEY or ANTHROPIC_API_KEY to use a real provider."
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    PROVIDER_NOTICE="Running against a mock provider. OPENAI_API_KEY alone cannot drive the bundled aliases — each routes to Anthropic first and the gateway does not fail over to the OpenAI fallback on an auth error. Set ANTHROPIC_API_KEY to use a real provider."
+  else
+    PROVIDER_NOTICE="Running against a mock provider. No request will reach a real one. Set ANTHROPIC_API_KEY to use a real provider."
+  fi
 fi
 
 # The gateway and keygen both refuse to start without a pepper of at least 32
