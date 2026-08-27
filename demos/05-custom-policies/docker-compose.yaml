@@ -76,7 +76,13 @@ services:
       retries: 5
       start_period: 15s
 
+  # Behind a profile, as in demos/00-quickstart. What this demo shows is a
+  # policy decision, reached by curl before any chat UI is involved. Left
+  # unprofiled, `docker compose up` pulls the Open WebUI image before the first
+  # policy request runs, and a failed pull takes the whole stack down with it.
+  # Start it with `docker compose --profile webui up` when a UI is wanted.
   webui:
+    profiles: ["webui"]
     image: ghcr.io/open-webui/open-webui:main
     container_name: aegis-demo-webui
     depends_on:
