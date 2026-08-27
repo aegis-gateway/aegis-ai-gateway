@@ -22,11 +22,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter/injection"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter/policy"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter/secrets"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
@@ -367,5 +369,76 @@ func TestChatCompletions_InjectionInToolResultIsBlocked(t *testing.T) {
 	}
 	if len(audit.blocks) == 0 || !strings.Contains(strings.Join(audit.blocks, " "), "injection") {
 		t.Errorf("the block was not attributed to the injection filter in the audit trail: %v", audit.blocks)
+	}
+}
+
+// TestChatCompletions_PolicyDenialPreemptsCapabilityRefusal pins the ordering
+// between the two refusals that can both apply to one request.
+//
+// A policy denial is a governance decision and is written to the audit trail. A
+// capability refusal is a compatibility error and is not. If the capability
+// check ran first, a request that a policy would have denied would instead get
+// a 400 and leave no record of the denial, which matters precisely because tool
+// names are now exposed to Rego and a rule can deny on them.
+func TestChatCompletions_PolicyDenialPreemptsCapabilityRefusal(t *testing.T) {
+	const module = `package aegis.policy
+
+import rego.v1
+
+default allow := false
+
+deny contains msg if {
+	some tool in input.request.tools_offered
+	tool == "run_shell"
+	msg := "shell tool not permitted for this key"
+}
+
+allow if count(deny) == 0
+
+reason := concat("; ", deny)
+`
+
+	evaluator := policy.NewEvaluator(func() config.PolicyFilterConfig {
+		return config.PolicyFilterConfig{Enabled: true, EvaluationTimeout: time.Second}
+	})
+	if err := evaluator.LoadFromModules(map[string]string{"tools.rego": module}); err != nil {
+		t.Fatalf("compiling the fixture policy: %v", err)
+	}
+
+	// An adapter that cannot carry tools, so both refusals apply to the request.
+	adapter := &recordingAdapter{name: "test-provider", supportsTool: false}
+	audit := &blockRecordingAudit{}
+
+	reg := router.NewRegistry()
+	reg.Register("test-provider", adapter)
+	h := NewHandler(reg, nil,
+		func() *config.ModelsConfig {
+			return &config.ModelsConfig{Models: map[string]config.ModelMapping{
+				"aegis-tools": {Primary: config.ProviderRoute{
+					Provider: "test-provider", Model: "test-model", ClassificationCeiling: "RESTRICTED",
+				}},
+			}}
+		},
+		func() *config.Config {
+			return &config.Config{Cost: config.CostConfig{OnMissingPricing: "allow"}}
+		},
+		nil, evaluator, nil, nil, nil, audit, nil, nil,
+		validation.NewValidator(validation.DefaultLimits(), nil))
+
+	w := postTools(t, h, `{
+		"model":"aegis-tools",
+		"tools":[{"type":"function","function":{"name":"run_shell"}}],
+		"messages":[{"role":"user","content":"list the files"}]}`)
+
+	if w.Code != http.StatusUnavailableForLegalReasons {
+		t.Fatalf("status = %d, want 451 from the policy. A %d means the capability check "+
+			"ran first and the policy denial was never evaluated or recorded; body: %s",
+			w.Code, w.Code, w.Body.String())
+	}
+	if len(audit.blocks) == 0 {
+		t.Fatal("the policy denial was not written to the audit trail")
+	}
+	if !strings.Contains(w.Body.String(), "shell tool not permitted") {
+		t.Errorf("the response does not carry the policy's reason: %s", w.Body.String())
 	}
 }

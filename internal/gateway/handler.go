@@ -194,11 +194,37 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Set provider type for policy evaluation (adapter.Name() returns "openai", "anthropic", etc.)
 	aegisReq.ProviderType = adapter.Name()
 
+	// Run OPA policy evaluation after routing (needs provider type)
+	if h.policyEvaluator != nil && h.policyEvaluator.Enabled() {
+		result := h.policyEvaluator.ScanRequest(r.Context(), &aegisReq)
+		if result.Action == filter.ActionBlock {
+			slog.Warn("request blocked by policy",
+				"request_id", reqID,
+				"filter", result.FilterName,
+				"org_id", authInfo.OrganizationID,
+			)
+			if h.auditLogger != nil {
+				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+			}
+			if h.metrics != nil {
+				h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
+			}
+			httputil.WriteContentBlockedError(w, reqID, result.Message)
+			return
+		}
+	}
+
 	// Refuse a tool-bearing request routed to an adapter that cannot express
 	// tools, rather than dispatching it without them. Dropping the tools here
 	// would be the original defect wearing a different hat: the provider would
 	// answer in prose and the agent loop would stall with nothing reporting a
 	// problem.
+	//
+	// Deliberately after policy evaluation. A policy denial is a governance
+	// decision and is written to the audit trail; this refusal is a
+	// compatibility error and is not. Checking capability first would let a
+	// 400 preempt a 451 that should have been recorded, which matters now that
+	// tool names are exposed to Rego and a rule can deny on them.
 	if aegisReq.HasTools() && !adapter.SupportsTools() {
 		slog.Warn("tool request refused: provider adapter cannot carry tools",
 			"request_id", reqID,
@@ -219,26 +245,6 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"Route this request to an OpenAI-compatible provider, or remove the tool fields",
 		)
 		return
-	}
-
-	// Run OPA policy evaluation after routing (needs provider type)
-	if h.policyEvaluator != nil && h.policyEvaluator.Enabled() {
-		result := h.policyEvaluator.ScanRequest(r.Context(), &aegisReq)
-		if result.Action == filter.ActionBlock {
-			slog.Warn("request blocked by policy",
-				"request_id", reqID,
-				"filter", result.FilterName,
-				"org_id", authInfo.OrganizationID,
-			)
-			if h.auditLogger != nil {
-				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
-			}
-			if h.metrics != nil {
-				h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
-			}
-			httputil.WriteContentBlockedError(w, reqID, result.Message)
-			return
-		}
 	}
 
 	// Override model with the provider-specific model name
