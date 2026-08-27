@@ -38,6 +38,19 @@ AWS_FAKE = "AKIA" + "IOSFODNN7EXAMPLE"
 client = OpenAI(base_url=GATEWAY_URL, api_key=DEMO_KEY)
 
 
+# Every act records its outcome here so the summary reflects the run rather
+# than restating what the run was expected to produce.
+RESULTS = []
+
+
+def record(act, outcome, detail):
+    """outcome is PASS, FAIL or ERROR. FAIL is an expected incompatibility we
+    are documenting; ERROR is the experiment itself not working, which
+    invalidates the finding and must not be reported as a result."""
+    RESULTS.append((act, outcome, detail))
+    print(f"  {outcome}: {detail}")
+
+
 def section(title):
     print()
     print("=" * 60)
@@ -116,7 +129,7 @@ try:
     print(f"  Response: {resp.choices[0].message.content[:200]}")
 except APIStatusError as e:
     if e.status_code == 451:
-        print("  PASS: request blocked with 451")
+        record("1. Secrets filter", "PASS", "blocked with 451")
         show_error(e)
         print()
         print("  The audit row records event_type='filter_block'.")
@@ -152,7 +165,7 @@ try:
     print(f"  Response: {resp.choices[0].message.content[:200]}")
 except APIStatusError as e:
     if e.status_code == 451:
-        print("  PASS: request blocked with 451")
+        record("2. Policy denial", "PASS", "blocked with 451")
         show_error(e)
         print()
         print("  The reason is the Rego deny message — fully readable by the agent.")
@@ -174,7 +187,11 @@ chunk_count = 0
 content_parts = []
 
 try:
-    with client.chat.completions.stream(
+    # client.chat.completions.stream() is the SDK's *semantic event* helper —
+    # it yields ChunkEvent/ContentDeltaEvent objects, not ChatCompletionChunk,
+    # so chunk.choices[0].delta raises AttributeError. The raw-chunk API, which
+    # is what this act is testing the gateway's SSE against, is create(stream=True).
+    stream = client.chat.completions.create(
         model=MODEL,
         messages=[
             {
@@ -182,21 +199,25 @@ try:
                 "content": "Count to five. Reply with only the numbers, one per line.",
             }
         ],
-    ) as stream:
-        for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                content_parts.append(delta.content)
-                chunk_count += 1
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta and delta.content:
+            content_parts.append(delta.content)
+            chunk_count += 1
 
     full = "".join(content_parts).strip()
-    print(f"  PASS: received {chunk_count} chunks")
+    if chunk_count == 0:
+        record("3. Streaming", "FAIL", "stream produced no chunks")
+    else:
+        record("3. Streaming", "PASS", f"received {chunk_count} chunks via SSE")
     print(f"  Assembled content: {repr(full[:120])}")
 except APIStatusError as e:
-    print(f"  FAIL: {e.status_code}")
+    record("3. Streaming", "FAIL", f"HTTP {e.status_code}")
     show_error(e)
 except Exception as ex:
-    print(f"  ERROR: {ex}")
+    record("3. Streaming", "ERROR", f"{type(ex).__name__}: {ex}")
 
 
 # ── ACT 4: Tool use ──────────────────────────────────────────────
@@ -244,13 +265,13 @@ messages = [
             }
         ],
     },
-    {
-        # tool role is silently flattened or rejected
-        "role": "tool",
-        "tool_call_id": "call_demo_001",
-        "content": "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n",
-    },
 ]
+
+# NOTE: a `tool` role message is deliberately NOT included here. AEGIS's
+# validator accepts only system/user/assistant/function, so a tool message
+# returns HTTP 400 before routing — which would test role validation, not the
+# `tools` stripping this act is about, and would be easy to misread as the
+# gateway rejecting tool use.
 
 try:
     resp = client.chat.completions.create(
@@ -271,9 +292,9 @@ try:
     print()
 
     if finish_reason == "tool_calls":
-        print("  UNEXPECTED: tool use intact (AEGIS types have been updated)")
+        record("4. Tool use", "PASS", "tool use intact — AEGIS types have been updated")
     else:
-        print("  CONFIRMED: tools stripped — response is plain text, not a tool call")
+        record("4. Tool use", "FAIL", "tools stripped — response is plain text, not a tool call")
         print("  The agent loop stalls here: it expected a tool call but got text.")
         print()
         print("  Root cause (internal/types/request.go):")
@@ -287,6 +308,7 @@ try:
         print("    }")
 
 except APIStatusError as e:
+    record("4. Tool use", "ERROR", f"HTTP {e.status_code} before the provider saw the request")
     if e.status_code == 400:
         print("  HTTP 400: content array in 'tool' role message failed to unmarshal")
         print("  (Message.Content is typed as string; array content causes a 400)")
@@ -332,12 +354,12 @@ try:
     elapsed = time.time() - start
     usage = resp.usage
     content = resp.choices[0].message.content or ""
-    print(f"  PASS: response received in {elapsed:.1f}s")
+    record("5. Long context", "PASS", f"response received in {elapsed:.1f}s")
     if usage:
         print(f"  Usage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
     print(f"  Response snippet: {repr(content[:200])}")
 except APIStatusError as e:
-    print(f"  FAIL: {e.status_code}")
+    record("5. Long context", "FAIL", f"HTTP {e.status_code}")
     show_error(e)
 
 
@@ -381,7 +403,7 @@ for attempt in range(MAX_ATTEMPTS):
 print()
 print(f"  Total attempts: {attempt_count}")
 if attempt_count == 1:
-    print("  PASS: agent stopped after first denial. No infinite retry loop.")
+    record("6. Denial behaviour", "PASS", "agent stopped after first denial, no retry loop")
 else:
     print(f"  NOTE: {attempt_count} attempts — review retry config if > 1 was unintentional")
 
@@ -390,15 +412,23 @@ else:
 
 section("Summary")
 
+if not RESULTS:
+    print("  No scenario recorded a result — the run did not execute.")
+
 print("  Scenario                    Result")
-print("  ─────────────────────────── ──────────────────────────────────────")
-print("  1. Secrets filter           PASS — 451, key absent from audit")
-print("  2. Policy denial            PASS — 451, reason readable by agent")
-print("  3. Streaming                PASS — chunks via SSE, format intact")
-print("  4. Tool use                 FAIL — tools silently stripped (see above)")
-print("  5. Long context             PASS — large payload passes through")
-print("  6. Denial behaviour         PASS — agent stops on 451, no retry loop")
+print("  \u2500" * 40)
+for act, outcome, detail in RESULTS:
+    print(f"  {act:<27} {outcome} \u2014 {detail}")
 print()
+
+errors = [r for r in RESULTS if r[1] == "ERROR"]
+if errors:
+    print("  The experiment did not run cleanly. ERROR means this harness failed,")
+    print("  not that AEGIS is incompatible — these scenarios produced no finding:")
+    for act, _, detail in errors:
+        print(f"    {act}: {detail}")
+    print()
+
 print("  Subject B (Claude Code): NOT TESTED HERE")
 print("    Claude Code calls POST /v1/messages (Anthropic Messages API).")
 print("    AEGIS exposes no /v1/messages route — first request returns 404.")
@@ -408,3 +438,9 @@ print("  Audit records can be queried directly:")
 print("    docker exec aegis-demo-postgres psql -U aegis -d aegis \\")
 print("      -c \"SELECT event_type, error_message, timestamp FROM audit_events ORDER BY timestamp DESC LIMIT 10;\"")
 print()
+
+# Exit non-zero if any scenario errored, or if none ran. A FAIL is a documented
+# incompatibility and an expected outcome of this experiment; an ERROR means the
+# harness itself broke and the report cannot be trusted.
+if errors or not RESULTS:
+    sys.exit(1)
