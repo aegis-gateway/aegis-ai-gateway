@@ -35,8 +35,8 @@ import (
 // See docs/reference/request-field-support.md for the field-by-field decision
 // and the reasoning behind each refusal.
 type ChatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []WireMessage `json:"messages"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
 
 	Temperature *float64  `json:"temperature"`
 	MaxTokens   *int      `json:"max_tokens"`
@@ -49,15 +49,13 @@ type ChatCompletionRequest struct {
 	ParallelToolCalls *bool      `json:"parallel_tool_calls"`
 }
 
-// WireMessage is the wire shape of one element of messages. Same allowlist
-// rule: an unknown key inside a message is refused, not ignored.
-type WireMessage struct {
-	Role       string     `json:"role"`
-	Content    Content    `json:"content"`
-	Name       string     `json:"name"`
-	ToolCalls  []ToolCall `json:"tool_calls"`
-	ToolCallID string     `json:"tool_call_id"`
-}
+// Messages are decoded straight into Message rather than into a separate wire
+// type. The allowlist for a message is enforced by messageFields against the
+// raw JSON keys, not by the struct, so a field added to Message later is
+// unreachable from a request body until its name is added there too. That is
+// the stronger guarantee, and it is why the top level still needs its own wire
+// type while messages do not: AegisRequest carries identity fields that must
+// never be settable, and only a separate struct keeps them out.
 
 // StopField is the stop parameter, which OpenAI defines as either a single
 // string or an array of up to four.
@@ -229,16 +227,7 @@ func DecodeChatCompletion(data []byte) (*AegisRequest, error) {
 		ToolChoice:        wire.ToolChoice,
 		ParallelToolCalls: wire.ParallelToolCalls,
 	}
-	req.Messages = make([]Message, 0, len(wire.Messages))
-	for _, m := range wire.Messages {
-		req.Messages = append(req.Messages, Message{
-			Role:       m.Role,
-			Content:    m.Content,
-			Name:       m.Name,
-			ToolCalls:  m.ToolCalls,
-			ToolCallID: m.ToolCallID,
-		})
-	}
+	req.Messages = wire.Messages
 
 	return req, nil
 }
