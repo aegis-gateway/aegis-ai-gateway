@@ -42,13 +42,15 @@ Integration tests are guarded by the `integration` build tag and live in
 go test ./internal/gateway/... -tags=integration -count=1 -v
 ```
 
-Note: `mise run test:integration` and `make test-integration` both point at
-`./test/integration/...`, a directory that does not exist — those tasks are stale.
-Use the command above instead.
+Note: `mise run test:integration` and `make test-integration` used to point at
+`./test/integration/...`, a directory that does not exist. Both now select by build tag
+across the tree instead.
 
-Demos are Docker-only and self-contained: `./quickstart.sh` (delegates to
-`demos/00-quickstart/run.sh`) brings up gateway + Open WebUI + Postgres + Redis with the
-hardcoded demo key `aegis-demo-quickstart`.
+Demos are Docker-only and self-contained. `./quickstart.sh` is the single entry point;
+there is no `demos/00-quickstart/run.sh`. It brings up gateway + Postgres + Redis with the
+hardcoded demo key `aegis-demo-quickstart`, requires no provider credential, and puts Open
+WebUI behind `--with-webui`. `./quickstart.sh verify` runs the evidence sequence.
+`docs/QUICKSTART-COMMANDS.md` is the source of truth for every published demo command.
 
 ## Architecture
 
@@ -83,8 +85,8 @@ Request pipeline, in order:
    `TransformResponse` / `TransformStreamChunk`), wrapped in `retry.Executor`
    (exponential backoff + jitter) and watched by `retry.ContextMonitor` for client
    cancellation.
-9. **response** — cost via `cost.Calculator` (pricing table in `configs/models.yaml`,
-   priced per 1000 tokens), Prometheus metrics, `slog` line, and an async
+9. **response** — cost via `cost.Calculator` (pricing table in `configs/pricing.yaml`,
+   priced per million tokens), Prometheus metrics, `slog` line, and an async
    `storage.UsageRecorder` insert into `usage_records`.
 
 Streaming (`"stream": true`) branches at step 8 into
@@ -123,6 +125,11 @@ Python side.
   `internal/gateway/streaming.go`'s `streamSSE` is likewise superseded by
   `streaming_enhanced.go`. Edits to the live path go in `handler.go` /
   `streaming_enhanced.go`; changing only the refactored files has no runtime effect.
+- **`AEGIS_MOCK_PROVIDER=true` replaces every provider with the mock.** `BuildFromConfig`
+  registers `adapters.MockAdapter` under each name in `providers.yaml` rather than adding a
+  provider, so routing, ceilings, and pricing keep resolving against the real names. The
+  value must be exactly `true`. A provider typed `mock` without the variable is left
+  unregistered rather than falling through to the OpenAI adapter, so routing fails closed.
 - **`adapter.Name()` is the adapter *type*, not the config key.** `OpenAIAdapter.Name()`
   always returns `"openai"` and `AnthropicAdapter.Name()` returns `"anthropic"`, even when
   registered as `azure_openai` or `internal_vllm` (both fall through to the OpenAI adapter
