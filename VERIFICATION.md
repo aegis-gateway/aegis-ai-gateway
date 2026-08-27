@@ -62,6 +62,14 @@ document. Every reference to `v0.1.0` below means the intended tag, and every cl
 verified here is anchored to `aea3168` by commit rather than by tag name for exactly this
 reason.
 
+> **Update, 2026-08-27. The move has happened.** `git ls-remote --tags origin` now returns
+> `86f1d5b9` for `refs/tags/v0.1.0` and `ea72971186eb5c316966b065bf710f2d85f578b1` for
+> `refs/tags/v0.1.0^{}`, an annotated tag on a commit that is on `main`. The paragraph
+> above is left standing rather than edited, because it is the record of what was true
+> when it was written, and because the reasoning it gives for anchoring every citation to
+> a commit rather than to a tag name is still the right reasoning: a tag that has been
+> moved once can be moved again.
+
 ### 0.3 What could not be executed
 
 Docker image pulls are blocked by this environment's egress policy
@@ -753,6 +761,37 @@ cannot ship, and under rule 9 the fix is not to soften the wording. Two ways to 
 2. **Decide the sentence should say something narrower** that this run does support. That
    is a positioning change and therefore a human decision, not a copy edit.
 
+> **Update, 2026-08-27. This blocker is closed, by option 2 rather than option 1.**
+>
+> Both absent inputs were removed rather than supplied. No demo requires a provider
+> credential any more: with none set the gateway answers completions from
+> `internal/router/adapters/mock.go`, which replaces the upstream HTTP call and leaves
+> every filter, the policy engine, classification gating, limits, and the audit write
+> running. Open WebUI moved behind a compose profile, so `ghcr.io/open-webui/open-webui:main`
+> is no longer on any demo's critical path. `demos/00-quickstart/run.sh` was deleted;
+> `./quickstart.sh` is the single entry point.
+>
+> All demos were then run on 2026-08-27, on macOS 25.5 with Docker 29.5.3, with
+> `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` unset:
+>
+> | Demo | Exit | Result |
+> |---|---|---|
+> | `./quickstart.sh` | 0 | Gateway healthy in 24s from a clean stack |
+> | `./quickstart.sh verify` | 0 | 451 on the canary, audit row written, `pg_dump \| grep -c` printed `0` |
+> | `01-curl-basics` | 0 | 7 of 7. Step 3 returns a completion; step 7 shows a populated `usage_records` row |
+> | `02-streaming` | 0 | 4 of 4. SSE chunks, not an error envelope |
+> | `03-cost-tracking` | 0 | 4 of 4. Three distinct `estimated_cost_usd` values, no `n/a` |
+> | `04-secrets-filter` | 0 | `Results: 5 passed, 0 failed`, including the clean request at 200 |
+> | `05-custom-policies` | 0 | Both blocked acts report `content_blocked`; the clean request returns a completion |
+>
+> What this settles and what it does not: it settles every assertion about refusal, audit,
+> routing, classification, cost calculation, and zero retention, because none of those
+> involve the provider call, and `estimated_cost_usd` is computed by `internal/cost`
+> against the real rows in `configs/pricing.yaml`. It does not settle that a live provider
+> response parses, that Anthropic-to-OpenAI stream conversion works against real Anthropic
+> bytes, or that provider authentication works. Those still need a key, and
+> `docs/evidence/demo-run-checklist.md` says so in those words.
+
 **Option 1, by decision of the author.** The run is a human action, because it needs a
 provider credential and egress this environment does not have. What to run, what to send
 back, and the two results that will look like failures and are not, are in
@@ -951,6 +990,11 @@ invisibility on `/aegis/v1/health` appears not to be. Recorded in
 `docs/evidence/known-limitations.md`; no code changed.
 
 ### 6.2 The six demos
+
+> **Superseded on 2026-08-27.** The table below records the 2026-08-25 run and is kept as
+> that record. The demos were re-run on 2026-08-27 with no provider credential at all and
+> all of them exit 0; see the update in §4.5. Both causes of failure below have been
+> removed from the demos rather than supplied to them.
 
 All six were exercised. The page's "all six demos are runnable" line is **not confirmed,
 and not falsified either.** Four of six complete with exit 0, one exits 1 on a single

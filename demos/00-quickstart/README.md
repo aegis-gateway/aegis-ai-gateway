@@ -1,34 +1,49 @@
-# 00 — Quickstart
+# 00. Quickstart
 
-Full-stack demo: AEGIS gateway + Open WebUI chat interface.
-
-## What it shows
-
-- Multi-provider routing (aegis-fast → Claude Haiku, aegis-gpt4 → GPT-4o)
-- Secrets filtering (AWS keys blocked before reaching the provider)
-- Cost tracking per model in PostgreSQL
-- Prometheus metrics
-- OpenAI-compatible API with zero client changes
+The gateway, PostgreSQL, and Redis. Started by `./quickstart.sh` at the repo root, which is the one documented entry point. There is no `run.sh` here: this directory holds the compose files that `quickstart.sh` drives.
 
 ## Run
 
-If your provider keys are already exported in the shell, it just works:
+No credentials needed.
 
 ```bash
-export OPENAI_API_KEY=sk-proj-...   # or ANTHROPIC_API_KEY
-cd demos/00-quickstart
-./run.sh
+./quickstart.sh
 ```
 
-Otherwise the script creates a `.env` file for you to fill in.
+With no provider key in the environment the gateway answers completions from the mock provider in [`internal/router/adapters/mock.go`](../../internal/router/adapters/mock.go). Every other stage of the pipeline still runs, so a refusal is a real refusal, written to the real audit trail. Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` to use a real provider instead.
 
-Open **http://localhost:3000**, create an account, and start chatting.
+## What it shows
+
+Run the whole evidence sequence in one command:
+
+```bash
+./quickstart.sh verify
+```
+
+It sends a benign request, sends one carrying `AKIAIOSFODNN7EXAMPLE`, shows the 451 and the error body, prints the audit row written for that refusal, and greps a full `pg_dump` for the credential. It exits non-zero if that count is anything other than zero.
+
+Every command it runs is listed in [docs/QUICKSTART-COMMANDS.md](../../docs/QUICKSTART-COMMANDS.md).
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yaml` | The stack. Pulls the published gateway image. |
+| `docker-compose.build.yaml` | Overlay applied by `--build` to compile from the working tree instead. |
+
+## Chat interface
+
+Open WebUI is not in the default path, because account creation in a chat UI should not stand between a reader and the refusal demo. Add it when you want one:
+
+```bash
+./quickstart.sh --with-webui     # http://localhost:3000
+```
 
 ## Architecture
 
 ```
-Browser → Open WebUI (:3000) → AEGIS Gateway (:8080) → OpenAI / Anthropic
-                                      ↓
+curl or Open WebUI (:3000) -> AEGIS Gateway (:8080) -> OpenAI / Anthropic / mock
+                                      |
                               PostgreSQL (audit, usage)
                               Redis (auth cache, rate limits)
 ```
@@ -36,5 +51,5 @@ Browser → Open WebUI (:3000) → AEGIS Gateway (:8080) → OpenAI / Anthropic
 ## Cleanup
 
 ```bash
-docker compose down -v
+./quickstart.sh down
 ```

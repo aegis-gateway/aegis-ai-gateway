@@ -1,229 +1,162 @@
 # AEGIS AI Gateway
 
-Every AI call your organization makes, governed and auditable.
+AEGIS is an OpenAI-compatible gateway that decides whether an AI call is permitted and leaves an auditable record of why. Policy-as-code in Rego, classification gating, secrets and PII filtering, per-key limits, and a tamper-evident record of every denial, in Go, under Apache 2.0. That record contains no prompt text and no response text, and you can check that claim yourself in about two minutes.
 
-Most AI gateways route traffic and report what it cost. AEGIS decides whether a call is *permitted* and leaves an auditable record of why. Policy-as-code (Rego), classification gating, and a persisted audit trail of every denial, built in Go, Apache 2.0.
+**Status: v0.1.0, pre-launch.** No public production users. Every capability claim below names the package, file, or test that implements it, and [VERIFICATION.md](VERIFICATION.md) verifies each of them against source, including the ones that failed.
 
-The record contains no prompt text and no response text. Gateways that monetize payload logging cannot make that claim without deleting their core feature.
+[aegisgateway.ai](https://aegisgateway.ai) · [Verification](VERIFICATION.md) · [Known limits](#known-limits) · [Docs](docs/) · [Commercial](mailto:hello@aegisgateway.ai)
 
-→ [aegisgateway.ai](https://aegisgateway.ai) · [Quick start](#quick-demo) · [Docs](docs/) · [Commercial](mailto:hello@aegisgateway.ai)
+## Quickstart
 
-## Quick Demo
-
-Requires only **Docker Desktop** and one provider API key. Includes [Open WebUI](https://github.com/open-webui/open-webui) for a full chat interface.
+Docker, and nothing else. No API key, no account, no sign-up.
 
 ```bash
-export OPENAI_API_KEY=sk-proj-...   # or export ANTHROPIC_API_KEY=sk-ant-...
-./quickstart.sh                     # builds, migrates, starts — prints when ready
+git clone https://github.com/aegis-gateway/aegis-ai-gateway.git
+cd aegis-ai-gateway
+./quickstart.sh
 ```
 
-Or use a `.env` file: `cp .env.example .env` and fill in the keys.
-
-Then open **http://localhost:3000** — create an account and start chatting. Every request flows through the AEGIS gateway with cost tracking, secrets filtering, and audit logging.
-
-Or use curl directly:
+Or without cloning anything:
 
 ```bash
-# Chat completion
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer aegis-demo-quickstart" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"aegis-fast","messages":[{"role":"user","content":"Hello from AEGIS!"}]}' | jq
-
-# Secrets filter — blocked before reaching the provider
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer aegis-demo-quickstart" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"aegis-fast","messages":[{"role":"user","content":"My AWS key is AKIAIOSFODNN7EXAMPLE"}]}' | jq
+curl -O https://aegisgateway.ai/demo/compose.yaml
+docker compose up
 ```
 
-**What to demo:**
-- Pick any model in the UI (aegis-fast, aegis-balanced, aegis-reasoning) — each routes to a different provider
-- Try pasting an AWS key like `AKIAIOSFODNN7EXAMPLE` in a message — the gateway blocks it
-- Check cost tracking: `docker exec aegis-postgres psql -U aegis -d aegis -c "SELECT model_served, SUM(estimated_cost_usd) FROM usage_records GROUP BY model_served;"`
-- View Prometheus metrics: http://localhost:9090/metrics
+With no provider key in the environment, the gateway answers completions from a mock provider (`internal/router/adapters/mock.go`) and says so on startup and on `/aegis/v1/health`. Every other stage of the pipeline still runs, so a refusal is a real refusal. Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` to route to a real provider instead.
 
-Stop with `cd demos/00-quickstart && docker compose down -v`.
+The full command set, kept in sync with the site, is in [docs/QUICKSTART-COMMANDS.md](docs/QUICKSTART-COMMANDS.md).
 
-> **Port conflicts?** `GATEWAY_PORT=8088 WEBUI_PORT=3001 ./quickstart.sh`
+## Verify it
 
-See [demos/](demos/) for more examples (curl basics, streaming, cost tracking, secrets filter).
-
-### Available Models
-
-| Alias | Routes to | Classification |
-|-------|-----------|----------------|
-| `aegis-fast` | Claude Haiku 4.5 → GPT-5.6-luna | INTERNAL |
-| `aegis-balanced` | Claude Sonnet 5 → GPT-5.6-terra | CONFIDENTIAL |
-| `aegis-reasoning` | Claude Opus 5 → GPT-5.6-sol | CONFIDENTIAL |
-| `aegis-gpt4` | *(deprecated alias → aegis-balanced)* | CONFIDENTIAL |
-
-## Development Setup
-
-For local development without Docker for the gateway itself.
-
-### Prerequisites
-
-- [mise](https://mise.jdx.dev) — `brew install mise` or `curl https://mise.run | sh`
-- Docker Desktop (for PostgreSQL and Redis)
-
-### Setup
+The claim is that a request carrying a credential is refused, and that neither the credential nor the request text is anywhere in the database afterwards. One command shows the whole sequence:
 
 ```bash
-# Install tools (Go, golangci-lint) and dependencies
-mise install
-mise run setup
-
-# Copy env template and add your provider API keys
-cp .env.example .env
-# Edit .env → set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+./quickstart.sh verify
 ```
 
-### Run
+It sends a benign request, sends one containing the AWS documentation example key `AKIAIOSFODNN7EXAMPLE`, prints the 451 and the error body, prints the audit row written for that refusal, and then greps a full database dump for the credential:
+
+```
+STEP 2  A request carrying a credential is refused
+HTTP 451
+{ "error": { "message": "Request blocked: detected 1 secret(s) of type: AWS Access Key", ... } }
+
+STEP 3  The refusal was written to the audit trail
+request_id  | req_verify_1787829757_7933
+event_type  | filter_block
+status_code | 451
+filter_type | secrets
+reason      | Request blocked: detected 1 secret(s) of type: AWS Access Key
+
+STEP 4  The credential is nowhere in the database
+$ pg_dump ... | grep -c AKIAIOSFODNN7EXAMPLE
+0
+```
+
+It exits non-zero if that count is anything other than zero.
+
+Or run it by hand, which is the same thing without the script:
 
 ```bash
-# Start everything: Postgres, Redis, migrations, then the gateway
-mise run dev
+docker exec aegis-demo-postgres pg_dump -U aegis aegis | grep -c AKIAIOSFODNN7EXAMPLE
 ```
 
-The gateway starts on `:8080` and Prometheus metrics on `:9090`.
+## What is written, and what is never written
 
-### Generate an API Key
+Integrity is at checkpoint granularity, not per row. A sealer computes an RFC 6962 Merkle root over a contiguous range of event IDs and writes a checkpoint into `audit_checkpoints`, each binding the previous checkpoint's hash. A per-row `prev_hash` chain was rejected deliberately: it would serialise every audit write on the request path. See [docs/AUDIT-INTEGRITY.md](docs/AUDIT-INTEGRITY.md).
 
-```bash
-mise run keygen
-# Save the displayed key — it's shown only once
-```
+**Written.** Denials and failures go to `audit_events`, one row per refusal: request ID, timestamp, event type, HTTP status, which filter fired, the reason string, org and team, IP, and API key prefix. Per-request decisions go to `audit_logs`: latency, gateway overhead, model requested versus model served, provider, classification, token counts, cost, routing attempts, and failovers. Successful calls are additionally recorded in `usage_records` with tokens and cost (`internal/audit`, `internal/storage`).
 
-### Test
+**Never written.** No prompt text. No response text. No matched substring from a filter hit, so a secrets block records that an AWS key pattern was detected and not the key. Rows carry the reason a decision was made and not the content it was made about.
 
-```bash
-# Health check (no auth required)
-curl http://localhost:8080/aegis/v1/health
+Two tests hold that line, and both are cited from the compliance mapping rather than only asserted here:
 
-# Chat completion (replace <key> with your generated key)
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer <key>" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"aegis-fast","messages":[{"role":"user","content":"Hello"}]}'
-```
+| Test | Where | What it does |
+|---|---|---|
+| `TestNoPayload_SchemaIntrospection` | [`no_payload_test.go:70`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_test.go#L70) | Scans every up migration for a column added to an audit table whose name suggests payload, and fails on a match. It does not hardcode a migration list, so a later `ALTER TABLE audit_logs ADD COLUMN payload TEXT` is caught too. |
+| `TestNoPayload_CanaryEndToEnd` | [`no_payload_integration_test.go:66`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/no_payload_integration_test.go#L66) | Sends a canary string against a live gateway, asserts exactly 451, asserts an audit row **was** written, and only then asserts the canary appears in no row of any audit table. |
 
-## Development
+The positive control in the second test is the point. Without asserting that a row was written, "the canary is absent" is satisfied by an empty table and proves nothing. The test fails rather than skips when its database is missing, because a conformance test that can silently not run is worse than no test.
 
-### Available Tasks
+Both run in CI on every push, in a dedicated Audit Conformance job that greps for the canary's PASS line by name, since `go test -run` exits 0 when its pattern matches nothing.
 
-```bash
-mise tasks ls          # list all tasks
-```
+## What runs on every call
 
-| Task | Description |
-|------|-------------|
-| `mise run setup` | Install Go dependencies |
-| `mise run services:up` | Start PostgreSQL + Redis in Docker |
-| `mise run services:down` | Stop services (preserves data) |
-| `mise run services:destroy` | Stop services and delete volumes |
-| `mise run db:migrate` | Run database migrations up |
-| `mise run db:reset` | Drop, recreate, and migrate database |
-| `mise run build` | Compile binaries to `bin/` |
-| `mise run test` | Unit tests with race detection |
-| `mise run test:integration` | Integration tests (auto-starts services) |
-| `mise run lint` | Run golangci-lint |
-| `mise run fmt` | Format Go source files |
-| `mise run dev` | Full stack: services + migrations + gateway |
-| `mise run run` | Start gateway only (services must be running) |
-| `mise run keygen` | Generate a dev API key |
+`POST /v1/chat/completions`, in order. Each stage can refuse, and each refusal is audited.
 
-### Environment
+| # | Stage | Package | Notes |
+|---|-------|---------|-------|
+| 1 | Request ID, real IP, panic recovery | `cmd/gateway` | chi middleware |
+| 2 | Authentication | `internal/auth` | Bearer key, HMAC-SHA256 with a server-side pepper (hash version 2), with a SHA-256 version 1 path still accepted. Redis cache, then PostgreSQL |
+| 3 | Rate and budget limits | `internal/ratelimit` | Redis sliding window plus daily spend. Redis unconfigured fails open; Redis configured but unreachable fails closed |
+| 4 | Input validation | `internal/validation` | Size and shape limits before anything downstream |
+| 5 | Filter chain | `internal/filter/secrets`, `internal/filter/injection`, `internal/filter/pii` | Runs in that order and stops at the first block. Secrets covers AWS keys, GitHub tokens, private keys, JWTs |
+| 6 | Routing and classification gating | `internal/router` | Alias to provider from `configs/models.yaml`, skipping any route whose classification ceiling does not admit the key's clearance, and any provider whose circuit breaker is open |
+| 7 | Policy evaluation | `internal/filter/policy` | OPA/Rego, after routing because the rules can see the provider. Hot-reloaded; a failed compile keeps the last good query |
+| 8 | Provider call | `internal/router/adapters` | Retry with exponential backoff and jitter (`internal/retry`), watched for client cancellation |
+| 9 | Cost, metrics, audit write | `internal/cost`, `internal/telemetry`, `internal/audit`, `internal/storage` | Per-request cost from `configs/pricing.yaml`, Prometheus metrics, and the record described above |
 
-mise auto-sets database and Redis connection vars. Provider API keys go in `.env` (gitignored):
+Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an SSE relay with per-chunk and total timeouts, TTFT metrics, and its own cost and usage recording.
 
-```bash
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### Key Features
-
-#### Governance
-
-- **Policy-as-code** — write permit/deny rules in Rego (OPA), hot-reload without restart, version your policies alongside your code (`internal/filter/policy`)
-- **Classification gating** — every model alias carries a data classification level (INTERNAL / CONFIDENTIAL); requests are routed or rejected based on the key's clearance (`internal/router`, `internal/types`)
-- **Deny audit trail** — every denial (auth failure, rate limit, filter block, policy block) is written to `audit_events` with request metadata, IP, and reason (`internal/audit`). Successful calls are recorded separately in `usage_records` with tokens, cost, and the model actually served (`internal/storage`)
-- **Secrets & PII filtering** — AWS keys, GitHub tokens, private keys, JWTs, and PII patterns are detected and blocked on inbound requests (`internal/filter/secrets`, `internal/filter/pii`)
-- **Prompt injection detection** — heuristic scanner catches jailbreak and instruction-override attempts before they reach the provider (`internal/filter/injection`)
-- **Per-key rate limiting** — sliding-window request limits per API key, enforced in Redis, rejected with an auditable deny record (`internal/ratelimit`)
-- **Input validation** — request schema and content validation before any downstream processing (`internal/validation`)
-
-#### Table Stakes
-
-- **Multi-provider routing** with fallback chains — OpenAI, Anthropic, Azure OpenAI, vLLM (`internal/router`)
-- **OpenAI-compatible API** — drop-in replacement; no SDK changes required
-- **Streaming SSE** — transparent Anthropic-to-OpenAI format conversion (`internal/gateway`)
-- **Cost tracking** — per-request token cost estimation persisted to `usage_records` (`internal/cost`)
-- **Retry & reliability** — retry with exponential backoff and jitter (`internal/retry`), plus per-provider circuit breaking (`internal/router`)
-- **Prometheus metrics** — request counts, latency histograms, token usage (`internal/telemetry`)
-- **Config hot-reload** — update models and providers without restarting (`internal/config`)
-- **Two-tier auth caching** — Redis + PostgreSQL (`internal/auth`)
-
-### Architecture
-
-```
-cmd/
-  gateway/      Main API server
-  keygen/       API key generation CLI
-  migrate/      Database migration runner
-internal/
-  auth/         API key validation + two-tier caching (Redis + PostgreSQL)
-  config/       YAML config loader with hot-reload (fsnotify)
-  filter/
-    policy/     OPA/Rego policy evaluation
-    secrets/    Secrets scanning (AWS keys, tokens, JWTs, private keys)
-    pii/        PII detection (blocks at CONFIDENTIAL+, flags below)
-    injection/  Prompt injection heuristics
-  gateway/      Request handler, SSE streaming, telemetry logging
-  audit/        Deny/failure audit logger → audit_events
-  cost/         Per-request token cost estimation → usage_records
-  ratelimit/    Per-key sliding-window rate limiting (Redis)
-  retry/        Retry with exponential backoff, jitter, cancellation
-  router/       Provider registry, classification gating, fallback chains
-    adapters/   OpenAI, Anthropic, Azure OpenAI, vLLM
-  storage/      Shared DB access layer
-  telemetry/    Prometheus metrics
-  types/        Shared types: classification levels, request/response
-  validation/   Input validation
-  httputil/     OpenAI-compatible error responses
-configs/        YAML configuration (gateway.yaml, models.yaml, providers.yaml)
-deploy/         Docker Compose for local services
-migrations/     PostgreSQL migrations
-demos/          End-to-end runnable examples
-```
-
-### API Endpoints
+### Endpoints
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/aegis/v1/health` | No | Health check |
-| POST | `/v1/chat/completions` | Yes | Chat completions (OpenAI-compatible) |
+| GET | `/aegis/v1/health` | No | Health, including whether the mock provider is active |
+| POST | `/v1/chat/completions` | Yes | Chat completions, OpenAI-compatible |
 | GET | `/v1/models` | Yes | List available models |
 | GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
 | GET | `/aegis/v1/audit/logs` | Yes | Read the per-request decision record. `?format=csv` to export |
 
-## Contributing
+### Model aliases
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, coding guidelines, and the PR process.
+The live answer is `curl /v1/models` against a running gateway. The table below is generated from `configs/models.yaml` and therefore reflects the shipped demo configuration, not a recommendation.
 
-To report a security vulnerability, see [SECURITY.md](.github/SECURITY.md) — please do not open a public issue.
+<!-- BEGIN GENERATED MODEL TABLE -->
+<!-- Generated by scripts/gen-model-table.sh from configs/models.yaml. -->
+<!-- Do not edit by hand: run `mise run docs:models`. -->
 
-## License
+| Alias | Routes to, in order | Classification ceiling |
+|-------|---------------------|------------------------|
+| `aegis-balanced` | anthropic `claude-sonnet-5` then openai `gpt-5.6-terra` | CONFIDENTIAL |
+| `aegis-fast` | anthropic `claude-haiku-4-5-20251001` then openai `gpt-5.6-luna` | INTERNAL |
+| `aegis-gpt4` | *(deprecated alias, routes as `aegis-balanced`)* | CONFIDENTIAL |
+| `aegis-reasoning` | anthropic `claude-opus-5` then openai `gpt-5.6-sol` | CONFIDENTIAL |
+<!-- END GENERATED MODEL TABLE -->
 
-AEGIS AI Gateway is open source under the [Apache License 2.0](LICENSE).
+## Known limits
 
-## Commercial
+The audit trail establishes less than an evidence package usually wants it to. These are stated here rather than found during an audit, and in full in [docs/evidence/known-limitations.md](docs/evidence/known-limitations.md).
 
-The gateway is Apache 2.0 — no usage restrictions.
+- **A checkpoint attests event integrity, not policy provenance.** It proves a set of audit events existed, in that order, unaltered since sealing. It does not prove which version of `default.rego` or which gateway configuration was in force when they were produced. Nothing computes a configuration digest; the control plane protocol reserves `ConfigHash` and `PolicyBundles` and actively rejects any v1 submission that populates them ([ADR 0004](docs/adr/0004-reserved-fields-must-not-be-populated.md)).
+- **Requests are scanned; responses are not.** The filters run inbound. A secret in a model's output is not detected.
+- **The default policy bundle denies on alias, not on provider trust.** `input.request.provider_type` sees the adapter type rather than the configured provider name, so the `provider_type == "external"` deny rule in `configs/policies/default.rego` never fires.
+- **Zero-retention is enforced behaviourally, and only partly structurally.** There is no database constraint that makes a payload column impossible. The guarantee rests on the schema, the two tests above, and the typed column bounds, not on something the database itself refuses.
+- **Losing the Redis address is invisible on the health endpoint.** A Redis that is configured but unreachable fails closed, correctly. A Redis whose address was never configured fails open, and health reports that state the same way.
+- **Column bounds establish that a value fits, not that it is meaningful.** Bounded widths stop an oversized value from losing the row; they do not validate what it says.
 
-A commercial control plane is planned, covering running many gateways rather than one: **SSO and directory sync, multi-tenant policy management, cross-gateway aggregation, signed evidence bundles, long-horizon archive, and support with a service level agreement.** It is not built yet, and there is nothing to run.
+None of these bear on the zero-retention claim itself, and the linked document says so specifically rather than in passing.
 
-Anything the public zero-retention claim depends on ships free, and that rule has already moved work out of the commercial plan and into the core: hash-chained tamper-evident audit, the audit read API with JSON and CSV export, retention configuration and purge, the compliance framework mapping, and the conformance test asserting no payload is persisted.
+## Licence, and where the boundary is
 
-To join the waitlist or talk about a design partnership, contact [hello@aegisgateway.ai](mailto:hello@aegisgateway.ai) or visit [aegisgateway.ai](https://aegisgateway.ai).
+Apache 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE), [LICENSING.md](LICENSING.md)). No usage restrictions. This repository is the open core: no proprietary code lands here, and nothing here is relicensed.
+
+The rule that governs the boundary is one line: **anything the public zero-retention claim depends on ships free.** That rule has already moved work out of the commercial plan and into this repository rather than the reverse. Hash-chained tamper-evident audit, the audit read API with JSON and CSV export, retention configuration and purge, the compliance framework mapping, and the conformance test asserting no payload is persisted are all here, all Apache 2.0.
+
+A commercial control plane is planned, covering running many gateways rather than one: SSO and directory sync, multi-tenant policy management, cross-gateway aggregation, signed evidence bundles, long-horizon archive, and support with a service level agreement. **It is not built yet, and there is nothing to run.** To join the waitlist or discuss a design partnership, contact [hello@aegisgateway.ai](mailto:hello@aegisgateway.ai).
+
+## More
+
+| | |
+|---|---|
+| [VERIFICATION.md](VERIFICATION.md) | Every claim on the landing page and in this file, verified against source, with the failures kept in |
+| [docs/COMPLIANCE-MAPPING.md](docs/COMPLIANCE-MAPPING.md) | What the audit trail is evidence for, mapped to named articles and controls |
+| [docs/evidence/known-limitations.md](docs/evidence/known-limitations.md) | What the audit trail does not establish |
+| [docs/AUDIT-INTEGRITY.md](docs/AUDIT-INTEGRITY.md) | The hash chain and how to verify it |
+| [docs/QUICKSTART-COMMANDS.md](docs/QUICKSTART-COMMANDS.md) | The canonical command set for the demo |
+| [docs/reference/deny-reasons.md](docs/reference/deny-reasons.md) | Every refusal string the gateway can emit |
+| [docs/](docs/) | Architecture, configuration, deployment, policies, streaming, retry |
+| [demos/](demos/) | Runnable examples: curl basics, streaming, cost tracking, secrets filter, custom policies |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, mise tasks, environment, internal layout, PR process |
+| [.github/SECURITY.md](.github/SECURITY.md) | Reporting a vulnerability. Please do not open a public issue |

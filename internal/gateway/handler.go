@@ -278,7 +278,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Streaming: forward SSE events from provider to client with full monitoring
 	if aegisReq.Stream {
-		h.streamingHandler.HandleStream(w, r, reqID, providerReq, adapter, originalModel, authInfo, &aegisReq)
+		h.streamingHandler.HandleStream(w, r, reqID, providerReq, adapter, providerKey, originalModel, authInfo, &aegisReq)
 		return
 	}
 

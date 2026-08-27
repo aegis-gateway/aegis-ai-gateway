@@ -24,7 +24,8 @@ Every blocked request is logged to the `audit_events` table so you can audit cre
 ## Prerequisites
 
 - Docker Compose v2
-- At least one provider API key (OpenAI or Anthropic)
+- No provider API key. Four of the five cases never reach a provider, and the fifth is answered by the mock provider when no key is set
+- This demo starts its own stack under the same container names as the quickstart. Stop that one first: `./quickstart.sh down`
 
 ## How to run
 

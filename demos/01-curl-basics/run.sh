@@ -9,8 +9,8 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:${GATEWAY_PORT:-8080}}"
 if ! curl -sf "${GATEWAY_URL}/aegis/v1/health" > /dev/null 2>&1; then
   echo "ERROR: gateway not reachable at ${GATEWAY_URL}" >&2
   echo ""
-  echo "Start demos/00-quickstart first:"
-  echo "  cd demos/00-quickstart && ./run.sh"
+  echo "Start the gateway first, from the repo root:"
+  echo "  ./quickstart.sh"
   exit 1
 fi
 echo "Gateway is running at ${GATEWAY_URL}"

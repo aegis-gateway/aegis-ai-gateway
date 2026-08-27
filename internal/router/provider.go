@@ -16,7 +16,9 @@ package router
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -82,10 +84,44 @@ func (r *Registry) GetProvider(name string) adapters.ProviderAdapter {
 	return r.adapters[name]
 }
 
+// MockProviderEnvVar names the environment variable that opts a gateway into
+// answering from the mock provider instead of calling out.
+//
+// It is an environment variable rather than a field in providers.yaml because
+// the threat is a configuration file travelling somewhere it was not meant to
+// go. A gateway that picked up a mock from a copied config would silently stop
+// calling providers while continuing to permit, price, and audit traffic, and
+// nothing on the request path would look wrong. Requiring a variable set on the
+// process means the mock cannot arrive by copying a file.
+const MockProviderEnvVar = "AEGIS_MOCK_PROVIDER"
+
+// MockProviderEnabled reports whether the mock opt-in is set to exactly "true".
+//
+// Exactly "true" and nothing else: no "1", no "yes", no case folding. A
+// half-recognised spelling is how a flag meant to be deliberate becomes one
+// somebody sets by accident.
+func MockProviderEnabled() bool {
+	return os.Getenv(MockProviderEnvVar) == "true"
+}
+
 // BuildFromConfig builds provider adapters from the providers config.
+//
+// When MockProviderEnabled() is true, every configured provider is served by a
+// MockAdapter instead of a real one. The mock stands in for the providers
+// already in providers.yaml rather than adding a provider of its own, so
+// models.yaml keeps routing to "anthropic" and "openai", classification
+// ceilings and fallback chains are unchanged, and pricing lookups still resolve
+// against the real pricing rows for the real model names. Only the upstream
+// HTTP call is replaced; the rest of the request pipeline is untouched.
 func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
+	mockAll := MockProviderEnabled()
 	registry := NewRegistry()
 	for name, cfg := range provCfg.Providers {
+		if mockAll {
+			registry.Register(name, adapters.NewMockAdapter(name, cfg))
+			continue
+		}
+
 		client := &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
@@ -102,13 +138,60 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 			adapter = adapters.NewOpenAIAdapter(cfg, client)
 		case "anthropic":
 			adapter = adapters.NewAnthropicAdapter(cfg, client)
+		case adapters.MockAdapterName:
+			// A provider typed "mock" without the opt-in is not quietly
+			// downgraded to an OpenAI-compatible adapter by the default branch
+			// below: that would send real traffic, with real credentials, to
+			// whatever base_url the mock entry happened to carry. It is left
+			// unregistered instead, so any alias routing to it resolves to "no
+			// eligible provider" and fails closed.
+			slog.Error("provider is typed mock but "+MockProviderEnvVar+" is not \"true\"; leaving it unregistered",
+				"provider", name)
+			continue
 		default:
 			// Fall back to OpenAI-compatible for unknown types
 			adapter = adapters.NewOpenAIAdapter(cfg, client)
 		}
 		registry.Register(name, adapter)
 	}
+
+	if mockAll {
+		slog.Warn("mock provider is active: no request will reach a real provider",
+			"opt_in", MockProviderEnvVar+"=true",
+			"providers", registry.ListProviders(),
+		)
+	}
 	return registry
+}
+
+// UsesMockProvider reports whether every registered adapter is a mock. It backs
+// the mock_provider field on the health endpoint, and reads the registry rather
+// than the environment so that what is reported is what is actually loaded.
+func (r *Registry) UsesMockProvider() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.adapters) == 0 {
+		return false
+	}
+	for _, a := range r.adapters {
+		if a.Name() != adapters.MockAdapterName {
+			return false
+		}
+	}
+	return true
+}
+
+// AdapterType reports the adapter type serving a provider name, or "" if the
+// provider is not registered. The health endpoint uses it so an operator can
+// see which provider is mocked rather than only that some are.
+func (r *Registry) AdapterType(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	a, ok := r.adapters[name]
+	if !ok {
+		return ""
+	}
+	return a.Name()
 }
 
 // routeEligible checks whether a provider route's classification ceiling

@@ -79,12 +79,20 @@ func NewStreamingHandler(handler *Handler, config StreamingConfig) *StreamingHan
 }
 
 // HandleStream sends the request to the provider and forwards SSE chunks with full monitoring.
+// providerKey is the configured provider name from the resolved route.
+// adapter.Name() is only the adapter type: it is shared across providers
+// (azure_openai and internal_vllm both report "openai") and it is "mock" for
+// every provider when AEGIS_MOCK_PROVIDER is set. Pricing rows in
+// configs/pricing.yaml and the persisted usage record are keyed by the
+// configured name, so both must use providerKey. The non-streaming path
+// already does this; this path used to attribute to the adapter type.
 func (sh *StreamingHandler) HandleStream(
 	w http.ResponseWriter,
 	r *http.Request,
 	reqID string,
 	providerReq *http.Request,
 	adapter adapters.ProviderAdapter,
+	providerKey string,
 	originalModel string,
 	authInfo *auth.AuthInfo,
 	aegisReq *types.AegisRequest,
@@ -140,7 +148,7 @@ func (sh *StreamingHandler) HandleStream(
 	)
 
 	// Execute streaming with full monitoring
-	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, authInfo)
+	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, providerKey, authInfo)
 
 	totalDuration := time.Since(receivedAt)
 
@@ -237,6 +245,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	reqID string,
 	providerResp *http.Response,
 	adapter adapters.ProviderAdapter,
+	providerKey string,
 	authInfo *auth.AuthInfo,
 ) StreamMetrics {
 	defer func() { _ = providerResp.Body.Close() }()
@@ -256,7 +265,8 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 	metrics := StreamMetrics{
 		StartTime: time.Now(),
-		Provider:  adapter.Name(),
+		// The configured provider name, not adapter.Name(). See HandleStream.
+		Provider: providerKey,
 	}
 
 	scanner := bufio.NewScanner(providerResp.Body)

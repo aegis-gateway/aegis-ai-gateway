@@ -1,15 +1,20 @@
-# demos/00-quickstart — Full stack: gateway + Open WebUI
+# demos/00-quickstart. The canonical AEGIS quickstart stack.
 #
-# Starts PostgreSQL, Redis, the AEGIS gateway (auto-migrates, seeds a
-# demo key), and Open WebUI pre-wired to the gateway.
+# Do not run this file directly. `./quickstart.sh` at the repo root is the one
+# documented entry point; it decides whether to run against a mock provider,
+# generates the key pepper, waits for health, and prints the commands. This file
+# is what it starts.
 #
-# Usage:
-#   cd demos/00-quickstart
-#   ./run.sh
+#   ./quickstart.sh                  gateway + Postgres + Redis, published image
+#   ./quickstart.sh --build          same, built from this working tree
+#   ./quickstart.sh --with-webui     also start Open WebUI on :3000
+#   ./quickstart.sh verify           run the evidence sequence
+#   ./quickstart.sh down             stop and delete the volumes
 #
-# Or manually:
-#   cp ../shared/.env.example .env   # add at least one provider key
-#   docker compose up --build
+# Container names are prefixed aegis-demo- so this stack never collides with the
+# contributor services in deploy/docker-compose.yaml, which use aegis-postgres
+# and aegis-redis. Every documented docker exec command targets the aegis-demo-
+# names; see docs/QUICKSTART-COMMANDS.md.
 
 services:
   postgres:
@@ -42,9 +47,10 @@ services:
       start_period: 5s
 
   gateway:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    # Published image by default, so a first run needs no Go toolchain and no
+    # compile. `./quickstart.sh --build` layers docker-compose.build.yaml over
+    # this file to build from the working tree instead.
+    image: ${AEGIS_IMAGE:-ghcr.io/aegis-gateway/aegis-ai-gateway:v0.1.0}
     container_name: aegis-demo-gateway
     depends_on:
       postgres:
@@ -54,8 +60,11 @@ services:
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
       - "${METRICS_PORT:-9090}:9090"
+    # Optional: quickstart.sh writes provider keys here when it finds them, and
+    # the stack starts without it when there are none.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -67,14 +76,26 @@ services:
       REDIS_PORT: "6379"
       AEGIS_SEED_DEMO_KEY: "true"
       OPA_BUNDLE_PATH: "/etc/aegis/configs/policies"
+      # Set to exactly "true" by quickstart.sh when no provider key is present.
+      # The gateway then answers completions from internal/router/adapters/mock.go
+      # instead of calling out. Every other stage of the pipeline still runs, so
+      # a block is a real block. Any other value, including unset, uses the real
+      # providers in configs/providers.yaml.
+      AEGIS_MOCK_PROVIDER: "${AEGIS_MOCK_PROVIDER:-}"
+      AEGIS_KEY_PEPPER: "${AEGIS_KEY_PEPPER:?quickstart.sh generates this; run ./quickstart.sh rather than docker compose directly}"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 15s
+      retries: 10
+      start_period: 10s
 
+  # Open WebUI is not part of the default quickstart. The thing worth seeing
+  # here is a request being refused and leaving no payload behind, and account
+  # creation in a chat UI should not stand between a reader and that. Start it
+  # with `./quickstart.sh --with-webui` when a chat interface is wanted.
   webui:
+    profiles: ["webui"]
     image: ghcr.io/open-webui/open-webui:main
     container_name: aegis-demo-webui
     depends_on:

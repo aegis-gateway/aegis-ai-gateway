@@ -4,10 +4,10 @@ Demonstrates real-time SSE streaming through the AEGIS gateway, including format
 
 ## Prerequisites
 
-The **00-quickstart** demo must be running:
+The gateway must be running. No provider key is needed:
 
 ```bash
-cd demos/00-quickstart && ./run.sh
+./quickstart.sh
 ```
 
 ## How to run

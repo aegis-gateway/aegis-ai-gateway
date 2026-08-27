@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
@@ -220,5 +221,104 @@ func TestResolveRoute_FallbackOrder(t *testing.T) {
 	}
 	if route.Model != "model-c" {
 		t.Errorf("expected model-c, got %s", route.Model)
+	}
+}
+
+// ── Mock provider opt-in ──────────────────────────────────────────
+
+// TestBuildFromConfig_MockRequiresExplicitOptIn is the guarantee that matters
+// most about the mock: a gateway must not answer from it unless somebody said
+// so on the process. Everything else about the mock is a convenience; this is
+// the part that keeps it out of production.
+func TestBuildFromConfig_MockRequiresExplicitOptIn(t *testing.T) {
+	provCfg := &config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+		},
+	}
+
+	// Every spelling that is not exactly "true" leaves real adapters in place.
+	// A flag that accepts "1", "yes", or "TRUE" is a flag somebody sets by
+	// accident, so each near-miss is asserted rather than assumed.
+	for _, value := range []string{"", "1", "yes", "TRUE", "True", "false", " true"} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv(MockProviderEnvVar, value)
+
+			registry := BuildFromConfig(provCfg)
+			if registry.UsesMockProvider() {
+				t.Errorf("%s=%q enabled the mock provider; only exactly \"true\" may",
+					MockProviderEnvVar, value)
+			}
+			if got := registry.AdapterType("anthropic"); got != "anthropic" {
+				t.Errorf("anthropic adapter type = %q, want %q", got, "anthropic")
+			}
+		})
+	}
+}
+
+func TestBuildFromConfig_MockReplacesEveryProviderWhenOptedIn(t *testing.T) {
+	t.Setenv(MockProviderEnvVar, "true")
+
+	provCfg := &config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+		},
+	}
+	registry := BuildFromConfig(provCfg)
+
+	if !registry.UsesMockProvider() {
+		t.Error("UsesMockProvider() = false with the opt-in set")
+	}
+	// Registered under the real provider names, not under a new "mock" name.
+	// That is what keeps models.yaml routing, classification ceilings, and the
+	// pricing rows for the real model names in play.
+	for _, name := range []string{"anthropic", "openai"} {
+		if got := registry.AdapterType(name); got != adapters.MockAdapterName {
+			t.Errorf("adapter type for %q = %q, want %q", name, got, adapters.MockAdapterName)
+		}
+	}
+	if registry.AdapterType("mock") != "" {
+		t.Error("the mock registered itself as a provider named \"mock\"; it must stand in for configured providers, not add one")
+	}
+}
+
+// TestBuildFromConfig_MockTypeWithoutOptInFailsClosed covers the other
+// direction: a providers.yaml entry typed "mock" on a gateway that has not
+// opted in. The default branch of the type switch would otherwise hand it to
+// the OpenAI adapter, which would send real traffic and real credentials to
+// whatever base_url that entry carried.
+func TestBuildFromConfig_MockTypeWithoutOptInFailsClosed(t *testing.T) {
+	t.Setenv(MockProviderEnvVar, "")
+
+	provCfg := &config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
+			"sneaky":    {Type: adapters.MockAdapterName, BaseURL: "https://example.invalid/v1"},
+		},
+	}
+	registry := BuildFromConfig(provCfg)
+
+	if _, ok := registry.Get("sneaky"); ok {
+		t.Error("a provider typed \"mock\" was registered without the opt-in; it must be left unregistered so routing fails closed")
+	}
+
+	modelsCfg := &config.ModelsConfig{
+		Models: map[string]config.ModelMapping{
+			"aegis-sneaky": {Primary: config.ProviderRoute{Provider: "sneaky", Model: "whatever"}},
+		},
+	}
+	if _, err := ResolveRoute(modelsCfg, registry, nil, "aegis-sneaky", "INTERNAL"); err == nil {
+		t.Error("ResolveRoute resolved an alias pointing at an unregistered mock provider; it must fail closed")
+	}
+}
+
+func TestUsesMockProvider_EmptyRegistryIsNotMock(t *testing.T) {
+	// An empty registry has no real adapters, but reporting "mock_provider:
+	// true" for it would tell an operator the gateway is answering locally when
+	// in fact it is answering nothing at all.
+	if NewRegistry().UsesMockProvider() {
+		t.Error("an empty registry reported itself as running on the mock provider")
 	}
 }

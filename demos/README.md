@@ -1,17 +1,17 @@
 # AEGIS AI Gateway — Demos
 
-Self-contained, runnable demos that showcase gateway features. Each demo lives in its own directory with a `run.sh`. Demos that spin up additional services (databases, UI, policy servers) also include a `docker-compose.yaml`; lightweight curl/script demos do not.
+Self-contained, runnable demos that showcase gateway features. Each demo lives in its own directory, and each except `00-quickstart` has a `run.sh`; the quickstart is driven by `./quickstart.sh` at the repo root instead. Demos that spin up additional services (databases, UI, policy servers) also include a `docker-compose.yaml`; lightweight curl and script demos do not.
 
 ## Prerequisites
 
 - Docker Desktop
-- At least one provider API key (OpenAI or Anthropic)
+- No provider API key. Without one the gateway answers completions from a mock provider and every other stage of the pipeline still runs. Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` to route to a real provider.
 
 ## Demos
 
 | # | Name | What it shows | Status |
 |---|------|---------------|--------|
-| [00](00-quickstart/) | **Quickstart** | Full stack with Open WebUI — multi-provider routing, secrets filter, cost tracking, metrics | Ready |
+| [00](00-quickstart/) | **Quickstart** | The gateway, Postgres and Redis. Started by `./quickstart.sh` at the repo root, which is the one entry point. Open WebUI optional | Ready |
 | [01](01-curl-basics/) | **curl Basics** | Step-by-step curl walkthrough of every endpoint | Ready |
 | [02](02-streaming/) | **Streaming** | SSE streaming, Anthropic→OpenAI format conversion, TTFT metrics | Ready |
 | [03](03-cost-tracking/) | **Cost Tracking** | Per-request cost, aggregated reports, Prometheus cost metrics | Ready |
@@ -20,15 +20,14 @@ Self-contained, runnable demos that showcase gateway features. Each demo lives i
 
 ## Quick start
 
-If your provider keys are already exported, it just works:
+From the repo root, with no credentials:
 
 ```bash
-export OPENAI_API_KEY=sk-proj-...   # or ANTHROPIC_API_KEY
-cd demos/00-quickstart
-./run.sh
+./quickstart.sh
+./quickstart.sh verify     # the whole evidence sequence, printed step by step
 ```
 
-Otherwise the script creates a `.env` file for you to fill in.
+The canonical command set is in [docs/QUICKSTART-COMMANDS.md](../docs/QUICKSTART-COMMANDS.md).
 
 ## Structure
 
@@ -39,9 +38,10 @@ demos/
     .env.example         ← provider API key template (copied into each demo)
     wait-for-gateway.sh  ← health-check polling script used by all demos
   00-quickstart/
-    docker-compose.yaml  ← gateway + Open WebUI + Postgres + Redis
-    run.sh               ← one-command launcher
+    docker-compose.yaml       ← gateway + Postgres + Redis; Open WebUI behind a profile
+    docker-compose.build.yaml ← overlay for ./quickstart.sh --build
     README.md
+                              (no run.sh: ../../quickstart.sh is the one entry point)
   01-curl-basics/
     run.sh
     README.md
@@ -64,9 +64,9 @@ demos/
 
 ## Writing a new demo
 
-1. Create `demos/NN-slug/` with a `run.sh` and `README.md`; add a `docker-compose.yaml` only if the demo requires additional services
-2. Use `../shared/.env.example` as the env template — `run.sh` copies it on first run
+1. Create `demos/NN-slug/` with a `run.sh` and `README.md`; add a `docker-compose.yaml` only if the demo requires additional services. `00-quickstart` is the exception: it has no `run.sh`, because `./quickstart.sh` at the repo root is the single documented entry point
+2. Use `../shared/.env.example` as the env template if the demo needs provider keys. Prefer not needing them
 3. Use `../shared/wait-for-gateway.sh` to poll for gateway readiness
 4. Build the gateway from repo root: `build: { context: ../.. , dockerfile: Dockerfile }`
 5. Use container names prefixed with `aegis-demo-` to avoid collisions with dev services
-6. Add an entry to the table above
+6. Add an entry to the table above, and add any command a reader is meant to paste to [docs/QUICKSTART-COMMANDS.md](../docs/QUICKSTART-COMMANDS.md)

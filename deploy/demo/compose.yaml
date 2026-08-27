@@ -1,0 +1,144 @@
+# AEGIS AI Gateway. A demo you can run without cloning anything.
+#
+#   curl -O https://aegisgateway.ai/demo/compose.yaml
+#   docker compose up
+#
+# Then, in another terminal:
+#
+#   # A benign request is permitted
+#   curl http://localhost:8080/v1/chat/completions \
+#     -H 'Authorization: Bearer aegis-demo-quickstart' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model":"aegis-fast","messages":[{"role":"user","content":"Hello!"}]}'
+#
+#   # A request carrying a credential is refused with HTTP 451
+#   curl http://localhost:8080/v1/chat/completions \
+#     -H 'Authorization: Bearer aegis-demo-quickstart' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model":"aegis-fast","messages":[{"role":"user","content":"My AWS key is AKIAIOSFODNN7EXAMPLE"}]}'
+#
+#   # The refusal was recorded
+#   docker exec aegis-demo-postgres psql -U aegis -d aegis \
+#     -c "SELECT request_id, event_type, status_code, filter_type, reason FROM audit_events;"
+#
+#   # The credential is in no row of the database. This prints 0.
+#   docker exec aegis-demo-postgres pg_dump -U aegis aegis | grep -c AKIAIOSFODNN7EXAMPLE
+#
+# Stop and delete everything:  docker compose down -v
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# READ THIS BEFORE RUNNING IT ANYWHERE THAT MATTERS
+#
+# This file is a demo and says so in every place it matters. Specifically:
+#
+#   * The database password and the API key pepper below are published in this
+#     file. Anybody who has read it knows both.
+#   * It seeds a well-known API key, `aegis-demo-quickstart`, so the curl
+#     commands above work as written.
+#   * No provider key is configured, so AEGIS_MOCK_PROVIDER is on and
+#     completions are answered locally.
+#
+# Everything else is the real gateway. Authentication, request validation, the
+# secrets and injection filters, OPA policy evaluation, classification gating,
+# rate limits, cost calculation, and the audit write all run exactly as they do
+# in a real deployment. The refusal you see is a real refusal.
+#
+# For a real deployment, start from docs/DEPLOYMENT.md instead of from here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aegis-demo-postgres
+    environment:
+      POSTGRES_USER: aegis
+      # Demo password, published in this file. Not a secret.
+      POSTGRES_PASSWORD: aegis-dev
+      POSTGRES_DB: aegis
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-demo-redis
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  gateway:
+    # Published multi-arch image. Nothing here is built, so no Go toolchain and
+    # no clone are needed. The image is built and pushed by the docker job in
+    # .github/workflows/ci.yml.
+    image: ghcr.io/aegis-gateway/aegis-ai-gateway:v0.1.0
+    container_name: aegis-demo-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      # Bound to the loopback interface, not 0.0.0.0. This file seeds a
+      # well-known API key and publishes its own pepper below, on the stated
+      # basis that nothing here is reachable from outside the machine. A plain
+      # "8080:8080" publishes on every interface and makes that false on any
+      # shared workstation or cloud host, where anyone who can reach the host
+      # could then issue authenticated requests against the demo.
+      #
+      # The gateway, OpenAI-compatible.
+      - "127.0.0.1:8080:8080"
+      # Prometheus metrics, all prefixed aegis_.
+      - "127.0.0.1:9090:9090"
+    environment:
+      DATABASE_URL: postgres://aegis:aegis-dev@postgres:5432/aegis?sslmode=disable
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: aegis
+      DB_PASSWORD: aegis-dev
+      DB_NAME: aegis
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+      # Seeds the well-known key `aegis-demo-quickstart` on first start, so the
+      # curl commands at the top of this file work with no setup step.
+      AEGIS_SEED_DEMO_KEY: "true"
+
+      # Answer completions from the mock provider in
+      # internal/router/adapters/mock.go rather than calling out. This replaces
+      # the upstream HTTP call and nothing else: every filter, the policy
+      # engine, the limits, and the audit write still run.
+      #
+      # To use a real provider instead, delete this line and add a key:
+      #   OPENAI_API_KEY: sk-proj-...
+      #   ANTHROPIC_API_KEY: sk-ant-...
+      AEGIS_MOCK_PROVIDER: "true"
+
+      # Server-side pepper for HMAC-SHA256 API key hashing. The gateway refuses
+      # to start without one of at least 32 characters.
+      #
+      # This value is published in this file, so treat it as known to everyone.
+      # It is safe here only because the one key this demo seeds is a v1
+      # SHA-256 hash that does not involve the pepper, and because nothing in
+      # this stack is reachable from outside your machine. Generate your own for
+      # anything real: openssl rand -hex 32
+      AEGIS_KEY_PEPPER: "aegis-demo-pepper-published-in-compose-not-a-secret"
+
+      OPA_BUNDLE_PATH: "/etc/aegis/configs/policies"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:

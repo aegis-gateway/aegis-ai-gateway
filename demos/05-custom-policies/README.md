@@ -5,8 +5,8 @@ Three custom Rego policies, restricted terms, token budgets and topic restrictio
 ## Prerequisites
 
 - Docker Compose v2
-- At least one provider API key (OpenAI or Anthropic)
-- **00-quickstart does NOT need to be running** — this demo is self-contained
+- No provider API key. Policy evaluation runs before any provider call; permitted requests are answered by the mock provider when no key is set
+- This demo is self-contained and starts its own stack, under the same container names as the quickstart. Stop that one first: `./quickstart.sh down`
 
 ## Policy layers
 

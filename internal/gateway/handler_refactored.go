@@ -206,6 +206,7 @@ func (h *Handler) handleStreamingRequest(
 		reqID,
 		routeResult.ProviderReq,
 		routeResult.Adapter,
+		routeResult.ProviderKey,
 		routeResult.OriginalModel,
 		authInfo,
 		parsedReq.AegisRequest,

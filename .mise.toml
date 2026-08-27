@@ -97,7 +97,58 @@ run = "go test ./... -v -race -cover"
 [tasks."test:integration"]
 description = "Run integration tests (starts services and migrates first)"
 depends = ["services:up", "db:migrate"]
-run = "go test ./test/integration/... -v -tags=integration -count=1"
+# ./test/integration/ does not exist and never has. The integration tests live
+# beside the code they cover, behind the `integration` build tag.
+#
+# Two things stop `go test ./... -tags=integration` from working:
+#
+#  1. internal/gateway/integration_test.go does not compile — it references
+#     config.RateLimitConfig, config.RetryConfig and config.ValidationConfig,
+#     none of which exist. It has never built under the integration tag, so it
+#     provides no coverage today. Repairing it needs a decision about what it
+#     was meant to assert, so it is left out of this task rather than deleted
+#     or silently "fixed" into something that passes.
+#  2. TestNoPayload_CanaryEndToEnd fails rather than skips without a running
+#     gateway, deliberately, because it backs a public claim. So the task has
+#     to provide one.
+run = """
+set -euo pipefail
+export AEGIS_KEY_PEPPER="${AEGIS_KEY_PEPPER:-mise-local-integration-pepper-not-for-production}"
+export TEST_DATABASE_URL="${DATABASE_URL}"
+export GATEWAY_PORT="${GATEWAY_PORT:-18080}"
+export TEST_SERVER_URL="http://localhost:${GATEWAY_PORT}"
+
+key=$(go run ./cmd/keygen -org mise-org -team mise-team -name integration \
+        -env dev -classification INTERNAL -expires 1d \
+      | grep -oE 'aegis-dev-[a-z0-9]{32}' | head -1)
+[ -n "$key" ] || { echo "could not issue an API key" >&2; exit 1; }
+export TEST_API_KEY="$key"
+
+# Build first and run the binary directly. `go run` execs the compiled
+# program as a *child*, so trapping the `go run` PID would leave the gateway
+# holding GATEWAY_PORT after the task finished — and the next run would either
+# fail to bind or, worse, silently test against the stale process.
+bin=$(mktemp -t aegis-gateway-XXXXXX)
+go build -o "$bin" ./cmd/gateway
+"$bin" > /tmp/aegis-integration-gateway.log 2>&1 &
+gw=$!
+trap 'kill "$gw" 2>/dev/null || true; wait "$gw" 2>/dev/null || true; rm -f "$bin"' EXIT
+
+ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS "http://localhost:${GATEWAY_PORT}/aegis/v1/health" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  kill -0 "$gw" 2>/dev/null || { echo "gateway exited before becoming healthy:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
+  sleep 1
+done
+# Without this the loop falls through on timeout and the tests run against a
+# gateway that never came up, reporting connection errors as test failures.
+[ "$ready" = "1" ] || { echo "gateway did not become healthy within 60s:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
+
+go test ./internal/audit/... ./internal/purge/... -v -tags=integration -count=1 -p 1
+"""
 
 # ── Lint / Format ─────────────────────────────────────────────────
 
@@ -133,3 +184,13 @@ go run ./cmd/keygen \
   -classification INTERNAL \
   -expires 365d
 """
+
+# ── Docs ──────────────────────────────────────────────────────────
+
+[tasks."docs:models"]
+description = "Regenerate the README model alias table from configs/models.yaml"
+run = "./scripts/gen-model-table.sh"
+
+[tasks."docs:models:check"]
+description = "Fail if the README model table is out of date (CI)"
+run = "./scripts/gen-model-table.sh --check"
