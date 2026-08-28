@@ -102,11 +102,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	var aegisReq types.AegisRequest
-	if err := json.Unmarshal(body, &aegisReq); err != nil {
-		httputil.WriteBadRequestError(w, reqID, "Invalid JSON: "+err.Error())
+	// Decode against an explicit allowlist. A field AEGIS does not knowingly
+	// support is a 400 naming the field, not a discarded key: silently
+	// accepting input the gateway cannot honour is how tool calling came to be
+	// stripped from every agent request without anything reporting a problem.
+	parsed, err := types.DecodeChatCompletion(body)
+	if err != nil {
+		h.writeDecodeError(w, reqID, authInfo.OrganizationID, err)
 		return
 	}
+	aegisReq := *parsed
 
 	// Enrich with auth context
 	aegisReq.RequestID = reqID
@@ -207,6 +212,39 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteContentBlockedError(w, reqID, result.Message)
 			return
 		}
+	}
+
+	// Refuse a tool-bearing request routed to an adapter that cannot express
+	// tools, rather than dispatching it without them. Dropping the tools here
+	// would be the original defect wearing a different hat: the provider would
+	// answer in prose and the agent loop would stall with nothing reporting a
+	// problem.
+	//
+	// Deliberately after policy evaluation. A policy denial is a governance
+	// decision and is written to the audit trail; this refusal is a
+	// compatibility error and is not. Checking capability first would let a
+	// 400 preempt a 451 that should have been recorded, which matters now that
+	// tool names are exposed to Rego and a rule can deny on them.
+	if aegisReq.HasTools() && !adapter.SupportsTools() {
+		slog.Warn("tool request refused: provider adapter cannot carry tools",
+			"request_id", reqID,
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+			"model", aegisReq.Model,
+			"tools_offered", len(aegisReq.Tools),
+			"org_id", authInfo.OrganizationID,
+		)
+		if h.metrics != nil {
+			h.metrics.RecordToolRequestRefused(providerKey, adapter.Name())
+		}
+		httputil.WriteError(w, reqID, http.StatusBadRequest,
+			"invalid_request_error", "tools_unsupported_by_provider",
+			"model "+aegisReq.Model+" routes to provider "+providerKey+
+				", whose adapter ("+adapter.Name()+") does not carry tool definitions, tool calls or tool results. "+
+				"AEGIS refuses the request rather than forwarding it without its tools. "+
+				"Route this request to an OpenAI-compatible provider, or remove the tool fields",
+		)
+		return
 	}
 
 	// Override model with the provider-specific model name
@@ -361,6 +399,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"duration_ms", totalDuration.Milliseconds(),
 		"status_code", http.StatusOK,
 		"stream", false,
+		// Two counts, because they are two different facts. tools_called is
+		// what the conversation had already invoked when it arrived;
+		// tools_returned is what the model asked for in this response. The
+		// streaming path logs the same pair, reconstructed from the deltas.
+		"tools_offered", len(aegisReq.Tools),
+		"tools_called", len(aegisReq.CalledToolNames()),
+		"tools_returned", countReturnedToolCalls(aegisResp),
 		"classification", string(authInfo.MaxClassification),
 		"org_id", authInfo.OrganizationID,
 		"team_id", authInfo.TeamID,

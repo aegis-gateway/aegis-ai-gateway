@@ -38,6 +38,7 @@ func (f *fakeAdapter) TransformResponse(_ context.Context, _ *http.Response) (*t
 }
 func (f *fakeAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) { return chunk, nil }
 func (f *fakeAdapter) SupportsStreaming() bool                           { return false }
+func (f *fakeAdapter) SupportsTools() bool                               { return true }
 func (f *fakeAdapter) SendRequest(_ *http.Request) (*http.Response, error) {
 	return nil, nil
 }

@@ -28,9 +28,17 @@ import (
 )
 
 // PolicyMessage represents a single message for policy evaluation.
+//
+// Content is flattened to a single string because that is the shape existing
+// rules match on. Parts is the structured form when the message carried a
+// content array, so a rule that needs per-part granularity has it without the
+// flattening ambiguity. ToolCalls carries the names of tools this turn asked
+// for, never their arguments.
 type PolicyMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string   `json:"role"`
+	Content   string   `json:"content"`
+	Parts     []string `json:"parts,omitempty"`
+	ToolCalls []string `json:"tool_calls,omitempty"`
 }
 
 // PolicyInput is the data sent to OPA for evaluation.
@@ -47,10 +55,24 @@ type PolicyUser struct {
 	Team string `json:"team"`
 }
 
+// PolicyReq is the request-level policy input.
+//
+// ToolsOffered and ToolsCalled are names only. A tool name says which
+// capability was put in front of the model; the arguments say what was done
+// with it, and those are payload. Exposing the names makes agent governance
+// rules writable ("this key may not be offered a shell tool") without putting
+// payload anywhere a policy, a log line, or an audit row could capture it.
+//
+// No tool-level enforcement rule ships in configs/policies. This is the seam,
+// not the policy.
 type PolicyReq struct {
-	Model          string `json:"model"`
-	Classification string `json:"classification"`
-	ProviderType   string `json:"provider_type"`
+	Model          string   `json:"model"`
+	Classification string   `json:"classification"`
+	ProviderType   string   `json:"provider_type"`
+	Stream         bool     `json:"stream"`
+	ToolsOffered   []string `json:"tools_offered"`
+	ToolsCalled    []string `json:"tools_called"`
+	ToolChoice     string   `json:"tool_choice,omitempty"`
 }
 
 type PolicyTime struct {
@@ -220,7 +242,16 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 
 	msgs := make([]PolicyMessage, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = PolicyMessage{Role: m.Role, Content: m.Content}
+		pm := PolicyMessage{Role: m.Role, Content: m.Content.Flatten()}
+		if m.Content.Kind == types.ContentParts {
+			pm.Parts = m.Content.Texts()
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name != "" {
+				pm.ToolCalls = append(pm.ToolCalls, tc.Function.Name)
+			}
+		}
+		msgs[i] = pm
 	}
 
 	input := PolicyInput{
@@ -233,6 +264,10 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 			Model:          req.Model,
 			Classification: string(req.Classification),
 			ProviderType:   req.ProviderType,
+			Stream:         req.Stream,
+			ToolsOffered:   req.ToolNames(),
+			ToolsCalled:    req.CalledToolNames(),
+			ToolChoice:     req.ToolChoice.String(),
 		},
 		Messages: msgs,
 		Time: PolicyTime{

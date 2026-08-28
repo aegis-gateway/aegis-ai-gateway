@@ -15,7 +15,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -59,10 +58,15 @@ func (rp *RequestProcessor) ParseAndValidateRequest(
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	var aegisReq types.AegisRequest
-	if err := json.Unmarshal(body, &aegisReq); err != nil {
-		return nil, httputil.NewHTTPError(http.StatusBadRequest, "Invalid JSON: "+err.Error())
+	// Same allowlist decoder the live handler uses. This file is not routed
+	// (see the dead-code note in CLAUDE.md), but leaving it decoding straight
+	// into AegisRequest would leave a second, silently-dropping parser sitting
+	// one wiring change away from being the live one.
+	parsed, err := types.DecodeChatCompletion(body)
+	if err != nil {
+		return nil, httputil.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
+	aegisReq := *parsed
 
 	// Enrich with auth context
 	aegisReq.RequestID = reqID

@@ -1,21 +1,47 @@
 # Agent Compatibility Evidence
 
-**Date:** 2026-08-27  
-**Branch:** research/agent-compatibility  
+**Original assessment:** 2026-08-27, branch `research/agent-compatibility`
+**Tool-calling gap closed:** 2026-08-27, branch `feature/openai-tool-calling-support`
 **Repo:** aegis-gateway/aegis-ai-gateway
 
 ---
 
 ## Summary
 
-Two coding agent surfaces were tested against the AEGIS AI Gateway:
+Two coding agent surfaces were tested against the AEGIS AI Gateway.
 
 | Subject | Connects | Protocol match | Tool use | Verdict |
 |---------|----------|---------------|----------|---------|
-| OpenClaw (custom provider via `openai-completions` API) | ✅ Yes | ✅ OpenAI `/v1/chat/completions` | ❌ Silently stripped | Connects; tool use broken |
-| Claude Code (`ANTHROPIC_BASE_URL` override) | ❌ No | ❌ `/v1/messages` not exposed | N/A | Fails at first request |
+| OpenClaw (custom provider via `openai-completions` API) | Yes | OpenAI `/v1/chat/completions` | Supported | Works, on OpenAI-compatible routes |
+| Claude Code (`ANTHROPIC_BASE_URL` override) | No | `/v1/messages` not exposed | N/A | Still fails at first request |
 
-**Most important finding:** Tool use—the feature coding agents depend on most—is silently stripped by AEGIS for both subjects that reach the gateway. The `tools` parameter and `tool_calls` message fields are simply not in any struct AEGIS deserializes, so they disappear before the request reaches the provider. The provider responds as if tools were never declared. The agent loop breaks without an error.
+**What changed.** Tool use is no longer silently stripped. `tools`, `tool_choice`,
+`parallel_tool_calls`, `tool_calls` and `tool_call_id` are carried end to end,
+`message.content` accepts a string or an array of text parts, and the `tool` role is
+accepted by the validator. Test 4 below now passes.
+
+**What did not change.** Claude Code still cannot connect: it calls the Anthropic
+Messages API at `POST /v1/messages`, and AEGIS exposes no such route. That is a
+separate piece of work, described under Subject B.
+
+**Two limits the fix deliberately did not paper over.**
+
+1. **Tool calling works on OpenAI-compatible routes only.** The Anthropic adapter does
+   not translate tools, so a tool-bearing request routed to it is **refused with HTTP
+   400**, not served without its tools. Every shipped alias lists an Anthropic provider
+   first, so with a real `ANTHROPIC_API_KEY` configured a tool request to `aegis-fast`
+   is refused. Under `AEGIS_MOCK_PROVIDER=true` it succeeds, because the mock carries
+   tools.
+2. **Non-text content parts are refused.** Widening `content` made image parts
+   expressible for the first time. They are rejected at decode rather than admitted,
+   because AEGIS cannot scan an image and will not forward to a provider what no filter
+   has read.
+
+**And one thing that got stricter for everyone.** The gateway used to discard any
+request field it did not recognise. It now refuses them with a 400 naming the field.
+See [request field support](../reference/request-field-support.md). This rejects
+requests that previously returned 200; those requests were already not doing what the
+caller asked.
 
 ---
 
@@ -116,71 +142,102 @@ The error includes the human-readable `reason` from the Rego `reason` rule, whic
 
 AEGIS has full SSE streaming support (`StreamingHandler.HandleStream()`). It sets `Content-Type: text/event-stream`, forwards chunks through `bufio.Scanner`, and calls `Flush()` after each chunk. The OpenAI streaming format (`data: {"choices":[{"delta":...}]}`) passes through unchanged for OpenAI-backed models and is normalized from Anthropic's native format (`content_block_delta`) by `AnthropicAdapter.TransformStreamChunk()`. OpenClaw's `openai-completions` API consumer handles standard SSE, so streaming works end to end.
 
-#### Test 4: Tool use — FAILS SILENTLY ❌
+#### Test 4: Tool use — PASSES (closed 2026-08-27) ✅
 
-This is the critical gap. AEGIS's canonical request type (`internal/types/request.go`) does not include tool definitions or tool call responses:
+**What was broken.** AEGIS's canonical request type carried no tool fields:
 
 ```go
-// internal/types/request.go
+// internal/types/request.go, before
 type AegisRequest struct {
     Model    string    `json:"model"`
     Messages []Message `json:"messages"`
-    Stream   bool      `json:"stream"`
-    // ... temperature, max_tokens, etc.
-    // NO: Tools, ToolChoice, Functions
+    // NO: Tools, ToolChoice
 }
 
 type Message struct {
     Role    string `json:"role"`
-    Content string `json:"content"` // string only, not []ContentBlock
-    Name    string `json:"name,omitempty"`
-    // NO: ToolCalls, ToolCallID, FunctionCall
+    Content string `json:"content"` // string only
+    // NO: ToolCalls, ToolCallID
 }
 ```
 
-And the OpenAI adapter's outgoing body matches:
+`json.Unmarshal` discarded `tools`, `messages[].tool_calls` and
+`messages[].tool_call_id` without error. The provider received a request with no tools
+declared, answered in prose, and the agent loop stalled. Nothing in the system reported
+a problem.
 
-```go
-// internal/router/adapters/openai.go
-type openAIRequestBody struct {
-    Model    string          `json:"model"`
-    Messages []types.Message `json:"messages"`
-    Stream   bool            `json:"stream,omitempty"`
-    // NO: Tools, ToolChoice
-}
-```
+**What it is now.** `Tools`, `ToolChoice` and `ParallelToolCalls` are on the request
+type; `ToolCalls` and `ToolCallID` are on `Message`; `Content` is a
+[`types.Content`](../../internal/types/content.go) carrying either a string or an array
+of text parts. The `tool` role is accepted by the validator, which previously rejected
+it. The OpenAI adapter's outgoing body carries all of it.
 
-When an agent sends a tool-augmented request:
+The request that used to be stripped now arrives intact:
 
 ```json
 POST /v1/chat/completions
 {
   "model": "aegis-fast",
   "tools": [{"type": "function", "function": {"name": "read_file", "parameters": {...}}}],
+  "tool_choice": "auto",
   "messages": [
     {"role": "user", "content": "Read src/main.go and summarize it"},
-    {"role": "assistant", "tool_calls": [{"id": "call_abc", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"src/main.go\"}"}}]},
+    {"role": "assistant", "content": null, "tool_calls": [{"id": "call_abc", "type": "function",
+      "function": {"name": "read_file", "arguments": "{\"path\":\"src/main.go\"}"}}]},
     {"role": "tool", "tool_call_id": "call_abc", "content": "package main\n..."}
   ]
 }
 ```
 
-`json.Unmarshal` into `AegisRequest` silently discards:
-- `tools` (no matching field)
-- `messages[1].tool_calls` (no matching field in `types.Message`)
-- `messages[2].tool_call_id` (no matching field)
+Evidence: `TestChatCompletions_ToolsReachTheProvider` asserts on the bytes the adapter
+was asked to send, not on the status code. A 200 would not settle it, since the broken
+gateway also returned 200.
 
-The `Content string` field cannot unmarshal a `content` array of content blocks; `json.Unmarshal` returns an error (`cannot unmarshal array into Go struct field`), causing AEGIS to return `HTTP 400 Invalid JSON`. So multi-part `content` arrays fail loudly, but tool call metadata on messages with string content fails silently.
+Streaming tool calls are relayed byte for byte, so a client accumulates them by index as
+it would from the provider directly. The gateway accumulates in parallel for its own
+record: `internal/gateway/tool_stream.go`, tested against split arguments and against
+interleaved parallel calls.
 
-The provider receives a stripped request with no tools declared. It responds with plain text. The agent loop stalls: the agent expected a tool call response but got a text response, so it either loops trying again or gives a confusing answer.
+**Filtering.** This is the part that had to be right. Widening the message shape added
+three places a credential can hide that no filter previously read. All three, plus the
+tool definitions themselves, are now scanned by the existing chain via
+`AegisRequest.TextSegments`:
 
-**This is not a minor edge case.** Every coding agent uses tool calls as its primary mechanism for reading files, running commands, and searching code. An agent routed through AEGIS today will appear to work for simple questions and silently degrade on any task requiring tool use.
+| Surface | Scanned for |
+|---------|-------------|
+| Each text part of a structured content array | secrets, PII, injection |
+| The `arguments` string of every tool call | secrets, PII, injection |
+| The content of every tool result message | secrets, PII, injection |
+| Tool name, description and parameter schema | secrets, PII, injection |
+
+Tool results get particular attention because that is where indirect prompt injection
+arrives: an agent that fetches a web page and returns it to the model is carrying
+attacker-controlled text into the prompt. `TestChatCompletions_InjectionInToolResultIsBlocked`
+covers it end to end, and `internal/filter/tool_surface_test.go` plants a canary
+credential in each surface and asserts both that the request is blocked and that the
+canary reaches neither the response body nor the audit logger.
+
+**Two refusals this test does not cover as passes.**
+
+- A tool-bearing request routed to the Anthropic adapter is **refused** with HTTP 400
+  and `tools_unsupported_by_provider`. The adapter does not translate Anthropic's
+  `tool_use` and `tool_result` content blocks, and forwarding the request without its
+  tools would be the original defect relocated rather than fixed. Every shipped alias
+  lists Anthropic first, so this is the common case with a real Anthropic key.
+- A non-text content part is refused with `unsupported_content_part`. See
+  [known limitations §2.7](known-limitations.md).
 
 #### Test 5: Long context and many turns — PASSES (with caveats) ✅⚠️
 
 The validator (`internal/validation/validator.go`) allows up to 1,000 messages and 1M characters of total content by default—sufficient for most agent sessions. Large payloads pass through without truncation. The timeout default is not visible in config but the streaming handler has configurable per-chunk and total-stream timeouts.
 
-One caveat: `types.Message.Content` is typed as `string`. Anthropic's native format uses content arrays for multi-part messages (text + tool results). AEGIS normalizes these during outbound adaptation but does not store them in the canonical type. As context grows and multi-part messages appear, the content array unmarshal error (HTTP 400) becomes more likely.
+The caveat recorded here originally, that `types.Message.Content` was a `string` and a
+multi-part content array therefore failed with HTTP 400, no longer applies to text
+parts: `Content` now carries either shape. It still applies to non-text parts, which are
+refused deliberately rather than incidentally. Note also that the per-message length
+limit is now measured across every text-bearing element of the message, so a message
+whose size sits in tool call arguments is bounded the same way as one whose size sits in
+its content.
 
 #### Test 6: Agent behaviour on denial — PASSES ✅
 
@@ -279,8 +336,36 @@ There is no `/v1/messages`, no `/v1/responses`, no `/v1/embeddings`, and no audi
 
 ## Recommended next steps
 
-1. **Fix tool use for OpenAI-compatible agents (Subject A):** Expand `types.Message.Content` from `string` to `json.RawMessage`, add `Tools` and `ToolChoice` to `AegisRequest` and `openAIRequestBody`. Update secrets/PII scanners to handle array content. This closes test case 4 for OpenClaw and any OpenAI-SDK-based agent.
+Numbered as of 2026-08-27, after the tool-calling work landed.
 
-2. **Add `/v1/messages` Anthropic ingress (Subject B):** New route + ingress parser + streaming translation. This enables Claude Code and any Anthropic-SDK-based agent. The expanded tool fields from step 1 are a prerequisite.
+1. **~~Fix tool use for OpenAI-compatible agents~~. Done.** Landed on
+   `feature/openai-tool-calling-support`. See Test 4 above.
 
-3. **Expose audit query endpoints over HTTP:** The task spec mentions `GET /aegis/v1/audit/events` and `GET /aegis/v1/audit/logs`, but these routes do not exist in the current codebase. Audit data is only accessible via direct database queries. Adding read-only authenticated audit query endpoints would make the demo scriptable without `docker exec`.
+2. **Translate tools in the Anthropic adapter.** This is now the largest remaining gap
+   for Subject A, and closing the first one is what surfaced it. Every shipped alias
+   routes to Anthropic first, so a deployment with a real `ANTHROPIC_API_KEY` refuses
+   tool requests today. The work is contained: tool definitions to Anthropic's schema,
+   `tool_calls` to `tool_use` content blocks, `tool` messages to `tool_result` blocks on
+   a user turn, and `input_json_delta` accumulation in `TransformStreamChunk`. The
+   capability gate (`ProviderAdapter.SupportsTools`) is already in place, so the change
+   is to make it return true and mean it.
+
+3. **Add `/v1/messages` Anthropic ingress (Subject B).** New route, ingress parser, and
+   streaming translation. The expanded tool fields from step 1 were a prerequisite and
+   now exist, so this is smaller than it was. Item 2 is a prerequisite for the egress
+   half of it.
+
+4. **Forward `stream_options`.** Currently refused, which means a streaming client
+   cannot ask the provider for usage, which means a streamed request can record zero
+   tokens and therefore zero cost. See [known limitations §2.9](known-limitations.md).
+   The smallest item on this list and the one with the most direct effect on the spend
+   controls.
+
+5. **Record tool names in the audit trail.** `tools_offered` and `tools_called` reach
+   Rego and the log line but not `audit_events`. For an agent workload, "a call was
+   made" and "a shell tool was offered and called" are different facts and only the
+   first is in the evidence. Needs a migration and a `hash_schema_version` decision. See
+   [known limitations §2.10](known-limitations.md).
+
+6. **~~Expose audit query endpoints over HTTP~~. Done.** `GET /aegis/v1/audit/events`
+   and `GET /aegis/v1/audit/logs` exist and are authenticated.

@@ -57,7 +57,7 @@ func TestOpenAIAdapter_TransformRequest(t *testing.T) {
 
 	req := &types.AegisRequest{
 		Model:       "gpt-4o",
-		Messages:    []types.Message{{Role: "system", Content: "You help."}, {Role: "user", Content: "Hi"}},
+		Messages:    []types.Message{{Role: "system", Content: types.TextContent("You help.")}, {Role: "user", Content: types.TextContent("Hi")}},
 		Stream:      false,
 		Temperature: &temp,
 		MaxTokens:   &maxTok,
@@ -143,8 +143,8 @@ func TestOpenAIAdapter_TransformResponse_Success(t *testing.T) {
 	if len(aegisResp.Choices) != 1 {
 		t.Fatalf("expected 1 choice, got %d", len(aegisResp.Choices))
 	}
-	if aegisResp.Choices[0].Message.Content != "Hello!" {
-		t.Errorf("unexpected content: %s", aegisResp.Choices[0].Message.Content)
+	if aegisResp.Choices[0].Message.Content.Flatten() != "Hello!" {
+		t.Errorf("unexpected content: %s", aegisResp.Choices[0].Message.Content.Flatten())
 	}
 	if aegisResp.Choices[0].FinishReason != "stop" {
 		t.Errorf("expected finish_reason stop, got %s", aegisResp.Choices[0].FinishReason)
@@ -241,8 +241,8 @@ func TestAnthropicAdapter_TransformRequest_SystemMessage(t *testing.T) {
 	req := &types.AegisRequest{
 		Model: "claude-sonnet-4-5-20250929",
 		Messages: []types.Message{
-			{Role: "system", Content: "You are helpful."},
-			{Role: "user", Content: "Hi"},
+			{Role: "system", Content: types.TextContent("You are helpful.")},
+			{Role: "user", Content: types.TextContent("Hi")},
 		},
 	}
 
@@ -286,7 +286,7 @@ func TestAnthropicAdapter_TransformRequest_DefaultMaxTokens(t *testing.T) {
 
 	req := &types.AegisRequest{
 		Model:    "claude-sonnet-4-5-20250929",
-		Messages: []types.Message{{Role: "user", Content: "Hi"}},
+		Messages: []types.Message{{Role: "user", Content: types.TextContent("Hi")}},
 		// MaxTokens is nil — should default to 4096
 	}
 
@@ -309,7 +309,7 @@ func TestAnthropicAdapter_TransformRequest_CustomMaxTokens(t *testing.T) {
 
 	req := &types.AegisRequest{
 		Model:     "claude-sonnet-4-5-20250929",
-		Messages:  []types.Message{{Role: "user", Content: "Hi"}},
+		Messages:  []types.Message{{Role: "user", Content: types.TextContent("Hi")}},
 		MaxTokens: &maxTok,
 	}
 
@@ -362,8 +362,8 @@ func TestAnthropicAdapter_TransformResponse_Success(t *testing.T) {
 	if len(aegisResp.Choices) != 1 {
 		t.Fatalf("expected 1 choice, got %d", len(aegisResp.Choices))
 	}
-	if aegisResp.Choices[0].Message.Content != "Hello there!" {
-		t.Errorf("unexpected content: %s", aegisResp.Choices[0].Message.Content)
+	if aegisResp.Choices[0].Message.Content.Flatten() != "Hello there!" {
+		t.Errorf("unexpected content: %s", aegisResp.Choices[0].Message.Content.Flatten())
 	}
 	if aegisResp.Choices[0].Message.Role != "assistant" {
 		t.Errorf("expected role assistant, got %s", aegisResp.Choices[0].Message.Role)

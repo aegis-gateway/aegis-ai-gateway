@@ -243,3 +243,94 @@ version-1 chain, which is what lets the verifier compute one field set rather th
 The integrity coverage is unchanged by this, and it is worth being precise about that.
 Version 1 hashed the JSONB object, so its contents were already attested. Version 2 hashes
 the same data as separate fields. The gain is typing and bounding, not more signed data.
+
+### 2.7 Non-text content parts are refused, not filtered
+
+`message.content` now accepts an array of content parts as well as a string. Only
+`{"type": "text", "text": "…"}` is admitted. An `image_url`, `input_audio` or `file`
+part returns HTTP 400 with `"code": "unsupported_content_part"`.
+
+**This is a refusal, not a capability.** AEGIS cannot read an image. The secrets, PII
+and injection filters operate on text, so an image part would be data that leaves the
+gateway for a provider having passed through no filter at all. Widening `content` to
+carry structured parts is what made image parts expressible for the first time;
+admitting them as a side effect of that widening would have converted a compatibility
+fix into a hole in the one claim this product is built on.
+
+So an operator should read this as: **AEGIS does not support multimodal requests, and
+says so at the gateway rather than forwarding what it cannot inspect.** If image
+support is wanted it needs its own decision about what inspecting an image means, not
+a struct field.
+
+The refusal is asserted by `TestDecode_RejectsNonTextContentPart` and, through the
+full handler, by `TestChatCompletions_RefusesImageContentPart`.
+
+### 2.8 Tool calling works on OpenAI-compatible routes only
+
+`tools`, `tool_choice`, `tool_calls`, `tool_call_id` and the `tool` role are carried
+end to end by the OpenAI adapter and by the mock. **The Anthropic adapter does not
+carry them.**
+
+The Anthropic Messages API expresses the same concepts in a different shape: a tool
+call is a `tool_use` content block rather than a `tool_calls` array, a tool result is
+a `tool_result` block on a user turn rather than a message with role `tool`, and in
+streaming the arguments arrive as `input_json_delta` fragments. Translating that is a
+piece of work this change did not do.
+
+What it did do is make the gap loud. `adapters.ProviderAdapter` now declares
+`SupportsTools()`, and a request carrying any tool field routed to an adapter that
+reports false is refused before dispatch with HTTP 400 and
+`"code": "tools_unsupported_by_provider"`, naming the provider.
+
+**This matters for the shipped model table.** `aegis-fast`, `aegis-balanced` and
+`aegis-reasoning` all list an Anthropic provider first. With a real
+`ANTHROPIC_API_KEY` configured, a tool-bearing request to any of those aliases is
+refused rather than served. It is not refused under `AEGIS_MOCK_PROVIDER=true`,
+because the mock stands in for every provider and does carry tools.
+
+The alternative was to forward the request with its tools removed. That is precisely
+the defect this work exists to remove, relocated from the decoder to the adapter, so
+it was not on the table. An operator who needs tool calling today should route the
+alias to an OpenAI-compatible provider.
+
+### 2.9 Streaming cost accuracy is bounded by what the provider volunteers
+
+Cost is computed from provider-reported usage, not from a local token estimate
+(`internal/gateway/handler.go` reads `aegisResp.Usage`, which is populated from the
+provider's own `usage` block). Tool definitions consume input tokens, and because the
+count comes from the provider they are accounted for correctly with no work on the
+gateway's part. The same is true of tool call arguments and tool results.
+
+The exception is streaming. On a streamed response, usage is read from a usage-bearing
+chunk if the provider sends one. Some providers emit usage in a stream only when the
+client asks, via `stream_options: {"include_usage": true}`, and `stream_options` is
+refused (see [request field support](../reference/request-field-support.md)). So a
+streamed request may record zero tokens and therefore zero cost.
+
+This is not new. Before this change `stream_options` was discarded silently and the
+outcome was identical; the difference is that the request now fails with a message
+rather than succeeding with an unpriced usage record. An operator relying on streaming
+spend data should treat a zero-token streaming usage record as missing data rather
+than as a free request, and should watch `aegis_requests_unpriced_total`.
+
+The only reason this is a limitation rather than a bug is that forwarding
+`stream_options` was outside the scope of the change that surfaced it. It is the
+narrowest piece of follow-up work this page records.
+
+### 2.10 Tool names are not in the audit record
+
+`input.request.tools_offered` and `input.request.tools_called` are exposed to Rego, and
+the tool counts appear on the completion log line. **Neither is written to
+`audit_events` or `audit_logs`.**
+
+So the audit trail records that a request happened and, if it was denied, why. It does
+not record which capabilities were put in front of the model. For an agent workload
+that is a real gap: "a call was made" and "a shell tool was offered and called" are
+different facts, and only the first is in the evidence.
+
+Adding tool names to the audit record appears safe under the zero-retention rule. A
+tool name is metadata of the same kind as `model`, while arguments and results are
+payload, and `internal/audit/tool_no_payload_test.go` already pins that boundary. It
+was not implemented here because it needs a migration and a `hash_schema_version`
+decision, and because widening the leaf-hash field set is not something to do as a
+side effect of a compatibility fix.

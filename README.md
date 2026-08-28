@@ -110,12 +110,26 @@ Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an S
 | GET | `/aegis/v1/audit/logs` | Yes | Read the per-request decision record. `?format=csv` to export |
 
 `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop` and `stream`
-are honoured. Anything else an SDK sends — `n`, `response_format`, `seed`,
-`logprobs`, `logit_bias`, presence/frequency penalties, `tools` and
-`tool_choice` — is **silently discarded**, and `message.content` must be a
-string, so multimodal content arrays are rejected at decode. Requests using
-those options do not fail; they succeed with different behaviour than the
-caller asked for, which is harder to notice than an error.
+are honoured, as is tool calling: `tools`, `tool_choice`, `parallel_tool_calls`,
+`tool_calls` on an assistant message, and `tool_call_id` with the `tool` role.
+`message.content` accepts a string or an array of `{"type":"text"}` parts.
+
+Every other field an SDK sends, including `n`, `response_format`, `seed`,
+`logprobs`, `logit_bias`, presence and frequency penalties, `store`, `user`,
+`metadata` and `stream_options`, is **refused with HTTP 400 naming the field**. It used to be
+silently discarded, which meant a request using those options did not fail; it
+succeeded with different behaviour than the caller asked for. That is harder to
+notice than an error, and it is how tool calling came to be stripped from every
+agent request without anything reporting a problem. The full field-by-field
+decision is in
+[docs/reference/request-field-support.md](docs/reference/request-field-support.md).
+
+Two limits are worth reading before pointing an agent at this: a non-text
+content part (an image, audio, a file) is **refused**, because AEGIS cannot scan
+it and will not forward what it cannot inspect; and tool calling works on
+OpenAI-compatible routes only, so a tool-bearing request routed to Anthropic is
+refused rather than served without its tools. Both are in
+[known limitations](docs/evidence/known-limitations.md) §2.7 and §2.8.
 
 ### Model aliases
 
@@ -139,6 +153,8 @@ The audit trail establishes less than an evidence package usually wants it to. T
 
 - **A checkpoint attests event integrity, not policy provenance.** It proves a set of audit events existed, in that order, unaltered since sealing. It does not prove which version of `default.rego` or which gateway configuration was in force when they were produced. Nothing computes a configuration digest; the control plane protocol reserves `ConfigHash` and `PolicyBundles` and actively rejects any v1 submission that populates them ([ADR 0004](docs/adr/0004-reserved-fields-must-not-be-populated.md)).
 - **Requests are scanned; responses are not.** The filters run inbound. A secret in a model's output is not detected.
+- **Non-text content parts are refused, not filtered.** An image, audio or file part in a content array returns 400. AEGIS cannot read it, and it will not forward to a provider what no filter has inspected.
+- **Tool calling works on OpenAI-compatible routes only.** The Anthropic adapter does not carry tools, so a tool-bearing request routed to it is refused with 400 rather than served with its tools removed. Every shipped alias lists an Anthropic provider first.
 - **The default policy bundle denies on alias, not on provider trust.** `input.request.provider_type` sees the adapter type rather than the configured provider name, so the `provider_type == "external"` deny rule in `configs/policies/default.rego` never fires.
 - **Zero-retention is enforced behaviourally, and only partly structurally.** There is no database constraint that makes a payload column impossible. The guarantee rests on the schema, the two tests above, and the typed column bounds, not on something the database itself refuses.
 - **Losing the Redis address is invisible on the health endpoint.** A Redis that is configured but unreachable fails closed, correctly. A Redis whose address was never configured fails open, and health reports that state the same way.

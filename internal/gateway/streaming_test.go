@@ -39,6 +39,7 @@ func (m *mockAdapter) TransformResponse(_ context.Context, _ *http.Response) (*t
 	return nil, nil
 }
 func (m *mockAdapter) SupportsStreaming() bool { return true }
+func (m *mockAdapter) SupportsTools() bool     { return true }
 func (m *mockAdapter) SendRequest(req *http.Request) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }

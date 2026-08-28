@@ -84,9 +84,12 @@ func (c *Client) ScanRequest(ctx context.Context, req *types.AegisRequest) filte
 
 	classification := string(req.Classification)
 
-	for _, msg := range req.Messages {
+	// Every text-bearing element, not every message: a request's PII can sit in
+	// a structured content part, in a tool call's arguments, or in the content
+	// of a tool result, none of which is reachable by reading Message.Content.
+	for _, seg := range req.TextSegments() {
 		resp, err := c.grpcClient.ScanPII(scanCtx, &filterv1.ScanPIIRequest{
-			Text:           msg.Content,
+			Text:           seg.Text,
 			Classification: classification,
 		})
 		if err != nil {

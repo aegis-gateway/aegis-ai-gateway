@@ -29,6 +29,14 @@ type ProviderAdapter interface {
 	TransformResponse(ctx context.Context, resp *http.Response) (*types.AegisResponse, error)
 	TransformStreamChunk(chunk []byte) ([]byte, error)
 	SupportsStreaming() bool
+	// SupportsTools reports whether this adapter carries tool definitions,
+	// tool calls and tool results through to the provider.
+	//
+	// An adapter that returns false must not be sent a tool-bearing request:
+	// the handler refuses it with an error naming the provider. Sending it
+	// anyway would strip the tools on the way out, which is the defect this
+	// method exists to make impossible to reintroduce quietly.
+	SupportsTools() bool
 	// SendRequest sends an HTTP request using the provider's configured client.
 	SendRequest(req *http.Request) (*http.Response, error)
 }

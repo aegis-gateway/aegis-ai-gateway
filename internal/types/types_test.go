@@ -25,8 +25,8 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 	req := AegisRequest{
 		Model: "gpt-4o",
 		Messages: []Message{
-			{Role: "system", Content: "You are helpful."},
-			{Role: "user", Content: "Hello"},
+			{Role: "system", Content: TextContent("You are helpful.")},
+			{Role: "user", Content: TextContent("Hello")},
 		},
 		Temperature: &temp,
 		MaxTokens:   &maxTok,
@@ -51,7 +51,7 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 	if len(decoded.Messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(decoded.Messages))
 	}
-	if decoded.Messages[0].Role != "system" || decoded.Messages[0].Content != "You are helpful." {
+	if decoded.Messages[0].Role != "system" || decoded.Messages[0].Content.Flatten() != "You are helpful." {
 		t.Errorf("unexpected first message: %+v", decoded.Messages[0])
 	}
 	if decoded.Temperature == nil || *decoded.Temperature != 0.7 {
@@ -74,7 +74,7 @@ func TestAegisRequest_JSONRoundTrip(t *testing.T) {
 func TestAegisRequest_OmitsOptionalFields(t *testing.T) {
 	req := AegisRequest{
 		Model:    "gpt-4o",
-		Messages: []Message{{Role: "user", Content: "Hi"}},
+		Messages: []Message{{Role: "user", Content: TextContent("Hi")}},
 	}
 
 	data, err := json.Marshal(req)
@@ -114,7 +114,7 @@ func TestAegisResponse_JSONRoundTrip(t *testing.T) {
 		Choices: []Choice{
 			{
 				Index:        0,
-				Message:      Message{Role: "assistant", Content: "Hello!"},
+				Message:      Message{Role: "assistant", Content: TextContent("Hello!")},
 				FinishReason: "stop",
 			},
 		},
@@ -147,8 +147,8 @@ func TestAegisResponse_JSONRoundTrip(t *testing.T) {
 	if len(decoded.Choices) != 1 {
 		t.Fatalf("expected 1 choice, got %d", len(decoded.Choices))
 	}
-	if decoded.Choices[0].Message.Content != "Hello!" {
-		t.Errorf("unexpected content: %s", decoded.Choices[0].Message.Content)
+	if decoded.Choices[0].Message.Content.Flatten() != "Hello!" {
+		t.Errorf("unexpected content: %s", decoded.Choices[0].Message.Content.Flatten())
 	}
 	if decoded.Usage.TotalTokens != 150 {
 		t.Errorf("expected total_tokens 150, got %d", decoded.Usage.TotalTokens)
@@ -196,7 +196,7 @@ func TestUsage_ZeroValues(t *testing.T) {
 }
 
 func TestMessage_WithName(t *testing.T) {
-	m := Message{Role: "user", Content: "Hi", Name: "alice"}
+	m := Message{Role: "user", Content: TextContent("Hi"), Name: "alice"}
 	data, _ := json.Marshal(m)
 
 	var raw map[string]interface{}
@@ -208,7 +208,7 @@ func TestMessage_WithName(t *testing.T) {
 }
 
 func TestMessage_OmitsEmptyName(t *testing.T) {
-	m := Message{Role: "user", Content: "Hi"}
+	m := Message{Role: "user", Content: TextContent("Hi")}
 	data, _ := json.Marshal(m)
 
 	var raw map[string]interface{}
@@ -217,4 +217,64 @@ func TestMessage_OmitsEmptyName(t *testing.T) {
 	if _, ok := raw["name"]; ok {
 		t.Error("expected name to be omitted when empty")
 	}
+}
+
+// TestTextSegments_ScansToolNames asserts that tool and tool-call names reach
+// the filter chain. OpenAI accepts ^[a-zA-Z0-9_-]{1,64}$ for a tool name, which
+// admits an AWS access key id verbatim — so treating names as unscannable
+// metadata let a credential egress through the one field nothing inspected.
+func TestTextSegments_ScansToolNames(t *testing.T) {
+	const awsKey = "AKIAIOSFODNN7EXAMPLE" // 20 chars, alphanumeric: a legal tool name
+
+	req := &AegisRequest{
+		Messages: []Message{{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:       "call_1",
+				Function: FunctionCallSpec{Name: awsKey, Arguments: `{"x":1}`},
+			}},
+		}},
+		Tools: []Tool{{
+			Function: FunctionDef{Name: awsKey, Description: "harmless"},
+		}},
+		// tool_choice's object form is the third place a name appears.
+		ToolChoice: ToolChoice{Function: awsKey},
+	}
+
+	var names []string
+	for _, seg := range req.TextSegments() {
+		if seg.Text == awsKey {
+			names = append(names, string(seg.Kind))
+		}
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected the key to appear as scannable text in all three places a tool "+
+			"name occurs — the definition, the call, and tool_choice; got %d segment(s): %v",
+			len(names), names)
+	}
+	for _, k := range names {
+		if k != string(SegmentToolName) {
+			t.Errorf("name segment has kind %q, want %q", k, SegmentToolName)
+		}
+	}
+}
+
+// TestTextSegments_ScansParticipantName covers the message-level `name` field.
+// The adapters pass req.Messages straight through, and Message.Name marshals as
+// "name", so it egresses with the rest of the message — but like a tool name it
+// read as routing metadata and nothing scanned it.
+func TestTextSegments_ScansParticipantName(t *testing.T) {
+	const awsKey = "AKIAIOSFODNN7EXAMPLE"
+
+	req := &AegisRequest{
+		Messages: []Message{{Role: "user", Name: awsKey, Content: Content{Str: "hello"}}},
+	}
+
+	for _, seg := range req.TextSegments() {
+		if seg.Text == awsKey && seg.Kind == SegmentParticipantName {
+			return
+		}
+	}
+	t.Error("messages[].name is not scannable: a credential there reaches the provider " +
+		"unfiltered, since the adapters marshal the message wholesale")
 }

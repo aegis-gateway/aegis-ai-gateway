@@ -57,6 +57,9 @@ type Limits struct {
 	MaxTopP               float64
 	MaxStopSequences      int
 	MaxStopSequenceLength int
+	MaxTools              int
+	MaxToolNameLength     int
+	MaxToolCallsPerMsg    int
 }
 
 // DefaultLimits returns sensible default validation limits
@@ -73,6 +76,9 @@ func DefaultLimits() Limits {
 		MaxTopP:               1.0,
 		MaxStopSequences:      4,
 		MaxStopSequenceLength: 256,
+		MaxTools:              128,
+		MaxToolNameLength:     64,
+		MaxToolCallsPerMsg:    128,
 	}
 }
 
@@ -128,6 +134,12 @@ func (v *Validator) Validate(req *types.AegisRequest) error {
 			errs = append(errs, *err)
 			v.recordInvalidField("top_p")
 		}
+	}
+
+	// Validate tools
+	if toolErrs := v.validateTools(req.Tools); len(toolErrs) > 0 {
+		errs = append(errs, toolErrs...)
+		v.recordInvalidField("tools")
 	}
 
 	// Validate stop sequences
@@ -205,12 +217,24 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 		} else if !isValidRole(msg.Role) {
 			errs = append(errs, ValidationError{
 				Field:   fmt.Sprintf("messages[%d].role", i),
-				Message: fmt.Sprintf("invalid role '%s' (allowed: system, user, assistant, function)", msg.Role),
+				Message: fmt.Sprintf("invalid role '%s' (allowed: system, user, assistant, tool, function)", msg.Role),
 			})
 		}
 
-		// Validate content
-		contentLength := utf8.RuneCountInString(msg.Content)
+		// Validate content. The length and control-character checks run over
+		// every text-bearing element of the message, not only Content: a
+		// structured content array and a tool call's arguments are both message
+		// content as far as size limits and control characters are concerned.
+		contentLength := 0
+		for _, seg := range msg.TextSegments(i) {
+			contentLength += utf8.RuneCountInString(seg.Text)
+			if containsDangerousChars(seg.Text) {
+				errs = append(errs, ValidationError{
+					Field:   segmentField(i, seg),
+					Message: "message content contains invalid control characters",
+				})
+			}
+		}
 		if contentLength > v.limits.MaxMessageLength {
 			errs = append(errs, ValidationError{
 				Field:   fmt.Sprintf("messages[%d].content", i),
@@ -218,12 +242,8 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 			})
 		}
 
-		// Check for potential injection attacks (null bytes, control characters)
-		if containsDangerousChars(msg.Content) {
-			errs = append(errs, ValidationError{
-				Field:   fmt.Sprintf("messages[%d].content", i),
-				Message: "message content contains invalid control characters",
-			})
+		if msgErrs := v.validateToolFields(i, msg); len(msgErrs) > 0 {
+			errs = append(errs, msgErrs...)
 		}
 
 		totalContentLength += contentLength
@@ -234,6 +254,113 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 		errs = append(errs, ValidationError{
 			Field:   "messages",
 			Message: fmt.Sprintf("total message content too long (max %d characters)", v.limits.MaxTotalContentLength),
+		})
+	}
+
+	return errs
+}
+
+// validateTools validates the tool definitions on a request.
+func (v *Validator) validateTools(tools []types.Tool) ValidationErrors {
+	var errs ValidationErrors
+	if len(tools) == 0 {
+		return nil
+	}
+	if len(tools) > v.limits.MaxTools {
+		return ValidationErrors{{
+			Field:   "tools",
+			Message: fmt.Sprintf("too many tools (max %d)", v.limits.MaxTools),
+		}}
+	}
+	seen := make(map[string]bool, len(tools))
+	for i, t := range tools {
+		if t.Type != types.ToolTypeFunction {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("tools[%d].type", i),
+				Message: fmt.Sprintf("unsupported tool type %q (only %q is supported)", t.Type, types.ToolTypeFunction),
+			})
+		}
+		name := t.Function.Name
+		if name == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("tools[%d].function.name", i),
+				Message: "tool name is required",
+			})
+			continue
+		}
+		if len(name) > v.limits.MaxToolNameLength {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("tools[%d].function.name", i),
+				Message: fmt.Sprintf("tool name too long (max %d characters)", v.limits.MaxToolNameLength),
+			})
+		}
+		// A duplicate name makes the model's choice ambiguous and makes the
+		// tool-name metadata exposed to policy and logs ambiguous with it.
+		if seen[name] {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("tools[%d].function.name", i),
+				Message: fmt.Sprintf("duplicate tool name %q", name),
+			})
+		}
+		seen[name] = true
+	}
+	return errs
+}
+
+// validateToolFields validates the tool call and tool result fields on one
+// message, and the role pairing between them.
+func (v *Validator) validateToolFields(i int, msg types.Message) ValidationErrors {
+	var errs ValidationErrors
+
+	if len(msg.ToolCalls) > v.limits.MaxToolCallsPerMsg {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].tool_calls", i),
+			Message: fmt.Sprintf("too many tool calls (max %d)", v.limits.MaxToolCallsPerMsg),
+		})
+		return errs
+	}
+
+	if len(msg.ToolCalls) > 0 && msg.Role != types.RoleAssistant {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].tool_calls", i),
+			Message: fmt.Sprintf("tool_calls is only valid on an assistant message, got role %q", msg.Role),
+		})
+	}
+
+	for j, tc := range msg.ToolCalls {
+		if tc.ID == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].id", i, j),
+				Message: "tool call id is required so the matching tool result can be paired with it",
+			})
+		}
+		if tc.Type != "" && tc.Type != types.ToolTypeFunction {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].type", i, j),
+				Message: fmt.Sprintf("unsupported tool call type %q (only %q is supported)", tc.Type, types.ToolTypeFunction),
+			})
+		}
+		if tc.Function.Name == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].function.name", i, j),
+				Message: "tool call function name is required",
+			})
+		}
+	}
+
+	// A tool result with no tool_call_id cannot be attributed to a call, and
+	// the provider will reject it. Catching it here keeps the failure at the
+	// gateway with a field name rather than as an opaque provider 400.
+	if msg.Role == types.RoleTool && msg.ToolCallID == "" {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].tool_call_id", i),
+			Message: "tool_call_id is required on a message with role \"tool\"",
+		})
+	}
+	if msg.ToolCallID != "" && msg.Role != types.RoleTool {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].tool_call_id", i),
+			Message: fmt.Sprintf("tool_call_id is only valid on a tool message, got role %q", msg.Role),
 		})
 	}
 
@@ -317,13 +444,42 @@ func isValidModelChar(r rune) bool {
 		r == '-' || r == '_' || r == '.' || r == ':'
 }
 
-// isValidRole checks if a role is valid
+// isValidRole checks if a role is valid.
+//
+// "tool" is here because a tool result message is how an agent returns a call's
+// output. It was previously rejected, which meant the one part of tool calling
+// that did fail loudly failed for the wrong reason.
 func isValidRole(role string) bool {
 	switch role {
-	case "system", "user", "assistant", "function":
+	case types.RoleSystem, types.RoleUser, types.RoleAssistant, types.RoleTool, types.RoleFunction:
 		return true
 	default:
 		return false
+	}
+}
+
+// segmentField names the field a segment came from, for a validation error.
+func segmentField(msgIndex int, seg types.TextSegment) string {
+	switch seg.Kind {
+	case types.SegmentContentPart:
+		return fmt.Sprintf("messages[%d].content[%s].text", msgIndex, seg.Ref)
+	case types.SegmentToolCallArguments:
+		return fmt.Sprintf("messages[%d].tool_calls[%s].function.arguments", msgIndex, seg.Ref)
+	case types.SegmentParticipantName:
+		return fmt.Sprintf("messages[%d].name", msgIndex)
+	case types.SegmentToolName:
+		// Tool names come from three places; MessageIndex distinguishes them.
+		if msgIndex < 0 {
+			if seg.Ref == "tool_choice" {
+				return "tool_choice.function.name"
+			}
+			return fmt.Sprintf("tools[%s].function.name", seg.Ref)
+		}
+		return fmt.Sprintf("messages[%d].tool_calls[%s].function.name", msgIndex, seg.Ref)
+	case types.SegmentToolDefinition:
+		return fmt.Sprintf("tools[%s].function", seg.Ref)
+	default:
+		return fmt.Sprintf("messages[%d].content", msgIndex)
 	}
 }
 

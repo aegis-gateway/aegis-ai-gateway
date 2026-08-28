@@ -43,6 +43,7 @@ func (s *stubAdapter) TransformResponse(_ context.Context, _ *http.Response) (*t
 }
 func (s *stubAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) { return chunk, nil }
 func (s *stubAdapter) SupportsStreaming() bool                           { return false }
+func (s *stubAdapter) SupportsTools() bool                               { return true }
 func (s *stubAdapter) SendRequest(_ *http.Request) (*http.Response, error) {
 	// Should never be called in deny-mode tests; fail loudly if it is.
 	return nil, nil

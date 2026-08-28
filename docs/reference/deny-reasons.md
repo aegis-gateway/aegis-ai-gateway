@@ -96,9 +96,34 @@ Validation errors are `field: message`, joined with `; ` when several fail at on
 | `Failed to read request body` | Body could not be read (client disconnect, size cap) |
 
 Fields validated with configurable limits: `model`, `messages`, `temperature`,
-`max_tokens`, `top_p`, `stop`. Each failure also increments an invalid-field metric.
+`max_tokens`, `top_p`, `stop`, `tools`. Each failure also increments an invalid-field
+metric.
 
 **Operator action:** all are client bugs. The message names the offending field.
+
+### 3.1 Decode refusals: 400
+
+Stage: [`internal/types/chat_request.go`](../../internal/types/chat_request.go), before
+validation. These fire when the request body carries something the gateway will not
+accept, as opposed to something out of range.
+
+| Literal string | Code | Trigger | Operator action |
+|---|---|---|---|
+| `unsupported request field "<field>": <reason>` | `unsupported_field` | The body carries a field outside the accepted allowlist | Client should remove the field. The reason states what accepting and ignoring it would have cost. Full table in [request field support](request-field-support.md). |
+| `content[<n>] has type "<type>": AEGIS accepts only text content parts, …` | `unsupported_content_part` | A content array carries an image, audio or file part | AEGIS cannot scan it and will not forward it. Send text. See [known limitations §2.7](../evidence/known-limitations.md). |
+
+Both are **behaviour changes**. Requests carrying an unsupported field previously
+returned 200 with the field discarded. Metric: `aegis_unsupported_field_total`, labelled
+by field name, with anything unrecognised collapsed to `other` so a caller cannot grow
+the label set.
+
+### 3.2 Provider capability refusal: 400
+
+Stage: [`internal/gateway/handler.go`](../../internal/gateway/handler.go), after routing.
+
+| Literal string | Code | Trigger | Operator action |
+|---|---|---|---|
+| `model <alias> routes to provider <name>, whose adapter (<type>) does not carry tool definitions, tool calls or tool results. AEGIS refuses the request rather than forwarding it without its tools. …` | `tools_unsupported_by_provider` | A tool-bearing request resolved to an adapter whose `SupportsTools()` is false, currently the Anthropic adapter | Route the alias to an OpenAI-compatible provider, or drop the tool fields. Metric: `aegis_tool_requests_refused_total`. See [known limitations §2.8](../evidence/known-limitations.md). |
 
 ## 4. Content filters: 451
 

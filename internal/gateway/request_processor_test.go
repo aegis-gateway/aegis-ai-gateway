@@ -66,7 +66,7 @@ func TestParseAndValidateRequest(t *testing.T) {
 			name:        "invalid JSON",
 			requestBody: `{invalid json}`,
 			expectError: true,
-			errorMsg:    "Invalid JSON",
+			errorMsg:    "invalid JSON",
 		},
 		{
 			name: "validation failure",

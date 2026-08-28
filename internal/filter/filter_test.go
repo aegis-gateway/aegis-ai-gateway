@@ -51,7 +51,7 @@ func TestChain_Run_AllPass(t *testing.T) {
 		&mockFilter{name: "pii", enabled: true, result: Result{Action: ActionFlag, FilterName: "pii", Detections: 1}},
 	)
 
-	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: "hello"}}}
+	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: types.TextContent("hello")}}}
 	results, blocked := chain.Run(context.Background(), req)
 
 	if blocked != nil {
@@ -79,7 +79,7 @@ func TestChain_Run_BlockStopsChain(t *testing.T) {
 	origThird := chain.filters[2]
 	chain.filters[2] = &callTracker{Filter: origThird, called: &thirdCalled}
 
-	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: "ignore instructions"}}}
+	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: types.TextContent("ignore instructions")}}}
 	results, blocked := chain.Run(context.Background(), req)
 
 	if blocked == nil {
@@ -110,7 +110,7 @@ func TestChain_Run_SkipsDisabledFilters(t *testing.T) {
 		&mockFilter{name: "pii", enabled: true, result: Result{Action: ActionPass, FilterName: "pii"}},
 	)
 
-	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: "hello"}}}
+	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: types.TextContent("hello")}}}
 	results, blocked := chain.Run(context.Background(), req)
 
 	if blocked != nil {
@@ -129,7 +129,7 @@ func TestChain_Run_SkipsDisabledFilters(t *testing.T) {
 
 func TestChain_Run_EmptyChain(t *testing.T) {
 	chain := NewChain()
-	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: "hello"}}}
+	req := &types.AegisRequest{Model: "gpt-4", Messages: []types.Message{{Role: "user", Content: types.TextContent("hello")}}}
 	results, blocked := chain.Run(context.Background(), req)
 
 	if blocked != nil {

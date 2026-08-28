@@ -40,18 +40,38 @@ func (a *AnthropicAdapter) Name() string { return "anthropic" }
 
 func (a *AnthropicAdapter) SupportsStreaming() bool { return true }
 
+// SupportsTools reports false.
+//
+// The Anthropic Messages API expresses tools, tool calls and tool results in a
+// shape this adapter does not translate: tools have a different definition
+// schema, a tool call is a tool_use content block rather than a tool_calls
+// array, and a tool result is a tool_result block on a user turn rather than a
+// message with role "tool". Streaming differs again, with arguments arriving as
+// input_json_delta fragments.
+//
+// Returning false makes the handler refuse a tool-bearing request routed here,
+// naming the provider. The alternative, sending the request without its tools,
+// is precisely the defect this change exists to remove: it would relocate the
+// silent strip from the decoder to the adapter rather than fix it. See
+// docs/evidence/known-limitations.md.
+func (a *AnthropicAdapter) SupportsTools() bool { return false }
+
 func (a *AnthropicAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
 	// Convert OpenAI-format messages to Anthropic format
 	var system string
 	var messages []anthropicMessage
 	for _, m := range req.Messages {
-		if m.Role == "system" {
-			system = m.Content
+		if m.Role == types.RoleSystem {
+			// The Anthropic system parameter is a single string, so a
+			// structured content array is flattened here. Every part has
+			// already been scanned individually by the filter chain; this
+			// flattening is for the wire only.
+			system = m.Content.Flatten()
 			continue
 		}
 		messages = append(messages, anthropicMessage{
 			Role:    m.Role,
-			Content: m.Content,
+			Content: m.Content.Flatten(),
 		})
 	}
 
@@ -127,8 +147,8 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 			{
 				Index: 0,
 				Message: types.Message{
-					Role:    "assistant",
-					Content: content,
+					Role:    types.RoleAssistant,
+					Content: types.TextContent(content),
 				},
 				FinishReason: mapStopReason(antResp.StopReason),
 			},

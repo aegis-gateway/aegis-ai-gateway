@@ -48,6 +48,12 @@ type Metrics struct {
 	// Unpriced-model metrics
 	UnpricedRequestsTotal *prometheus.CounterVec
 
+	// Requests refused because the routed provider cannot carry tools.
+	ToolRequestsRefusedTotal *prometheus.CounterVec
+
+	// Requests refused at decode for carrying an unsupported field.
+	UnsupportedFieldTotal *prometheus.CounterVec
+
 	// Pricing freshness gauge (set once at startup).
 	PricingAgeDays prometheus.Gauge
 
@@ -156,6 +162,16 @@ func NewMetrics() *Metrics {
 			Help: "Total requests routed to a model with no pricing configuration. Incremented under deny and flag modes.",
 		}, []string{"provider", "model", "mode"}),
 
+		ToolRequestsRefusedTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_tool_requests_refused_total",
+			Help: "Total tool-bearing requests refused because the routed provider's adapter cannot carry tools.",
+		}, []string{"provider", "adapter"}),
+
+		UnsupportedFieldTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_unsupported_field_total",
+			Help: "Total requests refused at decode for carrying a request field AEGIS does not support, labelled by field name.",
+		}, []string{"field"}),
+
 		PricingAgeDays: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "aegis_pricing_age_days",
 			Help: "Age in days of the pricing snapshot (computed from configs/pricing.yaml verified_at).",
@@ -253,6 +269,23 @@ func (m *Metrics) RecordRateLimitHit(dimension, id string) {
 // RecordFilterAction records a filter action metric.
 func (m *Metrics) RecordFilterAction(filter, action string) {
 	m.FilterActionTotal.WithLabelValues(filter, action).Inc()
+}
+
+// RecordToolRequestRefused records a tool-bearing request refused because the
+// routed provider cannot express tools.
+func (m *Metrics) RecordToolRequestRefused(provider, adapter string) {
+	m.ToolRequestsRefusedTotal.WithLabelValues(provider, adapter).Inc()
+}
+
+// RecordUnsupportedField records a request refused at decode for an
+// unsupported field.
+//
+// The caller must pass either a name AEGIS recognises or the literal "other".
+// The refused field name comes from client input, and a metric label taken
+// straight from client input is an unbounded-cardinality hole a caller can push
+// on deliberately.
+func (m *Metrics) RecordUnsupportedField(field string) {
+	m.UnsupportedFieldTotal.WithLabelValues(field).Inc()
 }
 
 // RecordDBPoolStats records database pool statistics.

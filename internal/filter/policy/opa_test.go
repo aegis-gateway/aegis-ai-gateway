@@ -16,6 +16,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -666,5 +667,158 @@ func TestShippedDefaultPolicy_CanActuallyDeny(t *testing.T) {
 	}
 	if !allowed {
 		t.Error("the shipped default bundle denied an ordinary INTERNAL request")
+	}
+}
+
+// TestPolicyInput_ExposesToolMetadata asserts a Rego rule can be written
+// against the tools a request offers and the tools its history has called.
+//
+// This is Part 7 of the tool-calling work: the seam, not the policy. No
+// tool-level rule ships in configs/policies. The test proves the metadata is
+// reachable from Rego, because "we exposed it" is otherwise a claim about a
+// struct tag that nothing checks.
+//
+// The rule below is a fixture. It is deliberately the kind of rule an operator
+// would actually write, so that if the input shape changes the failure looks
+// like a broken policy rather than a broken assertion.
+func TestPolicyInput_ExposesToolMetadata(t *testing.T) {
+	const module = `package aegis.policy
+
+import rego.v1
+
+default allow := false
+
+# An operator gating on which capability is put in front of the model.
+deny contains msg if {
+	some tool in input.request.tools_offered
+	tool == "run_shell"
+	msg := "shell tool not permitted for this key"
+}
+
+# An operator gating on which capability the conversation has already used.
+deny contains msg if {
+	some tool in input.request.tools_called
+	tool == "transfer_funds"
+	msg := "transfer_funds already called in this conversation"
+}
+
+allow if count(deny) == 0
+
+reason := concat("; ", deny)
+`
+
+	cases := []struct {
+		name       string
+		req        types.AegisRequest
+		wantAllow  bool
+		wantReason string
+	}{
+		{
+			name: "a harmless tool is allowed",
+			req: types.AegisRequest{
+				Tools: []types.Tool{{Type: types.ToolTypeFunction, Function: types.FunctionDef{Name: "read_file"}}},
+			},
+			wantAllow: true,
+		},
+		{
+			name: "a denied tool offered is visible to the rule",
+			req: types.AegisRequest{
+				Tools: []types.Tool{
+					{Type: types.ToolTypeFunction, Function: types.FunctionDef{Name: "read_file"}},
+					{Type: types.ToolTypeFunction, Function: types.FunctionDef{Name: "run_shell"}},
+				},
+			},
+			wantAllow:  false,
+			wantReason: "shell tool not permitted for this key",
+		},
+		{
+			name: "a tool already called is visible to the rule",
+			req: types.AegisRequest{
+				Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+					ID:       "c1",
+					Function: types.FunctionCallSpec{Name: "transfer_funds", Arguments: `{"amount":1000000}`},
+				}}}},
+			},
+			wantAllow:  false,
+			wantReason: "transfer_funds already called in this conversation",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEvaluator(func() config.PolicyFilterConfig {
+				return config.PolicyFilterConfig{Enabled: true, EvaluationTimeout: time.Second}
+			})
+			if err := e.LoadFromModules(map[string]string{"tools.rego": module}); err != nil {
+				t.Fatalf("compiling the fixture policy: %v", err)
+			}
+
+			result := e.ScanRequest(context.Background(), &tc.req)
+
+			if tc.wantAllow {
+				if result.Action == filter.ActionBlock {
+					t.Fatalf("expected pass, got block: %s", result.Message)
+				}
+				return
+			}
+			if result.Action != filter.ActionBlock {
+				t.Fatalf("expected block, got %s — the tool metadata is not reaching the "+
+					"policy input, so no policy can be written against it", result.Action)
+			}
+			if !strings.Contains(result.Message, tc.wantReason) {
+				t.Errorf("deny reason = %q, want it to contain %q", result.Message, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestPolicyInput_CarriesNoToolArguments guards the no-payload boundary on the
+// metadata Part 7 exposes.
+//
+// The policy input is serialised and handed to OPA. If a tool call's arguments
+// rode along, request payload would enter the policy evaluation path, and from
+// there any policy could copy it into a deny reason that is written to the
+// audit trail.
+func TestPolicyInput_CarriesNoToolArguments(t *testing.T) {
+	const argumentPayload = "PAYLOAD_IN_TOOL_ARGUMENTS_c47e19"
+
+	req := &types.AegisRequest{
+		Tools: []types.Tool{{Type: types.ToolTypeFunction, Function: types.FunctionDef{
+			Name:       "read_file",
+			Parameters: []byte(`{"secret":"` + argumentPayload + `"}`),
+		}}},
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+			ID:       "c1",
+			Function: types.FunctionCallSpec{Name: "read_file", Arguments: `{"p":"` + argumentPayload + `"}`},
+		}}}},
+	}
+
+	// Build the input exactly as ScanRequest does, then serialise it and search
+	// the whole document rather than named fields, so a field added later is
+	// covered without this test being updated.
+	input := PolicyInput{
+		Request: PolicyReq{
+			ToolsOffered: req.ToolNames(),
+			ToolsCalled:  req.CalledToolNames(),
+			ToolChoice:   req.ToolChoice.String(),
+		},
+	}
+	for _, m := range req.Messages {
+		pm := PolicyMessage{Role: m.Role, Content: m.Content.Flatten()}
+		for _, tc := range m.ToolCalls {
+			pm.ToolCalls = append(pm.ToolCalls, tc.Function.Name)
+		}
+		input.Messages = append(input.Messages, pm)
+	}
+
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshalling policy input: %v", err)
+	}
+	if strings.Contains(string(encoded), argumentPayload) {
+		t.Errorf("the policy input carries tool argument payload: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "read_file") {
+		t.Errorf("the policy input carries no tool name, so the metadata is not actually exposed: %s", encoded)
 	}
 }

@@ -14,12 +14,21 @@
 
 package types
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // AegisRequest is the canonical internal representation of an incoming AI request.
 // All provider-specific formats are converted to/from this type.
+//
+// It is not the wire type. Client JSON is decoded by DecodeChatCompletion into
+// ChatCompletionRequest, which is an explicit allowlist, and only then mapped
+// here. The two were the same type once, which is how the identity fields below
+// came to be settable from a request body and how every unsupported field came
+// to be discarded in silence.
 type AegisRequest struct {
-	// Identity (set by auth middleware)
+	// Identity (set by auth middleware, never from the request body)
 	RequestID      string         `json:"request_id"`
 	OrganizationID string         `json:"organization_id"`
 	TeamID         string         `json:"team_id"`
@@ -36,6 +45,11 @@ type AegisRequest struct {
 	TopP        *float64  `json:"top_p,omitempty"`
 	Stop        []string  `json:"stop,omitempty"`
 
+	// Tool calling
+	Tools             []Tool     `json:"tools,omitempty"`
+	ToolChoice        ToolChoice `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool      `json:"parallel_tool_calls,omitempty"`
+
 	// Metadata
 	Project        string `json:"project,omitempty"`
 	PreferProvider string `json:"prefer_provider,omitempty"`
@@ -50,8 +64,225 @@ type AegisRequest struct {
 	EstimatedTokens int       `json:"-"`
 }
 
+// Message is one turn of the conversation.
+//
+// Content carries either a string or an array of text parts. ToolCalls is set
+// on an assistant turn that asked for a tool; ToolCallID is set on a tool turn
+// returning that call's result.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
+	Role       string     `json:"role"`
+	Content    Content    `json:"content"`
+	Name       string     `json:"name,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// Message roles.
+const (
+	RoleSystem    = "system"
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleTool      = "tool"
+	RoleFunction  = "function"
+)
+
+// SegmentKind labels where a scannable text segment came from. It is metadata,
+// never persisted with its text, and exists so a filter can say which surface
+// it found something on without quoting the finding.
+type SegmentKind string
+
+const (
+	// SegmentMessageContent is a message whose content was a plain string.
+	SegmentMessageContent SegmentKind = "message_content"
+	// SegmentContentPart is one text part of a structured content array.
+	SegmentContentPart SegmentKind = "content_part"
+	// SegmentToolCallArguments is the arguments string of one tool call.
+	SegmentToolCallArguments SegmentKind = "tool_call_arguments"
+	// SegmentToolResult is the content of a tool-role message. This is
+	// content returned from outside the model and is the primary vector for
+	// indirect prompt injection.
+	SegmentToolResult SegmentKind = "tool_result"
+	// SegmentToolDefinition is a tool's name, description or parameter schema.
+	SegmentToolDefinition SegmentKind = "tool_definition"
+	// SegmentToolName is a tool or tool-call *name*. Names are metadata for
+	// routing and policy, but they are still client-supplied text that reaches
+	// the provider: OpenAI accepts ^[a-zA-Z0-9_-]{1,64}$, which admits an AWS
+	// access key id verbatim. Treating a name as unscannable metadata let a
+	// credential egress through the one field the filters never looked at.
+	SegmentToolName SegmentKind = "tool_name"
+	// SegmentParticipantName is a message's optional `name` field. Like a tool
+	// name it looked like routing metadata, and like a tool name it is
+	// client-supplied text marshalled straight through to the provider — the
+	// adapters pass req.Messages wholesale, so `name` egresses with the rest of
+	// the message while nothing scanned it.
+	SegmentParticipantName SegmentKind = "participant_name"
+)
+
+// TextSegment is one text-bearing element of a request, with enough context to
+// report where it was found.
+type TextSegment struct {
+	Kind SegmentKind
+	// MessageIndex is the index into Messages, or -1 for a request-level
+	// segment such as a tool definition.
+	MessageIndex int
+	// Ref names the element within the message: the tool call ID, the tool
+	// name, or the part index. Never the text itself.
+	Ref  string
+	Text string
+}
+
+// IsUntrusted reports whether the segment carries content that originated
+// outside the client's own prompt. Tool results are fetched from elsewhere and
+// handed back to the model, so a segment marked untrusted is where indirect
+// prompt injection actually arrives.
+func (s TextSegment) IsUntrusted() bool { return s.Kind == SegmentToolResult }
+
+// TextSegments returns every text-bearing element of the message.
+//
+// This is the single definition of "what a filter must scan" for a message.
+// Filters call it rather than reading Content directly, so that widening the
+// message shape again cannot quietly add a surface no filter looks at.
+func (m Message) TextSegments(msgIndex int) []TextSegment {
+	var segs []TextSegment
+
+	kind := SegmentMessageContent
+	if m.Role == RoleTool {
+		kind = SegmentToolResult
+	}
+
+	switch m.Content.Kind {
+	case ContentString:
+		if m.Content.Str != "" {
+			segs = append(segs, TextSegment{
+				Kind: kind, MessageIndex: msgIndex, Ref: m.ToolCallID, Text: m.Content.Str,
+			})
+		}
+	case ContentParts:
+		partKind := kind
+		if m.Role != RoleTool {
+			partKind = SegmentContentPart
+		}
+		for i, p := range m.Content.Parts {
+			if p.Text == "" {
+				continue
+			}
+			segs = append(segs, TextSegment{
+				Kind: partKind, MessageIndex: msgIndex, Ref: strconv.Itoa(i), Text: p.Text,
+			})
+		}
+	}
+
+	if m.Name != "" {
+		segs = append(segs, TextSegment{
+			Kind: SegmentParticipantName, MessageIndex: msgIndex, Ref: "name", Text: m.Name,
+		})
+	}
+
+	for _, tc := range m.ToolCalls {
+		if tc.Function.Name != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolName, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Name,
+			})
+		}
+		if tc.Function.Arguments == "" {
+			continue
+		}
+		segs = append(segs, TextSegment{
+			Kind: SegmentToolCallArguments, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Arguments,
+		})
+	}
+
+	return segs
+}
+
+// TextSegments returns every text-bearing element of the whole request: message
+// content in either shape, tool call arguments, tool result content, and the
+// tool definitions themselves.
+//
+// Tool definitions are included because they are client-supplied text that
+// reaches the provider. A credential pasted into a tool description egresses
+// exactly as readily as one pasted into a prompt — and so does one pasted into
+// a tool *name*, which is why names are emitted as segments rather than used
+// only as the Ref label.
+func (r *AegisRequest) TextSegments() []TextSegment {
+	var segs []TextSegment
+	for i, m := range r.Messages {
+		segs = append(segs, m.TextSegments(i)...)
+	}
+	for _, t := range r.Tools {
+		name := t.Function.Name
+		if name != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolName, MessageIndex: -1, Ref: name, Text: name,
+			})
+		}
+		if t.Function.Description != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: t.Function.Description,
+			})
+		}
+		if len(t.Function.Parameters) > 0 {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: string(t.Function.Parameters),
+			})
+		}
+	}
+
+	// tool_choice in its object form names a function, and that name is
+	// marshalled to the provider like any other. It is the third place a tool
+	// name can appear — after the definitions and the calls above — and a
+	// credential placed only here would egress with nothing having read it.
+	if r.ToolChoice.Function != "" {
+		segs = append(segs, TextSegment{
+			Kind: SegmentToolName, MessageIndex: -1, Ref: "tool_choice", Text: r.ToolChoice.Function,
+		})
+	}
+
+	return segs
+}
+
+// ToolNames returns the names of the tools offered on the request, in order.
+// Names only: a tool name is metadata, its arguments are payload.
+func (r *AegisRequest) ToolNames() []string {
+	if len(r.Tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.Tools))
+	for _, t := range r.Tools {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
+// CalledToolNames returns the names of tools the conversation has already
+// called, deduplicated and in first-seen order. Names only, never arguments.
+func (r *AegisRequest) CalledToolNames() []string {
+	var names []string
+	seen := make(map[string]bool)
+	for _, m := range r.Messages {
+		for _, tc := range m.ToolCalls {
+			n := tc.Function.Name
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// HasTools reports whether the request carries tool definitions or any tool
+// call or tool result in its history. A provider that cannot express tools
+// cannot serve any of these without changing what the client asked for.
+func (r *AegisRequest) HasTools() bool {
+	if len(r.Tools) > 0 || r.ToolChoice.IsSet() {
+		return true
+	}
+	for _, m := range r.Messages {
+		if len(m.ToolCalls) > 0 || m.Role == RoleTool {
+			return true
+		}
+	}
+	return false
 }

@@ -68,6 +68,10 @@ services:
       OPA_BUNDLE_PATH: "/etc/aegis/agent-policies"
     volumes:
       - ./policies:/etc/aegis/agent-policies:ro
+      # Adds the aegis-tools alias, which routes to OpenAI. Tool calling is not
+      # carried by the Anthropic adapter, and every shipped alias is
+      # Anthropic-primary. See the header of that file.
+      - ./config/models.yaml:/etc/aegis/configs/models.yaml:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/aegis/v1/health"]
       interval: 10s
