@@ -51,10 +51,8 @@ type AegisRequest struct {
 	ParallelToolCalls *bool      `json:"parallel_tool_calls,omitempty"`
 
 	// Metadata
-	Project        string `json:"project,omitempty"`
-	PreferProvider string `json:"prefer_provider,omitempty"`
-	TraceContext   string `json:"trace_context,omitempty"`
-	SkipCache      bool   `json:"skip_cache,omitempty"`
+	Project      string `json:"project,omitempty"`
+	TraceContext string `json:"trace_context,omitempty"`
 
 	// Resolved at routing time
 	ProviderType string `json:"-"`

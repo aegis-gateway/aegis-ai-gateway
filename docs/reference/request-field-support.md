@@ -139,8 +139,8 @@ rather than a privilege escalation. They are now refused by name.
 | `classification` | The authenticated API key. A body-supplied classification would be a clearance a caller granted itself |
 | `project` | The `X-Aegis-Project` header |
 | `trace_context` | The `X-Aegis-Trace-Context` header |
-| `prefer_provider` | Nothing. `X-Aegis-Prefer-Provider` is read into the request and then never consulted by `router.ResolveRoute`. The header is inert |
-| `skip_cache` | Nothing. AEGIS does not cache completions, so there is nothing to skip |
+| `prefer_provider` | Nothing. Removed: it was never consulted by `router.ResolveRoute`, and the `X-Aegis-Prefer-Provider` header is gone with it |
+| `skip_cache` | Nothing. Removed: AEGIS does not cache completions, so there was nothing to skip |
 
 Anything else, including a typo such as `tolls` for `tools`, is refused with the
 generic message. That is the point: the original defect would have been caught at the

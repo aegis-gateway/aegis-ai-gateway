@@ -184,9 +184,9 @@ var refusalReasons = map[string]string{
 	"api_key_id":            "set from the authenticated API key and not accepted from the body",
 	"classification":        "set from the authenticated API key and not accepted from the body. A body-supplied classification would be a clearance a caller granted itself",
 	"project":               "supply the X-Aegis-Project header. A body value was previously parsed and then overwritten by the header",
-	"prefer_provider":       "not implemented. The X-Aegis-Prefer-Provider header is read but never consulted by routing",
+	"prefer_provider":       "removed. It was never consulted by routing, and neither the field nor the X-Aegis-Prefer-Provider header does anything",
 	"trace_context":         "supply the X-Aegis-Trace-Context header",
-	"skip_cache":            "AEGIS does not cache completions, so there is nothing to skip",
+	"skip_cache":            "removed. AEGIS does not cache completions, so there was nothing to skip",
 	"refusal":               "assistant refusal text is a provider output field and is not accepted on an inbound message",
 }
 

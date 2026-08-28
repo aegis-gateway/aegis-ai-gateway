@@ -19,10 +19,23 @@ still open, and pinning to a pre-merge SHA would cite a commit that never reache
 `main`. So a source citation written during development is repo-relative
 (`../../internal/types/chat_request.go`) and is re-pinned at release.
 
-**This does not apply to doc-to-doc links.** A link from one Markdown file to another
-in the same repository stays relative. It is navigation, not evidence, and a relative
-path is correct at every commit including this one. `README.md` has linked into `docs/`
-that way since before this list existed.
+**The test for whether a link needs pinning.** If the target contains something that
+could become false without the citing document changing, it needs a pinned citation.
+Apply that and the cases settle themselves:
+
+- A doc-to-doc Markdown link **fails** the test. Nothing in the target can falsify the
+  sentence pointing at it, and a relative path is correct at every commit including this
+  one. `README.md` has linked into `docs/` that way since before this list existed.
+  These stay relative.
+- A source file **passes**. The function being cited can be renamed, rewritten, or
+  deleted while the sentence claiming it does something stays put.
+- `deploy/demo/compose.yaml` **passes**, which is why the two `QUICKSTART-COMMANDS.md`
+  rows below are listed rather than scoped out. It pins an image tag, and the tag is a
+  claim about what a reader actually gets when they run the documented command. That
+  claim can go stale on its own. **Decided: pin them.**
+
+Record the outcome here when a new case comes up, so the rule settles the next one
+rather than being re-argued.
 
 **Find them.** Absolute links are already enforced by `scripts/check-citations.sh`, so
 this only has to catch the relative ones that point at source. It scans every Markdown
@@ -49,11 +62,9 @@ grep -rnoE '\]\((\.\./)+[A-Za-z0-9_./-]+\.(go|sh|yaml|rego)[^)]*\)' \
 | `docs/QUICKSTART-COMMANDS.md:52` | `deploy/demo/compose.yaml` | pre-existing |
 | `docs/QUICKSTART-COMMANDS.md:174` | `deploy/demo/compose.yaml` | pre-existing |
 
-The last two are listed because the grep finds them and a list that quietly excludes
-what it happens to have found is not a list you can trust. Whether a compose file is a
-capability claim needing a pinned citation, or navigation to a file in the repository
-like a doc-to-doc link, is a judgment call. Decide it once and record the decision here
-rather than rediscovering the two rows every release.
+The two `compose.yaml` rows were an open question when this list was written and are
+now settled by the test above: the file pins an image tag, so it carries a claim that
+can go stale on its own, and it gets a pinned citation like any source file.
 
 **Done when.** The grep above returns nothing, and `./scripts/check-citations.sh`
 passes, which it will only do if every new absolute link resolves at the commit it

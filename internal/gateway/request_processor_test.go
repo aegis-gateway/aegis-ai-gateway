@@ -163,7 +163,6 @@ func TestRequestEnrichment(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(requestBody))
 	req.Header.Set("X-Aegis-Project", "my-project")
-	req.Header.Set("X-Aegis-Prefer-Provider", "openai")
 	req.Header.Set("X-Aegis-Trace-Context", "trace-123")
 
 	authInfo := &auth.AuthInfo{
@@ -204,9 +203,6 @@ func TestRequestEnrichment(t *testing.T) {
 	}
 	if aegisReq.Project != "my-project" {
 		t.Errorf("Expected Project 'my-project', got '%s'", aegisReq.Project)
-	}
-	if aegisReq.PreferProvider != "openai" {
-		t.Errorf("Expected PreferProvider 'openai', got '%s'", aegisReq.PreferProvider)
 	}
 	if aegisReq.TraceContext != "trace-123" {
 		t.Errorf("Expected TraceContext 'trace-123', got '%s'", aegisReq.TraceContext)

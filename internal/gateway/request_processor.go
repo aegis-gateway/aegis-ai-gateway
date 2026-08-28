@@ -79,7 +79,6 @@ func (rp *RequestProcessor) ParseAndValidateRequest(
 
 	// Extract AEGIS headers
 	aegisReq.Project = r.Header.Get("X-Aegis-Project")
-	aegisReq.PreferProvider = r.Header.Get("X-Aegis-Prefer-Provider")
 	aegisReq.TraceContext = r.Header.Get("X-Aegis-Trace-Context")
 
 	// Validate request
