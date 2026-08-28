@@ -62,6 +62,23 @@ func (a *OpenAIAdapter) TransformRequest(ctx context.Context, req *types.AegisRe
 		body.ToolChoice = &req.ToolChoice
 	}
 
+	// Always ask for usage on a stream.
+	//
+	// OpenAI omits the usage block from a streamed response unless asked, so
+	// the gateway saw no token counts, recorded zero, and priced the request at
+	// zero. That is not a reporting gap: the daily spend budget is computed
+	// from those records, so streamed traffic cost real money and moved no
+	// budget.
+	//
+	// This is the gateway asking for its own accounting data, not a client
+	// field being honoured. stream_options stays refused on the way in, because
+	// a caller cannot be allowed to turn the gateway's spend tracking off. The
+	// client sees the same extra usage chunk it would have got by asking, which
+	// is ordinary OpenAI behaviour.
+	if req.Stream {
+		body.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
+	}
+
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal openai request: %w", err)
@@ -149,6 +166,15 @@ type openAIRequestBody struct {
 	Tools             []types.Tool      `json:"tools,omitempty"`
 	ToolChoice        *types.ToolChoice `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+
+	// StreamOptions is set by the gateway, never by the caller. See
+	// TransformRequest.
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+// openAIStreamOptions asks the provider to include a usage block in the stream.
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIResponseBody struct {

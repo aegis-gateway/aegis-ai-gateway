@@ -777,3 +777,104 @@ func TestStrictToolWithNoParameters(t *testing.T) {
 			"properties the caller never said to forbid")
 	}
 }
+
+// TestAnthropicStream_ReportsUsage covers a defect that made every streamed
+// request free as far as the gateway was concerned.
+//
+// Anthropic reports usage natively: input_tokens on message_start, both counts
+// on message_delta. The transformer relayed neither, so the gateway's usage
+// extraction found nothing, recorded zero tokens, and priced the request at
+// zero. The daily spend budget is computed from those records, so streamed
+// traffic cost real money and moved no budget.
+func TestAnthropicStream_ReportsUsage(t *testing.T) {
+	t.Parallel()
+
+	a := NewAnthropicAdapter(config.ProviderConfig{}, nil)
+	tr := a.NewStreamTransformer()
+
+	events := []string{
+		`{"type":"message_start","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"one"}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":9}}`,
+	}
+
+	var servedModel string
+	var usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	}
+	for _, ev := range events {
+		out, err := tr.Transform([]byte(ev))
+		if err != nil {
+			t.Fatalf("Transform(%s): %v", ev, err)
+		}
+		if out == nil {
+			continue
+		}
+		var chunk struct {
+			Model string `json:"model"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(out, &chunk); err == nil {
+			if chunk.Usage != nil {
+				usage = chunk.Usage
+			}
+			if chunk.Model != "" {
+				servedModel = chunk.Model
+			}
+		}
+	}
+
+	if usage == nil {
+		t.Fatal("no chunk carried a usage block, so the gateway records zero tokens and prices " +
+			"the request at zero. Streamed traffic would move no spend budget")
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 9 || usage.TotalTokens != 19 {
+		t.Errorf("usage = %+v, want 10/9/19", *usage)
+	}
+	if servedModel != "claude-haiku-4-5" {
+		t.Errorf("no chunk carried the served model (got %q), so pricing lookup fails and the "+
+			"request is costed at zero even with the token counts right", servedModel)
+	}
+}
+
+// TestOpenAIAdapter_AlwaysAsksForStreamUsage covers the same defect on the
+// other adapter, which has a different cause: OpenAI omits usage from a stream
+// unless asked, and AEGIS refuses the caller's stream_options.
+//
+// The gateway asks for itself. A caller must not be able to switch off the
+// accounting its own spend limit is computed from.
+func TestOpenAIAdapter_AlwaysAsksForStreamUsage(t *testing.T) {
+	t.Parallel()
+
+	a := NewOpenAIAdapter(config.ProviderConfig{BaseURL: "http://x.invalid/v1"}, nil)
+
+	streamed, err := a.TransformRequest(context.Background(), &types.AegisRequest{
+		Model: "m", Stream: true,
+		Messages: []types.Message{{Role: types.RoleUser, Content: types.TextContent("hi")}}})
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+	body, _ := io.ReadAll(streamed.Body)
+	if !strings.Contains(string(body), `"stream_options":{"include_usage":true}`) {
+		t.Errorf("a streamed request does not ask for usage, so it will be priced at zero: %s", body)
+	}
+
+	// A non-streamed request has no business carrying it.
+	plain, err := a.TransformRequest(context.Background(), &types.AegisRequest{
+		Model:    "m",
+		Messages: []types.Message{{Role: types.RoleUser, Content: types.TextContent("hi")}}})
+	if err != nil {
+		t.Fatalf("TransformRequest: %v", err)
+	}
+	body2, _ := io.ReadAll(plain.Body)
+	if strings.Contains(string(body2), "stream_options") {
+		t.Errorf("a non-streamed request carries stream_options: %s", body2)
+	}
+}
