@@ -729,7 +729,9 @@ and the built output makes no off-origin request.
   an outstanding launch action, not a completed one: until the ref moves, `v0.1.0`
   delivers the divergent feature-branch tree. Citations across this repository and both sites are still pinned to
   `c74fa7a` and should be re-pinned to the tag. The citation checker fails on any that do
-  not resolve, so the re-pin is verifiable.
+  not resolve, so the re-pin is verifiable. Two citation tasks the checker cannot see,
+  including the SHA labels in this file and three others that name a different commit
+  than they link to, are tracked in [docs/release-checklist.md](docs/release-checklist.md).
 - **`README.md` carries two shared-rule violations** (§1): a named competitor, and the
   commercial tier in present tense.
 - **Any copy of the lifecycle diagram held outside the site repository is stale** (§3.1).
