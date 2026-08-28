@@ -517,6 +517,25 @@ func TestValidationErrorsDoNotEchoScannedValues(t *testing.T) {
 				},
 			},
 		},
+		{
+			// The arm the two cases above miss. Case 1's control character is
+			// in the arguments, so the error lands on the arguments segment;
+			// case 2's tool is a top-level definition, and those never reach
+			// segmentField at all. Neither exercises a message-level tool
+			// call name, which is its own arm of the switch with its own Ref.
+			"secret in a tool call id, control character in the call's name",
+			&types.AegisRequest{
+				Model: "m",
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: types.TextContent("hi")},
+					{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+						ID:       "call_" + secret,
+						Type:     types.ToolTypeFunction,
+						Function: types.FunctionCallSpec{Name: "f\x00"},
+					}}},
+				},
+			},
+		},
 	}
 
 	for _, tc := range cases {
