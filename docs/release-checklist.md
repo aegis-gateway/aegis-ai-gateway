@@ -25,15 +25,18 @@ path is correct at every commit including this one. `README.md` has linked into 
 that way since before this list existed.
 
 **Find them.** Absolute links are already enforced by `scripts/check-citations.sh`, so
-this only has to catch the relative ones that point at source:
+this only has to catch the relative ones that point at source. It scans every Markdown
+file in the repository rather than a list of directories: a citation under `demos/` is a
+capability claim like any other, and a finder that reports completion while a whole tree
+goes unscanned is worse than one that reports nothing.
 
 ```bash
 grep -rnoE '\]\((\.\./)+[A-Za-z0-9_./-]+\.(go|sh|yaml|rego)[^)]*\)' \
-  README.md CHANGELOG.md VERIFICATION.md docs/
+  --include='*.md' --exclude-dir=.git .
 ```
 
 **Currently outstanding.** Five from the tool-calling work on
-`feature/openai-tool-calling-support`, and two that predate it:
+`feature/openai-tool-calling-support`, and three that predate it:
 
 | File | Cites | Origin |
 |------|-------|--------|
@@ -42,6 +45,7 @@ grep -rnoE '\]\((\.\./)+[A-Za-z0-9_./-]+\.(go|sh|yaml|rego)[^)]*\)' \
 | `docs/reference/deny-reasons.md:106` | `internal/types/chat_request.go` | tool calling |
 | `docs/reference/deny-reasons.md:122` | `internal/gateway/handler.go` | tool calling |
 | `docs/evidence/agent-compatibility.md:171` | `internal/types/content.go` | tool calling |
+| `demos/00-quickstart/README.md:13` | `internal/router/adapters/mock.go` | quickstart demo |
 | `docs/QUICKSTART-COMMANDS.md:52` | `deploy/demo/compose.yaml` | pre-existing |
 | `docs/QUICKSTART-COMMANDS.md:174` | `deploy/demo/compose.yaml` | pre-existing |
 
@@ -73,13 +77,13 @@ in its own href, so these pass review looking checked.
 
 ```bash
 python3 - <<'PY'
-import re, glob, os
+import re, glob
 pat = re.compile(r'\[`([0-9a-f]{7,40})`\]\('
                  r'https://github\.com/aegis-gateway/aegis-ai-gateway/(?:tree|blob|raw)/([0-9a-f]{40})')
-for d in ['VERIFICATION.md', 'README.md', 'CHANGELOG.md', 'CLAUDE.md'] + glob.glob('docs/**/*.md', recursive=True):
-    if not os.path.exists(d):
+for d in sorted(glob.glob('**/*.md', recursive=True)):
+    if d.startswith('.git'):
         continue
-    for i, line in enumerate(open(d), 1):
+    for i, line in enumerate(open(d, errors='ignore'), 1):
         for label, href in pat.findall(line):
             if not href.startswith(label):
                 print(f"{d}:{i}  label={label}  href={href[:7]}")
