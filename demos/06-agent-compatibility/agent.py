@@ -31,12 +31,11 @@ GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://localhost:8080/v1")
 DEMO_KEY = os.environ.get("DEMO_KEY", "aegis-demo-quickstart")
 MODEL = os.environ.get("AGENT_MODEL", "aegis-fast")
 
-# Tool calling is carried by the OpenAI adapter and not by the Anthropic one, and
-# every shipped alias is Anthropic-primary. run.sh points this at the aegis-tools
-# alias (added by config/models.yaml) when an OpenAI key is available. Falling
-# back to MODEL is deliberate: the act then records the gateway's refusal, which
-# is documented behaviour and more informative than skipping.
-TOOL_MODEL = os.environ.get("AGENT_TOOL_MODEL", MODEL)
+# The tool act runs on the same alias as everything else. It used to need its
+# own OpenAI-primary alias, because the Anthropic adapter did not carry tools
+# and every shipped alias is Anthropic-primary. The adapter translates them now,
+# so the demo exercises the configuration the project actually ships.
+TOOL_MODEL = MODEL
 
 # Build from fragments so the repo never contains a token-shaped string.
 # The AWS example key is from AWS's own documentation and is not a real credential.
@@ -257,7 +256,10 @@ print("  'tools', 'tool_calls' and 'tool_call_id' were absent from AEGIS's reque
 print("  type, so json.Unmarshal discarded them. The provider answered in prose and")
 print("  the agent loop stalled with no error anywhere.")
 print()
-print("  It now records the working path, and the two refusals that surround it.")
+print("  It now records the working path, on the alias the project ships. The tool")
+print("  act needed its own OpenAI-primary alias until recently, because the")
+print("  Anthropic adapter could not express tools and every alias routes there")
+print("  first. The adapter translates them now.")
 print()
 
 tools = [
@@ -353,22 +355,15 @@ try:
 
 except APIStatusError as e:
     if e.status_code == 400 and "tools_unsupported_by_provider" in (e.response.text or ""):
-        # Documented behaviour, not a harness failure. The gateway refused rather
-        # than forwarding the request with its tools removed.
+        # This branch used to be the expected outcome on a shipped alias, because
+        # the Anthropic adapter did not carry tools and every alias routes there
+        # first. The adapter translates them now, so reaching this means a
+        # provider was configured whose adapter still cannot express tools.
         record(
             "4a. Tool call",
-            "REFUSED",
-            f"provider behind '{TOOL_MODEL}' cannot carry tools; gateway refused with 400",
+            "FAIL",
+            f"the provider behind '{TOOL_MODEL}' cannot carry tools",
         )
-        print("      HTTP 400 tools_unsupported_by_provider.")
-        print()
-        print("      This is the gateway refusing to forward a tool request to a")
-        print("      provider whose adapter cannot express tools, rather than")
-        print("      sending it stripped. The Anthropic adapter does not translate")
-        print("      tool_use and tool_result content blocks.")
-        print()
-        print("      Set OPENAI_API_KEY and re-run to route this act through")
-        print("      aegis-tools and see the loop complete.")
         show_error(e)
     else:
         record("4a. Tool call", "ERROR", f"HTTP {e.status_code}")
@@ -437,7 +432,7 @@ try:
 
 except APIStatusError as e:
     if e.status_code == 400 and "tools_unsupported_by_provider" in (e.response.text or ""):
-        record("4b. Tool streaming", "REFUSED", "same provider limit as 4a")
+        record("4b. Tool streaming", "FAIL", "the provider behind this alias cannot carry tools")
     else:
         record("4b. Tool streaming", "ERROR", f"HTTP {e.status_code}")
         show_error(e)

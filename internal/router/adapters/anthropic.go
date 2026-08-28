@@ -36,43 +36,43 @@ func NewAnthropicAdapter(cfg config.ProviderConfig, client *http.Client) *Anthro
 	return &AnthropicAdapter{cfg: cfg, client: client}
 }
 
+// defaultAnthropicVersion is the API version the adapter speaks. configs/providers.yaml
+// pins the same value; this is the floor if that block is ever absent.
+const defaultAnthropicVersion = "2023-06-01"
+
 func (a *AnthropicAdapter) Name() string { return "anthropic" }
 
 func (a *AnthropicAdapter) SupportsStreaming() bool { return true }
 
-// SupportsTools reports false.
+// SupportsTools reports true.
 //
-// The Anthropic Messages API expresses tools, tool calls and tool results in a
-// shape this adapter does not translate: tools have a different definition
-// schema, a tool call is a tool_use content block rather than a tool_calls
-// array, and a tool result is a tool_result block on a user turn rather than a
-// message with role "tool". Streaming differs again, with arguments arriving as
-// input_json_delta fragments.
+// The Messages API expresses tools in a different shape from the OpenAI format
+// AEGIS accepts: the schema lives under input_schema rather than in a function
+// object under parameters, a tool call is a tool_use content block, a tool
+// result is a tool_result block on a user turn, and in streaming the arguments
+// arrive as input_json_delta fragments indexed against every content block
+// rather than against the tool calls alone.
 //
-// Returning false makes the handler refuse a tool-bearing request routed here,
-// naming the provider. The alternative, sending the request without its tools,
-// is precisely the defect this change exists to remove: it would relocate the
-// silent strip from the decoder to the adapter rather than fix it. See
-// docs/evidence/known-limitations.md.
-func (a *AnthropicAdapter) SupportsTools() bool { return false }
+// All of that is translated in anthropic_tools.go and anthropic_stream.go,
+// against behaviour probed from the live API rather than a remembered schema.
+// Constructs that cannot be expressed are refused by name; see UnmappableError
+// and docs/evidence/anthropic-tool-mapping.md.
+func (a *AnthropicAdapter) SupportsTools() bool { return true }
 
 func (a *AnthropicAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
-	// Convert OpenAI-format messages to Anthropic format
-	var system string
-	var messages []anthropicMessage
-	for _, m := range req.Messages {
-		if m.Role == types.RoleSystem {
-			// The Anthropic system parameter is a single string, so a
-			// structured content array is flattened here. Every part has
-			// already been scanned individually by the filter chain; this
-			// flattening is for the wire only.
-			system = m.Content.Flatten()
-			continue
-		}
-		messages = append(messages, anthropicMessage{
-			Role:    m.Role,
-			Content: m.Content.Flatten(),
-		})
+	system, messages, err := toAnthropicMessages(req.Messages)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := toAnthropicTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+
+	toolChoice, err := toAnthropicToolChoice(req.ToolChoice, req.ParallelToolCalls)
+	if err != nil {
+		return nil, err
 	}
 
 	// Anthropic requires max_tokens
@@ -90,6 +90,8 @@ func (a *AnthropicAdapter) TransformRequest(ctx context.Context, req *types.Aegi
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Stop:        req.Stop,
+		Tools:       tools,
+		ToolChoice:  toolChoice,
 	}
 
 	data, err := json.Marshal(body)
@@ -105,6 +107,15 @@ func (a *AnthropicAdapter) TransformRequest(ctx context.Context, req *types.Aegi
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
+
+	// anthropic-version is required by the API: without it every request is a
+	// 400 saying so. It was supplied only by the headers block in
+	// providers.yaml, which meant a deleted line or a typo there took out all
+	// Anthropic traffic and the adapter itself was fine with that. Default it
+	// here so the protocol requirement lives with the code that speaks the
+	// protocol; an operator can still pin a different version below.
+	httpReq.Header.Set("anthropic-version", defaultAnthropicVersion)
+
 	for k, v := range a.cfg.Headers {
 		if v != "" {
 			httpReq.Header.Set(k, v)
@@ -139,6 +150,7 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 			break
 		}
 	}
+	toolCalls := fromAnthropicToolUse(antResp.Content)
 
 	return &types.AegisResponse{
 		Model:    antResp.Model,
@@ -147,8 +159,9 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 			{
 				Index: 0,
 				Message: types.Message{
-					Role:    types.RoleAssistant,
-					Content: types.TextContent(content),
+					Role:      types.RoleAssistant,
+					Content:   types.TextContent(content),
+					ToolCalls: toolCalls,
 				},
 				FinishReason: mapStopReason(antResp.StopReason),
 			},
@@ -247,6 +260,10 @@ type openAIDelta struct {
 
 func mapStopReason(reason string) string {
 	switch reason {
+	case "tool_use":
+		// Confirmed against the live API: a response that calls a tool stops
+		// with "tool_use", which is OpenAI's "tool_calls".
+		return "tool_calls"
 	case "end_turn":
 		return "stop"
 	case "max_tokens":
@@ -258,9 +275,26 @@ func mapStopReason(reason string) string {
 	}
 }
 
+// anthropicMessage carries either plain text or a list of content blocks. The
+// two are different wire shapes, and a tool call or a tool result can only be
+// expressed as blocks.
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string
+	Content string
+	Blocks  []anthropicContentBlock
+}
+
+func (m anthropicMessage) MarshalJSON() ([]byte, error) {
+	if len(m.Blocks) > 0 {
+		return json.Marshal(struct {
+			Role    string                  `json:"role"`
+			Content []anthropicContentBlock `json:"content"`
+		}{m.Role, m.Blocks})
+	}
+	return json.Marshal(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{m.Role, m.Content})
 }
 
 type anthropicRequestBody struct {
@@ -272,18 +306,20 @@ type anthropicRequestBody struct {
 	Temperature *float64           `json:"temperature,omitempty"`
 	TopP        *float64           `json:"top_p,omitempty"`
 	Stop        []string           `json:"stop_sequences,omitempty"`
+
+	// Tool calling. ToolChoice also carries disable_parallel_tool_use, which
+	// is where Anthropic expresses OpenAI's top-level parallel_tool_calls.
+	Tools      []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
 type anthropicResponseBody struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Model   string `json:"model"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	StopReason string `json:"stop_reason"`
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	Role       string                  `json:"role"`
+	Model      string                  `json:"model"`
+	Content    []anthropicContentBlock `json:"content"`
+	StopReason string                  `json:"stop_reason"`
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`

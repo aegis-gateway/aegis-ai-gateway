@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,10 +52,16 @@ type recordingAdapter struct {
 	name         string
 	supportsTool bool
 	sentBody     []byte
+	// transformErr, when set, is returned by TransformRequest instead of a
+	// request, standing in for a construct the provider cannot express.
+	transformErr error
 }
 
 func (r *recordingAdapter) Name() string { return r.name }
 func (r *recordingAdapter) TransformRequest(_ context.Context, req *types.AegisRequest) (*http.Request, error) {
+	if r.transformErr != nil {
+		return nil, r.transformErr
+	}
 	body, err := json.Marshal(map[string]any{
 		"model":       req.Model,
 		"messages":    req.Messages,
@@ -440,5 +447,59 @@ reason := concat("; ", deny)
 	}
 	if !strings.Contains(w.Body.String(), "shell tool not permitted") {
 		t.Errorf("the response does not carry the policy's reason: %s", w.Body.String())
+	}
+}
+
+// TestChatCompletions_UnmappableConstructIsAClientError closes the gap between
+// the named refusal the translation produces and what the caller actually sees.
+//
+// TransformRequest returning an UnmappableError means the caller sent a
+// construct the provider cannot express. Reporting that as a 500 tells an agent
+// the gateway broke and invites it to retry a request that can never succeed,
+// and it throws away the construct name that says what to change.
+func TestChatCompletions_UnmappableConstructIsAClientError(t *testing.T) {
+	adapter := &recordingAdapter{name: "test-provider", supportsTool: true,
+		transformErr: &adapters.UnmappableError{
+			Construct: "messages[2] (role tool)",
+			Detail:    "this result answers none of that message's calls",
+		}}
+	h := newToolHandler(adapter, nil)
+
+	w := postTools(t, h, `{
+		"model":"aegis-tools",
+		"tools":[{"type":"function","function":{"name":"read_file"}}],
+		"messages":[{"role":"user","content":"Read a.go"}]}`)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. A construct the provider cannot express is the "+
+			"caller's input, not a gateway failure; body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{"unmappable_for_provider", "messages[2]", "answers none"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the error does not carry %q, so a caller cannot tell what to change: %s",
+				want, body)
+		}
+	}
+}
+
+// TestChatCompletions_TransformFailureStaysInternal is the negative control:
+// an ordinary transform failure is still a 500 and still says nothing about the
+// request.
+func TestChatCompletions_TransformFailureStaysInternal(t *testing.T) {
+	adapter := &recordingAdapter{name: "test-provider", supportsTool: true,
+		transformErr: errors.New("dial tcp: connection refused")}
+	h := newToolHandler(adapter, nil)
+
+	w := postTools(t, h, `{
+		"model":"aegis-tools",
+		"tools":[{"type":"function","function":{"name":"read_file"}}],
+		"messages":[{"role":"user","content":"Read a.go"}]}`)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "connection refused") {
+		t.Errorf("the internal error text reached the client: %s", w.Body.String())
 	}
 }

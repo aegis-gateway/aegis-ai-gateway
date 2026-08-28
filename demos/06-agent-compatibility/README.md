@@ -15,11 +15,10 @@ added, and checks what the gateway refuses to carry.
 - Secrets embedded in a prompt are blocked before reaching the provider; the audit row records the block with no payload
 - A Rego policy that restricts a request class returns a clear, human-readable 451 with the denial reason; the agent does not retry
 - Streaming passes through intact
-- **Tool calling works.** `tools`, `tool_choice`, `tool_calls`, `tool_call_id` and the `tool` role are carried end to end. Act 4 runs a complete loop: offer a tool, receive a call, return a result, receive an answer, and then does it again over SSE so the index-keyed deltas have to be reassembled
+- **Tool calling works on the shipped aliases**, Anthropic included. `tools`, `tool_choice`, `tool_calls`, `tool_call_id` and the `tool` role are carried end to end, translated into the Anthropic Messages API shape where the route requires it. Act 4 runs a complete loop: offer a tool, receive a call, return a result, receive an answer, and then does it again over SSE so the index-keyed deltas have to be reassembled
 - **The filter chain reads the widened request.** Act 4c hides a credential in a tool call's arguments, in a tool result, and in a structured content part, then hides a prompt injection in a tool result. All four are blocked before the provider sees them
 
 **Refused by design, and shown as refusals rather than hidden:**
-- **A tool request routed to Anthropic.** The Anthropic adapter does not translate tool definitions, `tool_use` blocks or `tool_result` blocks, so the gateway returns 400 `tools_unsupported_by_provider` rather than forwarding the request with its tools removed. Every shipped alias is Anthropic-primary, which is why this demo mounts `config/models.yaml` adding an OpenAI-primary `aegis-tools` alias for the tool act
 - **A non-text content part.** An image part returns 400 `unsupported_content_part`. AEGIS cannot scan an image and will not forward to a provider what no filter has read
 - **An unsupported request field.** `seed`, `n` and everything else outside the allowlist return 400 naming the field. This used to be a silent discard, which is how tool calling was lost in the first place
 
@@ -30,8 +29,6 @@ added, and checks what the gateway refuses to carry.
 
 - Docker Compose v2
 - `ANTHROPIC_API_KEY` (every shipped alias routes to Anthropic first)
-- `OPENAI_API_KEY` as well, to see the tool act complete rather than report the
-  documented Anthropic refusal
 - `python3` with `openai` package (`pip install openai`)
 
 ## Architecture
