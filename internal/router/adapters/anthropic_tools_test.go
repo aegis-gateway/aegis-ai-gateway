@@ -661,3 +661,75 @@ func TestUnmappableConstructsAreNeverScannedText(t *testing.T) {
 		})
 	}
 }
+
+// TestStrictSchemaWalk covers the nested additionalProperties requirement.
+//
+// The provider requires every object in a strict tool's schema to set
+// additionalProperties:false, not only the root. The first implementation
+// checked the root alone, so a strict tool with a nested object passed AEGIS
+// and failed at the provider.
+//
+// Each expectation here was probed against the live API:
+//
+//	root false, nested object without it        400
+//	root false, nested object with it           200
+//	root without it                             400
+//	object inside array items, without it       400
+//
+// The undecidable cases are equally deliberate. A schema using $ref or a
+// composition keyword may be perfectly valid, and refusing a shape AEGIS does
+// not understand rejects requests the provider would accept, which is worse for
+// a caller than the provider's own error. That error names the tool and the
+// requirement, so it is a reasonable thing to fall back to.
+func TestStrictSchemaWalk(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		schema  string
+		wantBad bool
+	}{
+		{"root sets it, no nesting", `{"type":"object","additionalProperties":false,"properties":{"x":{"type":"string"}}}`, false},
+		{"root omits it", `{"type":"object","properties":{"x":{"type":"string"}}}`, true},
+		{"nested object omits it", `{"type":"object","additionalProperties":false,"properties":{"n":{"type":"object","properties":{"x":{"type":"string"}}}}}`, true},
+		{"nested object sets it", `{"type":"object","additionalProperties":false,"properties":{"n":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"string"}}}}}`, false},
+		{"object inside array items omits it", `{"type":"object","additionalProperties":false,"properties":{"l":{"type":"array","items":{"type":"object","properties":{"y":{"type":"string"}}}}}}`, true},
+		{"object inside array items sets it", `{"type":"object","additionalProperties":false,"properties":{"l":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"y":{"type":"string"}}}}}}`, false},
+		{"non-object nodes are not objects", `{"type":"object","additionalProperties":false,"properties":{"s":{"type":"string"},"n":{"type":"number"}}}`, false},
+		{"type given as a list including object", `{"type":["object","null"],"properties":{"x":{"type":"string"}}}`, true},
+
+		// Undecidable: not refused, by design.
+		{"$ref is left to the provider", `{"type":"object","additionalProperties":false,"properties":{"n":{"$ref":"#/$defs/thing"}}}`, false},
+		{"allOf is left to the provider", `{"allOf":[{"type":"object"}]}`, false},
+		{"anyOf is left to the provider", `{"type":"object","additionalProperties":false,"properties":{"n":{"anyOf":[{"type":"object"}]}}}`, false},
+		{"a schema-valued additionalProperties is left alone", `{"type":"object","additionalProperties":{"type":"string"}}`, false},
+		{"unparseable schema is left to the provider", `not json`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstObjectAllowingAdditionalProperties(json.RawMessage(tc.schema), "parameters")
+			if tc.wantBad && got == "" {
+				t.Errorf("expected a refusal path; the provider returns 400 for this schema and "+
+					"AEGIS would forward it: %s", tc.schema)
+			}
+			if !tc.wantBad && got != "" {
+				t.Errorf("refused at %q, but the provider accepts this schema. Refusing what the "+
+					"provider would accept is worse for a caller than its own error: %s", got, tc.schema)
+			}
+		})
+	}
+}
+
+// TestStrictSchemaWalk_NamesTheOffendingPath checks the refusal is actionable.
+func TestStrictSchemaWalk_NamesTheOffendingPath(t *testing.T) {
+	t.Parallel()
+
+	got := firstObjectAllowingAdditionalProperties(json.RawMessage(
+		`{"type":"object","additionalProperties":false,"properties":{"outer":{"type":"object","additionalProperties":false,"properties":{"inner":{"type":"object","properties":{}}}}}}`),
+		"parameters")
+	want := "parameters.properties.outer.properties.inner"
+	if got != want {
+		t.Errorf("path = %q, want %q; a caller needs to know which object to fix", got, want)
+	}
+}

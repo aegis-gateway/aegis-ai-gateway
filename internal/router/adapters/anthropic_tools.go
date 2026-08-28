@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
@@ -100,11 +101,14 @@ func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 		// behind it and requires additionalProperties:false. AEGIS will not
 		// rewrite a caller's schema to satisfy that, because the rewritten
 		// request is not the one they sent.
-		if t.Function.Strict != nil && *t.Function.Strict && !schemaDisallowsAdditionalProperties(t.Function.Parameters) {
-			return nil, &UnmappableError{
-				Construct: fmt.Sprintf("tools[%d].function.strict", i),
-				Detail: "the Anthropic Messages API requires a strict tool's schema to set " +
-					`"additionalProperties": false, and AEGIS will not rewrite your schema to add it`,
+		if t.Function.Strict != nil && *t.Function.Strict {
+			if bad := firstObjectAllowingAdditionalProperties(t.Function.Parameters, "parameters"); bad != "" {
+				return nil, &UnmappableError{
+					Construct: fmt.Sprintf("tools[%d].function.%s", i, bad),
+					Detail: "the Anthropic Messages API requires every object in a strict tool's " +
+						`schema to set "additionalProperties": false, including nested ones, and ` +
+						"AEGIS will not rewrite your schema to add it",
+				}
 			}
 		}
 		schema := t.Function.Parameters
@@ -121,20 +125,101 @@ func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 	return out, nil
 }
 
-// schemaDisallowsAdditionalProperties reports whether the schema explicitly
-// sets additionalProperties to false, which is what the provider demands of a
-// strict tool.
-func schemaDisallowsAdditionalProperties(schema json.RawMessage) bool {
+// firstObjectAllowingAdditionalProperties walks a JSON Schema and returns the
+// path of the first object that does not explicitly set additionalProperties to
+// false, or "" if every object it can see does.
+//
+// The provider requires this of every object in a strict tool's schema, not
+// only the root. Probed:
+//
+//	root false, nested object without it        400
+//	root false, nested object with it           200
+//	root without it                             400
+//	object inside array items, without it       400
+//
+// It deliberately reports nothing for constructs it cannot interpret. A schema
+// using $ref, $defs, allOf, anyOf or oneOf may well be fine, and refusing on a
+// shape AEGIS does not understand would reject requests the provider accepts,
+// which is worse for a caller than the provider's own error. That error is not
+// opaque here: it names the tool index and the requirement. So this refuses
+// only what it is certain about and lets anything else through to be judged by
+// the party that defines the rule.
+func firstObjectAllowingAdditionalProperties(schema json.RawMessage, path string) string {
 	if len(schema) == 0 {
+		return ""
+	}
+	var node map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &node); err != nil {
+		return ""
+	}
+
+	// A node AEGIS cannot reason about is left to the provider.
+	for _, undecidable := range []string{"$ref", "allOf", "anyOf", "oneOf", "not"} {
+		if _, present := node[undecidable]; present {
+			return ""
+		}
+	}
+
+	if isObjectSchema(node) {
+		var ap *bool
+		if raw, ok := node["additionalProperties"]; ok {
+			// additionalProperties may itself be a schema rather than a bool.
+			// That is not the literal false the provider demands, but it is
+			// also not obviously wrong, so it is left alone.
+			if err := json.Unmarshal(raw, &ap); err != nil {
+				return ""
+			}
+		}
+		if ap == nil || *ap {
+			return path
+		}
+	}
+
+	if props, ok := node["properties"]; ok {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(props, &fields); err == nil {
+			names := make([]string, 0, len(fields))
+			for name := range fields {
+				names = append(names, name)
+			}
+			sort.Strings(names) // deterministic: the same schema names the same offender
+			for _, name := range names {
+				if p := firstObjectAllowingAdditionalProperties(fields[name], path+".properties."+name); p != "" {
+					return p
+				}
+			}
+		}
+	}
+
+	if items, ok := node["items"]; ok {
+		if p := firstObjectAllowingAdditionalProperties(items, path+".items"); p != "" {
+			return p
+		}
+	}
+
+	return ""
+}
+
+// isObjectSchema reports whether a schema node describes an object. The type
+// keyword may be a string or a list of strings.
+func isObjectSchema(node map[string]json.RawMessage) bool {
+	raw, ok := node["type"]
+	if !ok {
 		return false
 	}
-	var probe struct {
-		AdditionalProperties *bool `json:"additionalProperties"`
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return one == "object"
 	}
-	if err := json.Unmarshal(schema, &probe); err != nil {
-		return false
+	var many []string
+	if err := json.Unmarshal(raw, &many); err == nil {
+		for _, t := range many {
+			if t == "object" {
+				return true
+			}
+		}
 	}
-	return probe.AdditionalProperties != nil && !*probe.AdditionalProperties
+	return false
 }
 
 // anthropicToolChoice is Anthropic's tool_choice. The provider accepts exactly

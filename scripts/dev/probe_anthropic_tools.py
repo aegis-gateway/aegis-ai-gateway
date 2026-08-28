@@ -118,6 +118,30 @@ print(f"   tool_choice none -> {d.get('stop_reason')}")
 s, d = call(base(max_tokens=1))
 print(f"   truncated -> {d.get('stop_reason')}")
 
+print("\n5b. STRICT TOOLS AND additionalProperties")
+strict_cases = [
+    ("strict, root sets additionalProperties:false",
+     {"type": "object", "additionalProperties": False, "properties": {"x": {"type": "string"}}}),
+    ("strict, root omits it",
+     {"type": "object", "properties": {"x": {"type": "string"}}}),
+    ("strict, nested object omits it",
+     {"type": "object", "additionalProperties": False,
+      "properties": {"n": {"type": "object", "properties": {"x": {"type": "string"}}}}}),
+    ("strict, nested object sets it",
+     {"type": "object", "additionalProperties": False,
+      "properties": {"n": {"type": "object", "additionalProperties": False,
+                           "properties": {"x": {"type": "string"}}}}}),
+    ("strict, object inside array items omits it",
+     {"type": "object", "additionalProperties": False,
+      "properties": {"l": {"type": "array", "items": {"type": "object",
+                                                      "properties": {"y": {"type": "string"}}}}}}),
+]
+for label, schema in strict_cases:
+    s_, d_ = call(base(tools=[{"name": "f", "strict": True, "input_schema": schema}],
+                       messages=[{"role": "user", "content": "hi"}]))
+    detail = d_["error"]["message"][:90] if isinstance(d_, dict) and "error" in d_ else "accepted"
+    print(f"   {label:<48} HTTP {s_}  {detail}")
+
 print("\n6. STREAMING: tool call deltas and index assignment")
 s, raw = call(dict(both, stream=True), stream=True)
 events, starts, deltas, idx = [], [], [], set()
