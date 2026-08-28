@@ -6,7 +6,7 @@ evidence satisfies your obligations is your compliance team's work, and this doc
 exists so they can start rather than reverse-engineer it from source.
 
 Verified against commit
-[`c74fa7a`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1),
+[`c74fa7a`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/c74fa7a13930b8fe0322b3eea067c8c78ba42e21),
 which is the commit that introduces the audit read API. An earlier draft pinned these rows
 to `0344929`, where `internal/audit/reader.go` does not exist, so the citation for the
 export claim resolved to a missing file. Caught in review.

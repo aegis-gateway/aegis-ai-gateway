@@ -5,7 +5,7 @@ that an operator building an evidence package finds these limits here rather tha
 discovering them during an audit.
 
 Verified against commit
-[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1).
+[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a).
 
 ---
 

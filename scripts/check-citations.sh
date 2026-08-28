@@ -116,6 +116,41 @@ for doc in "${docs[@]}"; do
              printf '%s\t%s\n' "$lab" "$anc"
            done | sort -u)
 
+  # A SHA-shaped label must name the commit its own link points at.
+  #
+  # A citation written as [`0344929`](…/tree/ea72971…) displays one commit and
+  # links to another. A reader trusts the label, so the two disagreeing
+  # misstates the evidence exactly as a dead link does, and nothing above
+  # catches it: the href resolves, it is not a branch, and the label is not a
+  # file:line pair.
+  #
+  # This is not hypothetical. A bulk re-pin moved four hrefs to the release
+  # commit and left their labels behind, and in every one of those four the
+  # label was the load-bearing fact: "Baseline commit: 0344929", "Verified
+  # against commit c74fa7a, which is the commit that introduces the audit read
+  # API". The links had been silently repointed away from the commits the
+  # sentences named.
+  #
+  # An abbreviated label is compared as a prefix, which is how git names a
+  # commit short and is what these documents use.
+  while IFS= read -r pair; do
+    [ -n "$pair" ] || continue
+    label=${pair%%$'\t'*}
+    href=${pair#*$'\t'}
+    case $href in
+      "$label"*) ;;
+      *)
+        echo "::error file=$doc::citation label \"$label\" names a different commit than its own link (${href:0:7}). A reader trusts the label; decide which commit the sentence means and make both say it"
+        fail=1
+        ;;
+    esac
+  done < <(grep -oE "\[\`[0-9a-f]{7,40}\`\]\([^)]*$repo/(blob|tree|raw)/[0-9a-f]{40}[^)]*\)" "$doc" 2>/dev/null |
+           while IFS= read -r m; do
+             lab=${m#*\`}; lab=${lab%%\`*}
+             hr=${m##*/}; hr=${hr%%[!0-9a-f]*}
+             printf '%s\t%s\n' "$lab" "$hr"
+           done | sort -u)
+
   # Every pinned citation must resolve at the commit it names.
   while IFS= read -r url; do
     [ -n "$url" ] || continue
