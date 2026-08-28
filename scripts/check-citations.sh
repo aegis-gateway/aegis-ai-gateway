@@ -19,8 +19,21 @@
 
 set -uo pipefail
 
-docs=(VERIFICATION.md CLAUDE.md README.md CHANGELOG.md)
-while IFS= read -r f; do docs+=("$f"); done < <(find docs -name '*.md' 2>/dev/null)
+# Every Markdown file in the repository, not an enumerated list.
+#
+# This used to be four root files plus docs/, which left .github/, CONTRIBUTING.md,
+# LICENSING.md and every demos/ README unchecked. Nothing in those carried a citation
+# at the time, so the check reported success over a scope that happened to be empty,
+# and "found nothing" was indistinguishable from "did not look". A demo README is
+# user-facing documentation and is exactly where a citation to `main` would be added
+# without anyone thinking about it.
+#
+# A fixed scope is dangerous wherever absence is the success condition, so this walks
+# instead. Adding a directory can no longer reopen the hole.
+docs=()
+while IFS= read -r f; do docs+=("$f"); done < <(
+  find . \( -name .git -o -name vendor -o -name node_modules \) -prune -o \
+       -name '*.md' -print 2>/dev/null | sed 's|^\./||' | sort)
 
 repo='aegis-gateway/aegis-ai-gateway'
 fail=0

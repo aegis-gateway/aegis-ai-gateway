@@ -406,3 +406,53 @@ func floatPtr(f float64) *float64 {
 func intPtr(i int) *int {
 	return &i
 }
+
+// TestControlCharInToolCallIDNamesTheRightField pins the field label on a
+// control-character finding in either correlator.
+//
+// Both correlators are scanned text now, so they reach the control-character
+// check as segments. segmentField had no case for their segment kind, and the
+// default arm reported them as messages[N].content, which names a field the
+// caller did not send and sends them looking in the wrong place.
+func TestControlCharInToolCallIDNamesTheRightField(t *testing.T) {
+	validator := NewValidator(DefaultLimits(), nil)
+
+	tests := []struct {
+		name      string
+		messages  []types.Message
+		wantField string
+	}{
+		{
+			name: "null byte in tool_call_id",
+			messages: []types.Message{
+				{Role: types.RoleTool, ToolCallID: "call_\x00abc", Content: types.TextContent("ok")},
+			},
+			wantField: "messages[0].tool_call_id",
+		},
+		{
+			name: "null byte in tool_calls[].id",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+					{ID: "call_\x00abc", Type: types.ToolTypeFunction, Function: types.FunctionCallSpec{Name: "f"}},
+				}},
+			},
+			wantField: "messages[0].tool_calls[].id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validator.validateMessages(tt.messages)
+
+			var found bool
+			for _, e := range errs {
+				if e.Field == tt.wantField {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("no validation error named %q; got %v", tt.wantField, errs)
+			}
+		})
+	}
+}

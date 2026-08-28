@@ -44,3 +44,6 @@ What this costs, and what it forecloses.
 | [0005](0005-covered-time-range-is-required.md) | The covered time range is required in v1 | Accepted |
 | [0006](0006-predecessor-identity-is-not-hash-bound.md) | Predecessor identity is not bound into the checkpoint hash | Proposed |
 | [0007](0007-hash-construction-belongs-to-the-protocol.md) | The hash construction belongs to the protocol package | Accepted |
+| [0008](0008-seal-status-is-gateway-declared.md) | Sealing status is three states, judged against a gateway-declared window | Accepted |
+| [0009](0009-indexless-tool-call-deltas-are-dropped.md) | An indexless streaming tool call delta is dropped, not merged | Accepted |
+| [0010](0010-nested-request-fields-are-allowlisted.md) | Unknown fields are refused at every level of the request | Accepted |

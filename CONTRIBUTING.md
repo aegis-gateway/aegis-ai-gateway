@@ -215,6 +215,31 @@ The model alias table in `README.md` is generated. Edit `configs/models.yaml` an
 
 `docs/QUICKSTART-COMMANDS.md` is the source of truth for the demo commands. Changing a container name, a port, or a path means updating that file, and the website at aegisgateway.ai is a separate repository that must be updated to match.
 
+### Attributing agent-produced commits
+
+An automated contributor commits with whatever git identity the checkout is configured
+with, which by default is the human running it. That makes human work and agent work
+indistinguishable in `git log`, and this repository has already had a case where the
+authorship of a merged security fix could not be established afterwards.
+
+That matters more here than in most repositories. The central invitation of this project
+is that a reader comes and checks the claims for themselves, and "who wrote this" is
+part of what they are checking.
+
+So a commit produced by an automated contributor carries a trailer naming it:
+
+```
+Co-authored-by: Claude Code <noreply@anthropic.com>
+```
+
+Use the trailer rather than a separate committer identity: it survives squash merges,
+GitHub renders it, and it does not require every contributor to reconfigure their
+checkout. It is additive, so the human who ran the tool and reviewed the result remains
+the author, which is the correct attribution of responsibility.
+
+This is **not retroactive.** History before this rule cannot be reconstructed and should
+not be guessed at.
+
 ### Commit messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

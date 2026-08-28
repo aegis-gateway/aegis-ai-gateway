@@ -39,7 +39,7 @@ type AuthInfo struct {
 
 ### 3. Request parsing and validation (`internal/gateway`, `internal/validation`)
 
-`gateway.Handler.ChatCompletions` reads the request body, unmarshals it into `types.AegisRequest`, and enriches it with auth context fields (org, team, user, key ID, classification). Optional AEGIS-specific headers are read: `X-Aegis-Project`, `X-Aegis-Prefer-Provider`, `X-Aegis-Trace-Context`.
+`gateway.Handler.ChatCompletions` reads the request body, decodes it with `types.DecodeChatCompletion`, an allowlist that refuses any unsupported field, into `types.AegisRequest`, and enriches it with auth context fields (org, team, user, key ID, classification). Optional AEGIS-specific headers are read: `X-Aegis-Project` and `X-Aegis-Trace-Context`.
 
 The `validation.Validator` then checks field constraints:
 

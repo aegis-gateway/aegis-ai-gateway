@@ -60,6 +60,7 @@ type Limits struct {
 	MaxTools              int
 	MaxToolNameLength     int
 	MaxToolCallsPerMsg    int
+	MaxToolCallIDLength   int
 }
 
 // DefaultLimits returns sensible default validation limits
@@ -79,6 +80,16 @@ func DefaultLimits() Limits {
 		MaxTools:              128,
 		MaxToolNameLength:     64,
 		MaxToolCallsPerMsg:    128,
+		// A provider-issued correlator is around 30 characters: OpenAI sends
+		// call_ plus 24, Anthropic toolu_ plus 24. 128 is four times that.
+		//
+		// It is bounded at all because nothing bounded it before: a tool call
+		// id is client-supplied on every turn of an agent loop, and a
+		// hundred-kilobyte id validated cleanly and was forwarded to the
+		// provider. Every other client-controlled string on the request has a
+		// limit; this one was missed because it reads like a value the gateway
+		// issued.
+		MaxToolCallIDLength: 128,
 	}
 }
 
@@ -327,7 +338,20 @@ func (v *Validator) validateToolFields(i int, msg types.Message) ValidationError
 		})
 	}
 
+	if len(msg.ToolCallID) > v.limits.MaxToolCallIDLength {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].tool_call_id", i),
+			Message: fmt.Sprintf("tool_call_id too long (max %d characters)", v.limits.MaxToolCallIDLength),
+		})
+	}
+
 	for j, tc := range msg.ToolCalls {
+		if len(tc.ID) > v.limits.MaxToolCallIDLength {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].id", i, j),
+				Message: fmt.Sprintf("tool call id too long (max %d characters)", v.limits.MaxToolCallIDLength),
+			})
+		}
 		if tc.ID == "" {
 			errs = append(errs, ValidationError{
 				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].id", i, j),
@@ -478,6 +502,15 @@ func segmentField(msgIndex int, seg types.TextSegment) string {
 		return fmt.Sprintf("messages[%d].tool_calls[%s].function.name", msgIndex, seg.Ref)
 	case types.SegmentToolDefinition:
 		return fmt.Sprintf("tools[%s].function", seg.Ref)
+	case types.SegmentToolCallID:
+		// The correlator is the scanned text here, so it is deliberately not
+		// echoed back as the Ref label the way a tool call's other segments
+		// echo their id. Ref names which of the two correlator fields the
+		// value came from instead.
+		if seg.Ref == "tool_call_id" {
+			return fmt.Sprintf("messages[%d].tool_call_id", msgIndex)
+		}
+		return fmt.Sprintf("messages[%d].tool_calls[].id", msgIndex)
 	default:
 		return fmt.Sprintf("messages[%d].content", msgIndex)
 	}

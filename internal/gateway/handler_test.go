@@ -437,9 +437,8 @@ func TestAegisResponseFormat(t *testing.T) {
 // TestAegisHeaders tests parsing of AEGIS-specific headers.
 func TestAegisHeaders(t *testing.T) {
 	headers := map[string]string{
-		"X-Aegis-Project":         "my-project",
-		"X-Aegis-Prefer-Provider": "openai",
-		"X-Aegis-Trace-Context":   "trace-123-456",
+		"X-Aegis-Project":       "my-project",
+		"X-Aegis-Trace-Context": "trace-123-456",
 	}
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
@@ -449,9 +448,6 @@ func TestAegisHeaders(t *testing.T) {
 
 	if req.Header.Get("X-Aegis-Project") != "my-project" {
 		t.Error("project header should be readable")
-	}
-	if req.Header.Get("X-Aegis-Prefer-Provider") != "openai" {
-		t.Error("prefer-provider header should be readable")
 	}
 	if req.Header.Get("X-Aegis-Trace-Context") != "trace-123-456" {
 		t.Error("trace-context header should be readable")
