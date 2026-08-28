@@ -365,3 +365,136 @@ func assertNoCanary(t *testing.T, where, haystack string) {
 		}
 	}
 }
+
+// TestSecretInStopSequence plants the canary in a stop sequence.
+//
+// A stop sequence is never part of the prompt, which is why this field was at
+// first excluded from the scan surface. That reasoning answered the wrong
+// question. The model not reading a value has no bearing on whether the value
+// leaves the gateway: `stop` is forwarded verbatim to OpenAI as `stop` and to
+// Anthropic as `stop_sequences`, and the validator bounds only how many and how
+// long, not what they contain. Four sequences at 256 characters is a kilobyte
+// of arbitrary client text.
+//
+// The reflection coverage test in internal/types is what surfaced this. It was
+// the first thing that test found that hand enumeration had not.
+func TestSecretInStopSequence(t *testing.T) {
+	t.Parallel()
+
+	req := &types.AegisRequest{
+		Model:    "aegis-fast",
+		Messages: []types.Message{{Role: types.RoleUser, Content: types.TextContent("summarise this")}},
+		Stop:     []string{"\n\n", canaryMarker + " " + canaryAWSKey},
+	}
+
+	assertBlockedAndNotPersisted(t, req, "secrets")
+}
+
+// TestOrdinaryStopSequencesStillPass is the negative control, and it is the one
+// that matters for this field.
+//
+// Scanning stop sequences is only defensible if it does not break the ordinary
+// use of them. A stop sequence is typically a short delimiter, and none of the
+// shapes below resembles a credential pattern closely enough to match.
+func TestOrdinaryStopSequencesStillPass(t *testing.T) {
+	t.Parallel()
+
+	req := &types.AegisRequest{
+		Model:    "aegis-fast",
+		Messages: []types.Message{{Role: types.RoleUser, Content: types.TextContent("write a haiku")}},
+		Stop:     []string{"\n\n", "END", "###", "<|im_end|>", "Human:", "```"},
+	}
+
+	_, blocked := newChain().Run(context.Background(), req)
+	if blocked != nil {
+		t.Fatalf("an ordinary set of stop sequences was blocked by %q: %s\n"+
+			"Scanning this field is only worth doing if it leaves normal use alone",
+			blocked.FilterName, blocked.Message)
+	}
+}
+
+// TestSecretInToolCallID plants the canary in the tool call correlators.
+//
+// These were excluded from the scan surface as "an opaque correlator the
+// provider issued". That is right for the outbound leg and wrong for the
+// inbound one: an agent loop resends the entire conversation on every turn, so
+// the gateway receives whatever the client put in these fields, and nothing
+// requires it to be an id any provider ever handed out. They are marshalled to
+// the provider with the rest of the message.
+//
+// They were doubly easy to miss because they already appeared in TextSegments,
+// as the Ref label on other segments. A Ref says where a finding was; it is not
+// text that gets scanned.
+func TestSecretInToolCallID(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		req  *types.AegisRequest
+	}{
+		{
+			"on the assistant's tool call",
+			&types.AegisRequest{
+				Model: "aegis-fast",
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: types.TextContent("go")},
+					{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+						ID:       "call_" + canaryMarker + "_" + canaryAWSKey,
+						Type:     types.ToolTypeFunction,
+						Function: types.FunctionCallSpec{Name: "f", Arguments: "{}"},
+					}}},
+				},
+			},
+		},
+		{
+			"on the tool result",
+			&types.AegisRequest{
+				Model: "aegis-fast",
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: types.TextContent("go")},
+					{
+						Role:       types.RoleTool,
+						ToolCallID: "call_" + canaryMarker + "_" + canaryAWSKey,
+						Content:    types.TextContent("result"),
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertBlockedAndNotPersisted(t, tc.req, "secrets")
+		})
+	}
+}
+
+// TestProviderShapedToolCallIDsPass is the negative control for the pair above.
+//
+// Scanning a correlator is only defensible if a real one does not trip the
+// filters. The ids below are the shapes OpenAI and Anthropic actually issue.
+func TestProviderShapedToolCallIDsPass(t *testing.T) {
+	t.Parallel()
+
+	for _, id := range []string{
+		"call_9dJk2mNq7Xw3pR5tYv8bZa1c",
+		"toolu_01A09q90qw90lq917835lq9",
+		"call_abc123",
+	} {
+		req := &types.AegisRequest{
+			Model: "aegis-fast",
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: types.TextContent("go")},
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+					ID: id, Type: types.ToolTypeFunction,
+					Function: types.FunctionCallSpec{Name: "read_file", Arguments: `{"p":"a.go"}`},
+				}}},
+				{Role: types.RoleTool, ToolCallID: id, Content: types.TextContent("package main")},
+			},
+		}
+		if _, blocked := newChain().Run(context.Background(), req); blocked != nil {
+			t.Errorf("a provider-shaped tool call id %q was blocked by %q: %s\n"+
+				"Scanning correlators is only worth doing if it leaves real agent loops alone",
+				id, blocked.FilterName, blocked.Message)
+		}
+	}
+}

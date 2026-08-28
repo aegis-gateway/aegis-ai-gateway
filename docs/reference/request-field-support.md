@@ -37,10 +37,10 @@ asserts every row below.
 | `messages[].role` | `system`, `user`, `assistant`, `tool`, `function` |
 | `messages[].content` | A string, or an array of `{"type":"text"}` parts. See the content parts note below |
 | `messages[].name` | Forwarded unchanged |
-| `messages[].tool_calls` | Forwarded. Every `function.arguments` string is scanned by the filter chain |
-| `messages[].tool_call_id` | Forwarded. Required on a `tool` message |
+| `messages[].tool_calls` | Forwarded. The `id`, `function.name` and `function.arguments` are all scanned by the filter chain; `id` is bounded to 128 characters |
+| `messages[].tool_call_id` | Forwarded. Required on a `tool` message, bounded to 128 characters, and scanned: inbound it is client text like any other |
 | `temperature`, `top_p`, `max_tokens` | Validated against `internal/validation` limits, then forwarded |
-| `stop` | String or array of strings, up to four |
+| `stop` | String or array of strings, up to four. Scanned for secrets, PII and injection: it is client text forwarded verbatim to the provider, and the model not reading it does not stop it leaving |
 | `stream` | Branches into the SSE relay |
 | `tools` | Forwarded. Names, descriptions and parameter schemas are scanned by the filter chain |
 | `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type":"function","function":{"name":…}}`. Any other value is refused |

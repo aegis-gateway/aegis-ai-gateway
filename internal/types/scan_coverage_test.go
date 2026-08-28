@@ -220,6 +220,7 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 	// rather than merely reporting that something did.
 	body := `{
 	  "model": "aegis-fast",
+	  "stop": ["SENTINEL_stop_sequence"],
 	  "tools": [{
 	    "type": "function",
 	    "function": {
@@ -233,13 +234,13 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 	    {"role": "user", "name": "SENTINEL_message_name", "content": "SENTINEL_content_str"},
 	    {"role": "user", "content": [{"type": "text", "text": "SENTINEL_content_part_text"}]},
 	    {"role": "assistant", "content": null, "tool_calls": [{
-	      "id": "call_1", "type": "function",
+	      "id": "SENTINEL_toolcall_id", "type": "function",
 	      "function": {
 	        "name": "SENTINEL_toolcall_function_name",
 	        "arguments": "{\"k\":\"SENTINEL_toolcall_function_arguments\"}"
 	      }
 	    }]},
-	    {"role": "tool", "tool_call_id": "call_1", "content": "SENTINEL_tool_result_content"}
+	    {"role": "tool", "tool_call_id": "SENTINEL_toolcallid", "content": "SENTINEL_tool_result_content"}
 	  ]
 	}`
 
@@ -253,6 +254,9 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 	// fixture. A scanned field with no sentinel here is a hole in the test
 	// rather than in the code, and is reported as such.
 	sentinels := map[string]string{
+		"AegisRequest.Stop":                                      "SENTINEL_stop_sequence",
+		"AegisRequest.Messages[].ToolCallID":                     "SENTINEL_toolcallid",
+		"AegisRequest.Messages[].ToolCalls[].ID":                 "SENTINEL_toolcall_id",
 		"AegisRequest.Messages[].Content.Str":                    "SENTINEL_content_str",
 		"AegisRequest.Messages[].Content.Parts[].Text":           "SENTINEL_content_part_text",
 		"AegisRequest.Messages[].Name":                           "SENTINEL_message_name",
@@ -375,7 +379,7 @@ func walkFieldType(ft reflect.Type, path string, visiting map[reflect.Type]bool)
 	}
 }
 
-// jsonRawMessageIsWalked guards an assumption the walk above depends on: that
+// TestScanSurface_RawMessageIsTreatedAsText guards an assumption the walk above depends on: that
 // json.RawMessage presents as a []byte and is therefore reported as one
 // string-bearing field rather than skipped.
 func TestScanSurface_RawMessageIsTreatedAsText(t *testing.T) {

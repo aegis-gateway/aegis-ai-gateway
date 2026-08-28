@@ -31,7 +31,9 @@ set -uo pipefail
 # A fixed scope is dangerous wherever absence is the success condition, so this walks
 # instead. Adding a directory can no longer reopen the hole.
 docs=()
-while IFS= read -r f; do docs+=("$f"); done < <(find . -name '*.md' -not -path './.git/*' 2>/dev/null | sed 's|^\./||' | sort)
+while IFS= read -r f; do docs+=("$f"); done < <(
+  find . \( -name .git -o -name vendor -o -name node_modules \) -prune -o \
+       -name '*.md' -print 2>/dev/null | sed 's|^\./||' | sort)
 
 repo='aegis-gateway/aegis-ai-gateway'
 fail=0

@@ -102,6 +102,10 @@ const (
 	SegmentToolResult SegmentKind = "tool_result"
 	// SegmentToolDefinition is a tool's name, description or parameter schema.
 	SegmentToolDefinition SegmentKind = "tool_definition"
+	// SegmentStopSequence is one of the request's stop sequences.
+	SegmentStopSequence SegmentKind = "stop_sequence"
+	// SegmentToolCallID is a tool call correlator supplied by the client.
+	SegmentToolCallID SegmentKind = "tool_call_id"
 	// SegmentToolName is a tool or tool-call *name*. Names are metadata for
 	// routing and policy, but they are still client-supplied text that reaches
 	// the provider: OpenAI accepts ^[a-zA-Z0-9_-]{1,64}$, which admits an AWS
@@ -176,7 +180,28 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 		})
 	}
 
+	// The tool call correlators. These read as opaque values a provider issued,
+	// and on the outbound leg they are. Inbound they are not: an agent loop
+	// resends the whole conversation on every turn, so the gateway receives
+	// whatever the client put in these fields, and nothing requires it to be an
+	// id a provider ever handed out. They are marshalled to the provider with
+	// the rest of the message.
+	//
+	// They appeared here already, as the Ref label on other segments. A Ref is
+	// metadata about where a finding was, not text that gets scanned, so
+	// carrying the id there left it unread.
+	if m.ToolCallID != "" {
+		segs = append(segs, TextSegment{
+			Kind: SegmentToolCallID, MessageIndex: msgIndex, Ref: "tool_call_id", Text: m.ToolCallID,
+		})
+	}
+
 	for _, tc := range m.ToolCalls {
+		if tc.ID != "" {
+			segs = append(segs, TextSegment{
+				Kind: SegmentToolCallID, MessageIndex: msgIndex, Ref: "tool_calls", Text: tc.ID,
+			})
+		}
 		if tc.Function.Name != "" {
 			segs = append(segs, TextSegment{
 				Kind: SegmentToolName, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Name,
@@ -224,6 +249,24 @@ func (r *AegisRequest) TextSegments() []TextSegment {
 				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: string(t.Function.Parameters),
 			})
 		}
+	}
+
+	// Stop sequences are client-supplied text forwarded verbatim to the
+	// provider: openai.go sends them as "stop" and anthropic.go as
+	// "stop_sequences". Four of them at 256 characters each is a kilobyte of
+	// arbitrary content, comfortably more than any credential needs.
+	//
+	// They were excluded at first on the grounds that a stop sequence is never
+	// part of the prompt. That is true and it is beside the point. The test for
+	// exclusion is whether a field can carry client text to a provider, not
+	// whether the model reads it, and by that test this belongs here.
+	for i, stop := range r.Stop {
+		if stop == "" {
+			continue
+		}
+		segs = append(segs, TextSegment{
+			Kind: SegmentStopSequence, MessageIndex: -1, Ref: strconv.Itoa(i), Text: stop,
+		})
 	}
 
 	// tool_choice in its object form names a function, and that name is
