@@ -36,6 +36,32 @@ import (
 // harder to detect, which is the defect this whole line of work exists to
 // remove.
 
+// A note on what may appear in an UnmappableError.
+//
+// The message reaches the client's response body and a log line, so the
+// question of whether it may quote request content matters. The answer differs
+// from the validator's, and the difference is the ordering.
+//
+// A validation error is built before the filter chain runs (handler.go: the
+// validator at :131, the chain at :156), so a value quoted there has been
+// scanned by nothing and quoting a credential is a genuine leak. That is why
+// TextSegment.Ref is positional.
+//
+// An unmappable refusal is built during TransformRequest, at :311, which is
+// after the chain. Anything quoted here has already been through secrets, PII
+// and injection scanning and was permitted. So the schema property names in a
+// nested-path construct are values the gateway has already judged safe to send
+// to a provider, and naming them buys real actionability.
+//
+// The residual, stated rather than glossed: a filter configured to flag instead
+// of block, or the PII service failing open, permits a request that was
+// detected on. Such a value could be echoed here. That is a property of running
+// the filters in a non-blocking mode, not of this error type.
+//
+// Tool call ids and tool names are still never quoted. They are correlators and
+// identifiers rather than a caller's own schema, and naming a position is just
+// as actionable.
+//
 // ErrUnmappable is returned when a request is valid OpenAI and cannot be
 // expressed in the Anthropic Messages API.
 var ErrUnmappable = errors.New("construct cannot be expressed for this provider")
@@ -84,6 +110,15 @@ type anthropicTool struct {
 // input_schema is required, so an absent schema cannot simply be omitted.
 var emptyObjectSchema = json.RawMessage(`{"type":"object","properties":{}}`)
 
+// emptyStrictObjectSchema is the same default for a strict tool.
+//
+// A strict tool's schema must set additionalProperties:false on every object,
+// so the plain default above is refused by the provider. Completing AEGIS's own
+// default is not the schema rewriting this package declines to do: there is no
+// caller schema here, the caller declared no parameters, and "no parameters" is
+// exactly what this encodes. Probed: with the setting, 200; without it, 400.
+var emptyStrictObjectSchema = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+
 // toAnthropicTools converts tool definitions.
 func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 	if len(tools) == 0 {
@@ -101,7 +136,8 @@ func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 		// behind it and requires additionalProperties:false. AEGIS will not
 		// rewrite a caller's schema to satisfy that, because the rewritten
 		// request is not the one they sent.
-		if t.Function.Strict != nil && *t.Function.Strict {
+		strict := t.Function.Strict != nil && *t.Function.Strict
+		if strict && len(t.Function.Parameters) > 0 {
 			if bad := firstObjectAllowingAdditionalProperties(t.Function.Parameters, "parameters"); bad != "" {
 				return nil, &UnmappableError{
 					Construct: fmt.Sprintf("tools[%d].function.%s", i, bad),
@@ -113,7 +149,12 @@ func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 		}
 		schema := t.Function.Parameters
 		if len(schema) == 0 {
+			// A strict tool needs the stricter default, or the provider
+			// refuses a schema AEGIS invented rather than one the caller sent.
 			schema = emptyObjectSchema
+			if strict {
+				schema = emptyStrictObjectSchema
+			}
 		}
 		out = append(out, anthropicTool{
 			Name:        t.Function.Name,

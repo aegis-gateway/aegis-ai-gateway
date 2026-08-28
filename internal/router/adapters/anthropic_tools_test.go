@@ -578,7 +578,9 @@ func TestAnthropicTools_AdjacencyGapsAreRefused(t *testing.T) {
 // are scanned text, so quoting either in a refusal reproduces the leak that
 // "keep scanned values out of validation error labels" removed from the
 // validator: a correlator holding a credential would come back in a 400 and be
-// logged, and the refusal happens before the filter chain ever sees it.
+// logged. Unlike a validation error it is built after the filter chain, so a
+// quoted value has been scanned; ids and names stay out because a position is
+// equally actionable.
 //
 // Every refusal this translation can produce is driven with sentinel values in
 // every scanned tool field, and the resulting message must contain none of them.
@@ -731,5 +733,47 @@ func TestStrictSchemaWalk_NamesTheOffendingPath(t *testing.T) {
 	want := "parameters.properties.outer.properties.inner"
 	if got != want {
 		t.Errorf("path = %q, want %q; a caller needs to know which object to fix", got, want)
+	}
+}
+
+// TestStrictToolWithNoParameters covers a regression.
+//
+// input_schema is required, so a tool declaring no parameters gets a default
+// schema AEGIS invents. The nested-object check made that default reachable
+// with strict set: the walk returns nothing for an absent schema, so the check
+// passed, and the plain default was then forwarded without
+// additionalProperties:false, which the provider refuses.
+//
+// Completing AEGIS's own default is not the schema rewriting this package
+// declines to do. There is no caller schema; the caller declared no parameters,
+// and this encodes exactly that. Probed: with the setting, 200; without, 400.
+func TestStrictToolWithNoParameters(t *testing.T) {
+	t.Parallel()
+
+	tools, err := toAnthropicTools([]types.Tool{{
+		Type:     types.ToolTypeFunction,
+		Function: types.FunctionDef{Name: "f", Strict: boolPtr(true)},
+	}})
+	if err != nil {
+		t.Fatalf("a strict tool with no parameters was refused: %v\n"+
+			"There is nothing wrong with declaring a strict tool that takes no arguments", err)
+	}
+	raw, _ := json.Marshal(tools[0].InputSchema)
+	if !strings.Contains(string(raw), `"additionalProperties":false`) {
+		t.Errorf("the synthesised schema is %s, which the provider refuses for a strict tool", raw)
+	}
+
+	// A non-strict tool must keep the permissive default: adding the setting
+	// there would forbid extra properties the caller never said to forbid.
+	plain, err := toAnthropicTools([]types.Tool{{
+		Type:     types.ToolTypeFunction,
+		Function: types.FunctionDef{Name: "f"},
+	}})
+	if err != nil {
+		t.Fatalf("a plain tool with no parameters was refused: %v", err)
+	}
+	if strings.Contains(string(plain[0].InputSchema), "additionalProperties") {
+		t.Error("a non-strict tool's default schema gained additionalProperties; that forbids " +
+			"properties the caller never said to forbid")
 	}
 }
