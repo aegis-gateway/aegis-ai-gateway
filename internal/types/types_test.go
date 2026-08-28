@@ -237,6 +237,8 @@ func TestTextSegments_ScansToolNames(t *testing.T) {
 		Tools: []Tool{{
 			Function: FunctionDef{Name: awsKey, Description: "harmless"},
 		}},
+		// tool_choice's object form is the third place a name appears.
+		ToolChoice: ToolChoice{Function: awsKey},
 	}
 
 	var names []string
@@ -245,13 +247,34 @@ func TestTextSegments_ScansToolNames(t *testing.T) {
 			names = append(names, string(seg.Kind))
 		}
 	}
-	if len(names) != 2 {
-		t.Fatalf("expected the key to appear as scannable text in both the tool "+
-			"definition name and the tool-call name; got %d segment(s): %v", len(names), names)
+	if len(names) != 3 {
+		t.Fatalf("expected the key to appear as scannable text in all three places a tool "+
+			"name occurs — the definition, the call, and tool_choice; got %d segment(s): %v",
+			len(names), names)
 	}
 	for _, k := range names {
 		if k != string(SegmentToolName) {
 			t.Errorf("name segment has kind %q, want %q", k, SegmentToolName)
 		}
 	}
+}
+
+// TestTextSegments_ScansParticipantName covers the message-level `name` field.
+// The adapters pass req.Messages straight through, and Message.Name marshals as
+// "name", so it egresses with the rest of the message — but like a tool name it
+// read as routing metadata and nothing scanned it.
+func TestTextSegments_ScansParticipantName(t *testing.T) {
+	const awsKey = "AKIAIOSFODNN7EXAMPLE"
+
+	req := &AegisRequest{
+		Messages: []Message{{Role: "user", Name: awsKey, Content: Content{Str: "hello"}}},
+	}
+
+	for _, seg := range req.TextSegments() {
+		if seg.Text == awsKey && seg.Kind == SegmentParticipantName {
+			return
+		}
+	}
+	t.Error("messages[].name is not scannable: a credential there reaches the provider " +
+		"unfiltered, since the adapters marshal the message wholesale")
 }

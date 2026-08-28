@@ -465,6 +465,19 @@ func segmentField(msgIndex int, seg types.TextSegment) string {
 		return fmt.Sprintf("messages[%d].content[%s].text", msgIndex, seg.Ref)
 	case types.SegmentToolCallArguments:
 		return fmt.Sprintf("messages[%d].tool_calls[%s].function.arguments", msgIndex, seg.Ref)
+	case types.SegmentParticipantName:
+		return fmt.Sprintf("messages[%d].name", msgIndex)
+	case types.SegmentToolName:
+		// Tool names come from three places; MessageIndex distinguishes them.
+		if msgIndex < 0 {
+			if seg.Ref == "tool_choice" {
+				return "tool_choice.function.name"
+			}
+			return fmt.Sprintf("tools[%s].function.name", seg.Ref)
+		}
+		return fmt.Sprintf("messages[%d].tool_calls[%s].function.name", msgIndex, seg.Ref)
+	case types.SegmentToolDefinition:
+		return fmt.Sprintf("tools[%s].function", seg.Ref)
 	default:
 		return fmt.Sprintf("messages[%d].content", msgIndex)
 	}

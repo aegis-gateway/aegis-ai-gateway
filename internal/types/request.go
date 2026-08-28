@@ -110,6 +110,12 @@ const (
 	// access key id verbatim. Treating a name as unscannable metadata let a
 	// credential egress through the one field the filters never looked at.
 	SegmentToolName SegmentKind = "tool_name"
+	// SegmentParticipantName is a message's optional `name` field. Like a tool
+	// name it looked like routing metadata, and like a tool name it is
+	// client-supplied text marshalled straight through to the provider — the
+	// adapters pass req.Messages wholesale, so `name` egresses with the rest of
+	// the message while nothing scanned it.
+	SegmentParticipantName SegmentKind = "participant_name"
 )
 
 // TextSegment is one text-bearing element of a request, with enough context to
@@ -166,6 +172,12 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 		}
 	}
 
+	if m.Name != "" {
+		segs = append(segs, TextSegment{
+			Kind: SegmentParticipantName, MessageIndex: msgIndex, Ref: "name", Text: m.Name,
+		})
+	}
+
 	for _, tc := range m.ToolCalls {
 		if tc.Function.Name != "" {
 			segs = append(segs, TextSegment{
@@ -215,6 +227,17 @@ func (r *AegisRequest) TextSegments() []TextSegment {
 			})
 		}
 	}
+
+	// tool_choice in its object form names a function, and that name is
+	// marshalled to the provider like any other. It is the third place a tool
+	// name can appear — after the definitions and the calls above — and a
+	// credential placed only here would egress with nothing having read it.
+	if r.ToolChoice.Function != "" {
+		segs = append(segs, TextSegment{
+			Kind: SegmentToolName, MessageIndex: -1, Ref: "tool_choice", Text: r.ToolChoice.Function,
+		})
+	}
+
 	return segs
 }
 
