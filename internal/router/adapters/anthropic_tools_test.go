@@ -456,3 +456,208 @@ func TestModelIsReplacedBeforeDispatch(t *testing.T) {
 			"substitution the client's own string reaches the provider unscanned")
 	}
 }
+
+// TestAnthropicTools_StrictReachesTheWire pins the flag itself rather than the
+// presence of the tools array. Validating strict against the schema and then
+// dropping it forwards a request the provider runs unenforced, and reports
+// success for a tool the caller asked to have enforced.
+func TestAnthropicTools_StrictReachesTheWire(t *testing.T) {
+	t.Parallel()
+	body := transform(t, &types.AegisRequest{
+		Model: "m", Messages: []types.Message{userMsg("hi")},
+		Tools: []types.Tool{{Type: types.ToolTypeFunction, Function: types.FunctionDef{
+			Name: "f", Strict: boolPtr(true),
+			Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		}}},
+	})
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools not forwarded: %v", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	strict, present := tool["strict"]
+	if !present {
+		t.Fatal("strict was validated and then dropped, so the provider runs the tool " +
+			"unenforced while the caller believes it is enforced")
+	}
+	if strict != true {
+		t.Errorf("strict reached the wire as %v, want true", strict)
+	}
+}
+
+// TestAnthropicTools_StrictAbsentWhenNotAsked is the negative control: a tool
+// that never set strict must not gain it.
+func TestAnthropicTools_StrictAbsentWhenNotAsked(t *testing.T) {
+	t.Parallel()
+	body := transform(t, &types.AegisRequest{
+		Model: "m", Messages: []types.Message{userMsg("hi")}, Tools: []types.Tool{testTool},
+	})
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools not forwarded: %v", body["tools"])
+	}
+	if tool, _ := tools[0].(map[string]any); tool["strict"] != nil {
+		t.Errorf("strict appeared on a tool that did not ask for it: %v", tool["strict"])
+	}
+}
+
+// TestAnthropicTools_AdjacencyGapsAreRefused covers the two interleavings the
+// first version of the adjacency check let through. Both are valid OpenAI and
+// both are refused by the provider, so letting them past produces an opaque
+// provider 400 instead of the named refusal.
+func TestAnthropicTools_AdjacencyGapsAreRefused(t *testing.T) {
+	t.Parallel()
+	a := NewAnthropicAdapter(config.ProviderConfig{BaseURL: "http://anthropic.invalid/v1"}, nil)
+
+	callTurn := types.Message{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+		{ID: "call_a", Function: types.FunctionCallSpec{Name: "f", Arguments: `{}`}},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		msgs []types.Message
+		want string
+	}{
+		{
+			// An assistant turn with no tool_calls used to clear the pending
+			// set instead of refusing, so this reached the provider.
+			name: "assistant turn between a call and its result",
+			msgs: []types.Message{
+				userMsg("hi"), callTurn,
+				{Role: types.RoleAssistant, Content: types.TextContent("thinking out loud")},
+				{Role: types.RoleTool, ToolCallID: "call_a", Content: types.TextContent("r")},
+			},
+			want: "comes between",
+		},
+		{
+			// A conversation that simply ends after an assistant turn that
+			// followed the call. The call is never answered.
+			name: "assistant turn ends the conversation with the call unanswered",
+			msgs: []types.Message{
+				userMsg("hi"), callTurn,
+				{Role: types.RoleAssistant, Content: types.TextContent("never answered it")},
+			},
+			want: "comes between",
+		},
+		{
+			// An extra result alongside a valid one. The old check only asked
+			// whether every call was answered, never whether every result
+			// answered a call.
+			name: "extra tool result mixed in with a valid one",
+			msgs: []types.Message{
+				userMsg("hi"), callTurn,
+				{Role: types.RoleTool, ToolCallID: "call_a", Content: types.TextContent("r")},
+				{Role: types.RoleTool, ToolCallID: "call_ghost", Content: types.TextContent("r")},
+			},
+			want: "answers none",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := a.TransformRequest(context.Background(),
+				&types.AegisRequest{Model: "m", Messages: tc.msgs})
+			if err == nil {
+				t.Fatal("accepted an interleaving the provider refuses; it would reach the " +
+					"provider and come back as an opaque 400")
+			}
+			var u *UnmappableError
+			if !errors.As(err, &u) {
+				t.Fatalf("error %v is not an UnmappableError", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not explain the problem (looking for %q)", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnmappableConstructsAreNeverScannedText is the counterpart of
+// TestSegmentRefsAreNeverScannedText in internal/types.
+//
+// An UnmappableError's Construct and Detail are interpolated into the client
+// response body and into a structured log line. A tool call id and a tool name
+// are scanned text, so quoting either in a refusal reproduces the leak that
+// "keep scanned values out of validation error labels" removed from the
+// validator: a correlator holding a credential would come back in a 400 and be
+// logged, and the refusal happens before the filter chain ever sees it.
+//
+// Every refusal this translation can produce is driven with sentinel values in
+// every scanned tool field, and the resulting message must contain none of them.
+func TestUnmappableConstructsAreNeverScannedText(t *testing.T) {
+	t.Parallel()
+	a := NewAnthropicAdapter(config.ProviderConfig{BaseURL: "http://anthropic.invalid/v1"}, nil)
+
+	// Each sentinel stands in for a credential a caller could have put in that
+	// field. None may appear in a refusal.
+	const (
+		callID   = "SENTINEL_CALL_ID"
+		callName = "SENTINEL_CALL_NAME"
+		toolName = "SENTINEL_TOOL_NAME"
+		toolDesc = "SENTINEL_TOOL_DESCRIPTION"
+		toolPar  = "SENTINEL_TOOL_PARAMS"
+		resultID = "SENTINEL_RESULT_ID"
+	)
+	sentinels := []string{callID, callName, toolName, toolDesc, toolPar, resultID}
+
+	sentinelTool := types.Tool{Type: types.ToolTypeFunction, Function: types.FunctionDef{
+		Name: toolName, Description: toolDesc, Strict: boolPtr(true),
+		Parameters: json.RawMessage(`{"type":"object","properties":{"` + toolPar + `":{"type":"string"}}}`),
+	}}
+	callTurn := types.Message{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+		{ID: callID, Function: types.FunctionCallSpec{Name: callName, Arguments: `{}`}},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		req  *types.AegisRequest
+	}{
+		{"strict without additionalProperties", &types.AegisRequest{Model: "m",
+			Tools: []types.Tool{sentinelTool}, Messages: []types.Message{userMsg("hi")}}},
+		{"result answering no call", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"),
+			{Role: types.RoleTool, ToolCallID: resultID, Content: types.TextContent("r")},
+		}}},
+		{"extra result alongside a valid one", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"), callTurn,
+			{Role: types.RoleTool, ToolCallID: callID, Content: types.TextContent("r")},
+			{Role: types.RoleTool, ToolCallID: resultID, Content: types.TextContent("r")},
+		}}},
+		{"call never answered", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"), callTurn,
+		}}},
+		{"user turn between call and result", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"), callTurn, userMsg("interrupting"),
+			{Role: types.RoleTool, ToolCallID: callID, Content: types.TextContent("r")},
+		}}},
+		{"assistant turn between call and result", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"), callTurn,
+			{Role: types.RoleAssistant, Content: types.TextContent("interrupting")},
+			{Role: types.RoleTool, ToolCallID: callID, Content: types.TextContent("r")},
+		}}},
+		{"arguments that are not JSON", &types.AegisRequest{Model: "m", Messages: []types.Message{
+			userMsg("hi"),
+			{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+				{ID: callID, Function: types.FunctionCallSpec{Name: callName, Arguments: "not json"}},
+			}},
+			{Role: types.RoleTool, ToolCallID: callID, Content: types.TextContent("r")},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := a.TransformRequest(context.Background(), tc.req)
+			if err == nil {
+				t.Fatal("expected a refusal; this case no longer exercises the invariant")
+			}
+			var u *UnmappableError
+			if !errors.As(err, &u) {
+				t.Fatalf("error %v is not an UnmappableError", err)
+			}
+			for _, s := range sentinels {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("refusal %q quotes scanned text %q. The message reaches the client "+
+						"response body and the log line, and the refusal happens before the "+
+						"filter chain, so a credential in that field would leak. Construct must "+
+						"be positional: an index, or the name of the field", err, s)
+				}
+			}
+		})
+	}
+}

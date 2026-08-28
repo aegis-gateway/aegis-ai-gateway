@@ -41,6 +41,13 @@ var ErrUnmappable = errors.New("construct cannot be expressed for this provider"
 
 // UnmappableError names the construct and says why, so the 400 a caller sees
 // tells them what to change.
+//
+// Construct is always positional: a message index, a tool index, or the name of
+// a field. It must never carry a scanned value. Both it and Detail are
+// interpolated into the client response body and into a structured log line,
+// and a tool call id is scanned text, so quoting one here would be the leak
+// that "keep scanned values out of validation error labels" removed from the
+// validator. TestUnmappableConstructsAreNeverScannedText enforces this.
 type UnmappableError struct {
 	Construct string
 	Detail    string
@@ -63,6 +70,13 @@ type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+
+	// Strict is carried through rather than dropped. The provider accepts the
+	// field alongside name/description/input_schema and enforces the schema
+	// behind it; omitting it from a request whose caller asked for strict
+	// would run the tool unenforced and report success, which is the silent
+	// drop this translation exists to remove.
+	Strict *bool `json:"strict,omitempty"`
 }
 
 // emptyObjectSchema is what a tool with no declared parameters gets.
@@ -101,6 +115,7 @@ func toAnthropicTools(tools []types.Tool) ([]anthropicTool, error) {
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			InputSchema: schema,
+			Strict:      t.Function.Strict,
 		})
 	}
 	return out, nil
@@ -235,7 +250,7 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 		case types.RoleTool:
 			if len(pendingCalls) == 0 {
 				return "", nil, &UnmappableError{
-					Construct: fmt.Sprintf("messages[%d] (role tool, tool_call_id %q)", i, m.ToolCallID),
+					Construct: fmt.Sprintf("messages[%d] (role tool)", i),
 					Detail: "the Anthropic Messages API requires every tool result to answer a tool " +
 						"call in the message immediately before it, and this result follows none",
 				}
@@ -243,8 +258,24 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 			// Gather this and any following tool results into one user turn.
 			var results []anthropicContentBlock
 			answered := map[string]bool{}
+			expected := make(map[string]bool, len(pendingCalls))
+			for _, id := range pendingCalls {
+				expected[id] = true
+			}
 			for i < len(msgs) && msgs[i].Role == types.RoleTool {
 				r := msgs[i]
+				// A result answering no call in the preceding assistant turn is
+				// refused here. The provider refuses an unexpected tool_use_id
+				// too, but as an opaque 400 that does not say which message to
+				// fix, and only once the orphan has already been forwarded.
+				if !expected[r.ToolCallID] {
+					return "", nil, &UnmappableError{
+						Construct: fmt.Sprintf("messages[%d] (role tool)", i),
+						Detail: "the Anthropic Messages API requires every tool result to answer a tool " +
+							"call in the message immediately before it, and this result's tool_call_id " +
+							"answers none of that message's calls",
+					}
+				}
 				results = append(results, anthropicContentBlock{
 					Type:      "tool_result",
 					ToolUseID: r.ToolCallID,
@@ -255,10 +286,10 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 			}
 			i-- // the outer loop increments
 
-			for _, id := range pendingCalls {
+			for n, id := range pendingCalls {
 				if !answered[id] {
 					return "", nil, &UnmappableError{
-						Construct: fmt.Sprintf("tool call %q", id),
+						Construct: fmt.Sprintf("tool_calls[%d] of the preceding assistant message", n),
 						Detail: "the Anthropic Messages API requires every tool call to be answered " +
 							"by a tool result in the message immediately after it, and this call is unanswered",
 					}
@@ -270,7 +301,18 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 
 		case types.RoleAssistant:
 			if len(m.ToolCalls) == 0 {
-				pendingCalls = nil
+				// An assistant turn between a tool call and its result breaks
+				// the same adjacency rule the default arm refuses below.
+				// Clearing pendingCalls here instead would let the interleaved
+				// conversation through to the provider as an opaque 400, or
+				// end the conversation with the call silently unanswered.
+				if len(pendingCalls) > 0 {
+					return "", nil, &UnmappableError{
+						Construct: fmt.Sprintf("messages[%d] (role %q)", i, m.Role),
+						Detail: "the Anthropic Messages API requires a tool result immediately after a " +
+							"tool call, and this message comes between them",
+					}
+				}
 				out = append(out, anthropicMessage{Role: m.Role, Content: m.Content.Flatten()})
 				continue
 			}
@@ -279,14 +321,14 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: text})
 			}
 			pendingCalls = pendingCalls[:0]
-			for _, tc := range m.ToolCalls {
+			for n, tc := range m.ToolCalls {
 				input := json.RawMessage(tc.Function.Arguments)
 				if len(input) == 0 {
 					input = json.RawMessage(`{}`)
 				}
 				if !json.Valid(input) {
 					return "", nil, &UnmappableError{
-						Construct: fmt.Sprintf("tool call %q arguments", tc.ID),
+						Construct: fmt.Sprintf("messages[%d].tool_calls[%d].function.arguments", i, n),
 						Detail: "the Anthropic Messages API carries tool call arguments as a JSON " +
 							"object, and these arguments are not valid JSON",
 					}
@@ -313,7 +355,7 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 
 	if len(pendingCalls) > 0 {
 		return "", nil, &UnmappableError{
-			Construct: fmt.Sprintf("tool call %q", pendingCalls[0]),
+			Construct: "tool_calls[0] of the final assistant message",
 			Detail: "the Anthropic Messages API requires every tool call to be answered by a tool " +
 				"result in the message immediately after it, and the conversation ends with it unanswered",
 		}

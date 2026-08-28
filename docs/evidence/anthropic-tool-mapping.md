@@ -29,8 +29,17 @@ tools.0.custom: For 'object' type, 'additionalProperties' must be explicitly set
 ```
 
 So `strict: true` maps, but only when the caller's schema already sets
-`additionalProperties: false`. A caller who sets `strict` without it gets a 400
-from the provider rather than from AEGIS.
+`additionalProperties: false`.
+
+The flag is forwarded on the tool object, alongside `name`, `description` and
+`input_schema`. Validating it against the schema and then dropping it would send
+a request the provider runs unenforced while the caller believes their schema is
+being enforced, which is a silent drop wearing the costume of a success.
+
+A caller who sets `strict` without `additionalProperties: false` is refused by
+AEGIS, naming the construct, before the request is sent. AEGIS will not add the
+keyword to the caller's schema, because the rewritten request is not the one
+they sent.
 
 ## 2. tool_choice
 
@@ -166,14 +175,19 @@ failure as a silent drop and harder to detect.
 1. **A tool call not immediately followed by its result.** Anthropic enforces
    adjacency; OpenAI does not. A conversation that interleaves anything between
    a `tool_calls` assistant turn and its `tool` result message is expressible in
-   OpenAI and rejected by Anthropic.
+   OpenAI and rejected by Anthropic. This includes a further assistant turn, not
+   only a user turn, and a conversation that simply ends with the call
+   unanswered.
 
 2. **A tool result with no matching call in the preceding turn.** OpenAI
-   tolerates an orphan `tool_call_id`; Anthropic refuses it.
+   tolerates an orphan `tool_call_id`; Anthropic refuses it. Checking only that
+   every call is answered is not enough: a run of results can answer every call
+   and still carry an extra one, so each result is checked against the calls of
+   the message before it.
 
-3. **`strict: true` without `additionalProperties: false`.** Accepted by AEGIS
-   today, refused by Anthropic. AEGIS cannot rewrite the caller's schema without
-   changing what they asked for.
+3. **`strict: true` without `additionalProperties: false`.** Refused by
+   Anthropic, and refused by AEGIS by name before dispatch. AEGIS cannot rewrite
+   the caller's schema without changing what they asked for.
 
 4. **`is_error` has no OpenAI equivalent.** In the Anthropic-to-OpenAI direction
    there is nowhere to put it: OpenAI signals tool failure in the result text.

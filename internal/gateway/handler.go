@@ -17,6 +17,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
@@ -308,6 +310,26 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Transform and send to provider
 	providerReq, err := adapter.TransformRequest(r.Context(), &aegisReq)
 	if err != nil {
+		// A construct the provider cannot express is the caller's input, not a
+		// gateway failure. Reporting it as a 500 tells an agent to retry a
+		// request that can never succeed, and hides the named refusal this
+		// translation exists to produce. The construct is positional by
+		// invariant, so neither the response nor this log line carries a
+		// scanned value.
+		var unmappable *adapters.UnmappableError
+		if errors.As(err, &unmappable) {
+			slog.Warn("request refused: construct cannot be expressed for this provider",
+				"request_id", reqID,
+				"provider", providerKey,
+				"adapter", adapter.Name(),
+				"construct", unmappable.Construct,
+			)
+			httputil.WriteError(w, reqID, http.StatusBadRequest,
+				"invalid_request_error", "unmappable_for_provider",
+				unmappable.Construct+": "+unmappable.Detail,
+			)
+			return
+		}
 		slog.Error("failed to transform request", "error", err, "provider", adapter.Name())
 		httputil.WriteInternalError(w, reqID, "Failed to prepare provider request")
 		return
