@@ -3,7 +3,7 @@
 Every refusal the gateway can return, what triggers it, and what to do about it.
 
 Verified against commit
-[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1).
+[`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a).
 Strings are quoted literally from source. Where a message is a format string, the
 literal template is given.
 

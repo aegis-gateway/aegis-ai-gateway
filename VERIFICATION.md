@@ -3,7 +3,7 @@
 Verification of every factual claim on the landing page and in `README.md` against the
 AEGIS gateway source.
 
-**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/ea72971186eb5c316966b065bf710f2d85f578b1)
+**Baseline commit:** [`0344929`](https://github.com/aegis-gateway/aegis-ai-gateway/tree/0344929a98dae0377c0c974412d2ecdcf460a42a)
 **Date:** 2026-08-23
 
 All permalinks pin that SHA. None point at `main`. Where a finding has since been fixed

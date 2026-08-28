@@ -3,7 +3,8 @@
 Things that are correct on a branch and wrong once a release is tagged.
 
 This list is short on purpose. It holds only the items that are **invisible to CI**,
-because anything CI can catch belongs in CI rather than here. Each entry says what to
+because anything CI can catch belongs in CI rather than here. Item 2 has since moved
+into CI and is kept below only as a record of what it was and how it resolved. Each entry says what to
 do, how to find every instance, and how to tell when it is done.
 
 Run through this before moving a tag, not after.
@@ -72,57 +73,26 @@ names.
 
 ---
 
-## 2. Reconcile SHA labels with the commits they link to
+## 2. ~~Reconcile SHA labels with the commits they link to~~ (now enforced by CI)
 
-**What.** A citation written as ``[`0344929`](https://…/tree/ea72971…)`` displays one commit
-and links to another. A reader trusts the label, so the two disagreeing misstates the
-evidence in the same way a dead link does. This happens on a re-pin: the href is
-updated and the label is left behind.
+`scripts/check-citations.sh` compares a SHA-shaped label against the commit in its
+own href and fails on a mismatch, so this no longer needs remembering.
 
-**`scripts/check-citations.sh` does not catch this.** It compares a `file.go:152-165`
-label against its own `#L152-L165` anchor, and it verifies the href commit resolves and
-is not a branch or a tag. It does not compare a **SHA-shaped label** against the commit
-in its own href, so these pass review looking checked.
+Kept as a record of what it was, because the resolution was the opposite of the
+obvious one. Four citations displayed one commit and linked to another, left that way
+by a bulk re-pin that moved every href to the release commit. The instinct is to fix
+the labels to match the links. That would have been wrong: in all four the **label**
+was the load-bearing fact and the **href** was what had moved.
 
-**Find them.**
+> `VERIFICATION.md`: "Baseline commit: `0344929`", dated one day after that commit.
+> `docs/COMPLIANCE-MAPPING.md`: "Verified against commit `c74fa7a`, which is the
+> commit that introduces the audit read API."
 
-```bash
-python3 - <<'PY'
-import re, glob
-pat = re.compile(r'\[`([0-9a-f]{7,40})`\]\('
-                 r'https://github\.com/aegis-gateway/aegis-ai-gateway/(?:tree|blob|raw)/([0-9a-f]{40})')
-for d in sorted(glob.glob('**/*.md', recursive=True)):
-    if d.startswith('.git'):
-        continue
-    for i, line in enumerate(open(d, errors='ignore'), 1):
-        for label, href in pat.findall(line):
-            if not href.startswith(label):
-                print(f"{d}:{i}  label={label}  href={href[:7]}")
-PY
-```
+Rewriting those labels to the release commit would have turned four true statements
+into false ones. The hrefs were repointed at the commits their sentences name instead.
 
-**Currently outstanding.** Four, all linking to `ea72971` under two different stale
-labels:
-
-| File | Label shown | Commit linked |
-|------|-------------|---------------|
-| `VERIFICATION.md:6` | `0344929` | `ea72971` |
-| `docs/evidence/known-limitations.md:8` | `0344929` | `ea72971` |
-| `docs/reference/deny-reasons.md:6` | `0344929` | `ea72971` |
-| `docs/COMPLIANCE-MAPPING.md:9` | `c74fa7a` | `ea72971` |
-
-Both labels name real commits, which is why nothing has flagged them: every link
-resolves, and every link resolves to a commit other than the one printed next to it.
-
-**Done when.** The script above returns nothing.
-
-**Better than doing this by hand.** This check is mechanical, and a mechanical check
-kept in a document is a check that eventually stops running. Folding it into
-`scripts/check-citations.sh` would move item 2 off this list permanently. It has not
-been done yet because the four rows above would fail CI the moment it landed, so the
-labels have to be reconciled in the same change.
-
----
+The general lesson, worth keeping when the next bulk re-pin happens: a commit in a
+citation is sometimes a pin and sometimes a fact. A re-pin may only move the pins.
 
 ## Why this file exists rather than a comment in `VERIFICATION.md`
 
