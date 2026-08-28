@@ -202,6 +202,7 @@ These are not style preferences.
 
 1. **Never claim a capability the code lacks, and never omit one it has.** This repository has shipped both errors.
 2. **Every capability claim cites a package path, file, or test name.** Absolute links into this repository pin a full 40-character commit. Never link to `main`, and never to a tag: a tag can be moved, and this repository has moved one. `./scripts/check-citations.sh` enforces this and runs in CI.
+   While a branch is open there is no merge commit to pin to, so a source citation written during development is repo-relative and is re-pinned at release. That re-pin, and the other citation task CI cannot see, are tracked in [docs/release-checklist.md](docs/release-checklist.md). Add a row there rather than relying on remembering.
 3. **Never name a competitor.** Frame the tension generically.
 4. **Never claim compliance.** Claim that AEGIS produces evidence relevant to a named article or control.
 5. **Do not build urgency on a regulatory deadline.**
