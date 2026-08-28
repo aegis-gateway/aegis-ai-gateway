@@ -265,34 +265,41 @@ a struct field.
 The refusal is asserted by `TestDecode_RejectsNonTextContentPart` and, through the
 full handler, by `TestChatCompletions_RefusesImageContentPart`.
 
-### 2.8 Tool calling works on OpenAI-compatible routes only
+### 2.8 Some tool-calling constructs cannot be expressed against Anthropic
 
-`tools`, `tool_choice`, `tool_calls`, `tool_call_id` and the `tool` role are carried
-end to end by the OpenAI adapter and by the mock. **The Anthropic adapter does not
-carry them.**
+Tool calling now works on every shipped alias. The Anthropic adapter translates the
+OpenAI tool surface in both directions, streaming included, against behaviour probed
+from the live Messages API rather than a remembered schema
+([the mapping](anthropic-tool-mapping.md) quotes the provider's own errors).
 
-The Anthropic Messages API expresses the same concepts in a different shape: a tool
-call is a `tool_use` content block rather than a `tool_calls` array, a tool result is
-a `tool_result` block on a user turn rather than a message with role `tool`, and in
-streaming the arguments arrive as `input_json_delta` fragments. Translating that is a
-piece of work this change did not do.
+What does not translate is refused by name rather than approximated, because an
+approximation is the same failure as a silent drop and harder to detect. Five
+constructs are legal OpenAI and are rejected with a 400 naming the construct:
 
-What it did do is make the gap loud. `adapters.ProviderAdapter` now declares
-`SupportsTools()`, and a request carrying any tool field routed to an adapter that
-reports false is refused before dispatch with HTTP 400 and
-`"code": "tools_unsupported_by_provider"`, naming the provider.
+1. **A tool call the conversation never answers.** Anthropic requires every
+   `tool_use` to be followed immediately by its `tool_result`.
+2. **Anything between a tool call and its result.** This is the one an agent is
+   most likely to hit: OpenAI tolerates an interleaved message, Anthropic does not,
+   so a conversation an OpenAI-backed agent built happily can be rejected when the
+   same conversation is replayed against an Anthropic route.
+3. **A tool result answering no call in the preceding turn.**
+4. **`strict: true` on a tool whose schema does not set `additionalProperties:
+   false`.** Anthropic requires it. AEGIS will not rewrite a caller's schema to
+   satisfy the provider, because the rewritten request is not the one they sent.
+5. **Tool call arguments that are not valid JSON.** OpenAI carries arguments as an
+   opaque string; Anthropic carries an object, so a malformed string has nowhere to go.
 
-**This matters for the shipped model table.** `aegis-fast`, `aegis-balanced` and
-`aegis-reasoning` all list an Anthropic provider first. With a real
-`ANTHROPIC_API_KEY` configured, a tool-bearing request to any of those aliases is
-refused rather than served. It is not refused under `AEGIS_MOCK_PROVIDER=true`,
-because the mock stands in for every provider and does carry tools.
+**What an operator should take from this.** The first three are properties of the
+conversation an agent constructs, not of the gateway's configuration, and an agent
+that switches between an OpenAI route and an Anthropic one may produce a history that
+only one of them accepts. That is a real portability limit between providers, and
+AEGIS surfaces it at the gateway with a named error rather than passing through an
+opaque provider 400.
 
-The alternative was to forward the request with its tools removed. That is precisely
-the defect this work exists to remove, relocated from the decoder to the adapter, so
-it was not on the table. An operator who needs tool calling today should route the
-alias to an OpenAI-compatible provider.
-
+**One thing this does not do.** `is_error` on a tool result has no OpenAI equivalent.
+Nothing is lost in the direction AEGIS translates, since it never sets the flag, but a
+tool failure signalled Anthropic-side cannot be represented if the ingress direction is
+ever added.
 ### 2.9 Streaming cost accuracy is bounded by what the provider volunteers
 
 Cost is computed from provider-reported usage, not from a local token estimate

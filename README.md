@@ -124,11 +124,20 @@ agent request without anything reporting a problem. The full field-by-field
 decision is in
 [docs/reference/request-field-support.md](docs/reference/request-field-support.md).
 
-Two limits are worth reading before pointing an agent at this: a non-text
+Tool calling works on every shipped alias, OpenAI-compatible and Anthropic
+alike. The Anthropic Messages API expresses tools differently (the schema under
+`input_schema`, a call as a `tool_use` content block, a result as a
+`tool_result` block on a user turn) and the gateway translates in both
+directions, streaming included. The mapping was established by probing the live
+API and is recorded with the provider's own error strings in
+[docs/evidence/anthropic-tool-mapping.md](docs/evidence/anthropic-tool-mapping.md).
+
+Two limits are worth reading before pointing an agent at this. A non-text
 content part (an image, audio, a file) is **refused**, because AEGIS cannot scan
-it and will not forward what it cannot inspect; and tool calling works on
-OpenAI-compatible routes only, so a tool-bearing request routed to Anthropic is
-refused rather than served without its tools. Both are in
+it and will not forward what it cannot inspect. And a handful of tool-calling
+constructs that are legal OpenAI cannot be expressed against Anthropic, chiefly
+a tool call that is not immediately followed by its result; those are refused by
+name rather than approximated. Both are in
 [known limitations](docs/evidence/known-limitations.md) §2.7 and §2.8.
 
 ### Model aliases
@@ -154,7 +163,7 @@ The audit trail establishes less than an evidence package usually wants it to. T
 - **A checkpoint attests event integrity, not policy provenance.** It proves a set of audit events existed, in that order, unaltered since sealing. It does not prove which version of `default.rego` or which gateway configuration was in force when they were produced. Nothing computes a configuration digest; the control plane protocol reserves `ConfigHash` and `PolicyBundles` and actively rejects any v1 submission that populates them ([ADR 0004](docs/adr/0004-reserved-fields-must-not-be-populated.md)).
 - **Requests are scanned; responses are not.** The filters run inbound. A secret in a model's output is not detected.
 - **Non-text content parts are refused, not filtered.** An image, audio or file part in a content array returns 400. AEGIS cannot read it, and it will not forward to a provider what no filter has inspected.
-- **Tool calling works on OpenAI-compatible routes only.** The Anthropic adapter does not carry tools, so a tool-bearing request routed to it is refused with 400 rather than served with its tools removed. Every shipped alias lists an Anthropic provider first.
+- **Some tool-calling constructs cannot be expressed against Anthropic.** The Messages API requires a tool call to be followed immediately by its result, which OpenAI does not; a conversation that interleaves anything between them is refused by name rather than approximated.
 - **The default policy bundle denies on alias, not on provider trust.** `input.request.provider_type` sees the adapter type rather than the configured provider name, so the `provider_type == "external"` deny rule in `configs/policies/default.rego` never fires.
 - **Zero-retention is enforced behaviourally, and only partly structurally.** There is no database constraint that makes a payload column impossible. The guarantee rests on the schema, the two tests above, and the typed column bounds, not on something the database itself refuses.
 - **Losing the Redis address is invisible on the health endpoint.** A Redis that is configured but unreachable fails closed, correctly. A Redis whose address was never configured fails open, and health reports that state the same way.

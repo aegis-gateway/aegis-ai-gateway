@@ -46,22 +46,18 @@ asserts every row below.
 | `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type":"function","function":{"name":…}}`. Any other value is refused |
 | `parallel_tool_calls` | Forwarded to the provider |
 
-### Accepted but not acted upon
+### Acted upon on every route
 
-Two fields are forwarded to an OpenAI-compatible provider and have no effect on any
-other route, because no other adapter can express them:
+`tool_choice` and `parallel_tool_calls` are honoured on OpenAI-compatible and
+Anthropic routes alike. They reach Anthropic in a different shape: `tool_choice`
+becomes one of `auto`, `any`, `tool` or `none`, and `parallel_tool_calls` becomes
+`disable_parallel_tool_use` *inside* `tool_choice` rather than a top-level field. See
+[the mapping](../evidence/anthropic-tool-mapping.md).
 
-| Field | Where it has no effect | Why |
-|-------|------------------------|-----|
-| `tool_choice` | Anthropic routes | The Anthropic adapter does not carry tools at all |
-| `parallel_tool_calls` | Anthropic routes | As above |
-
-In practice neither is reachable on an Anthropic route: a request carrying any tool
-field routed to a provider whose adapter reports `SupportsTools() == false` is refused
-before dispatch with `tools_unsupported_by_provider`, rather than forwarded with its
-tools removed. The rows are here because the general statement, "a field accepted on
-one route may be inert on another", is the kind of thing that should be written down
-once rather than rediscovered.
+A request carrying tool fields routed to a provider whose adapter cannot express them
+is still refused before dispatch with `tools_unsupported_by_provider`, rather than
+forwarded with its tools removed. No shipped provider is in that position today; the
+gate remains because the next adapter added might be.
 
 ### Content parts
 

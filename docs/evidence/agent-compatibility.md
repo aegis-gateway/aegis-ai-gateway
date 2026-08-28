@@ -24,18 +24,22 @@ accepted by the validator. Test 4 below now passes.
 Messages API at `POST /v1/messages`, and AEGIS exposes no such route. That is a
 separate piece of work, described under Subject B.
 
-**Two limits the fix deliberately did not paper over.**
+**Tool calling now works on every shipped alias.** The first version of this fix
+covered OpenAI-compatible routes only, which meant a tool request to `aegis-fast` with
+a real `ANTHROPIC_API_KEY` was refused, since every alias lists Anthropic first. The
+Anthropic adapter now translates the tool surface in both directions, streaming
+included. Verified against a live gateway on 2026-08-28: a two-turn agent loop on
+`aegis-fast`, routed to `claude-haiku-4-5`, issued a `read_file` call and completed.
 
-1. **Tool calling works on OpenAI-compatible routes only.** The Anthropic adapter does
-   not translate tools, so a tool-bearing request routed to it is **refused with HTTP
-   400**, not served without its tools. Every shipped alias lists an Anthropic provider
-   first, so with a real `ANTHROPIC_API_KEY` configured a tool request to `aegis-fast`
-   is refused. Under `AEGIS_MOCK_PROVIDER=true` it succeeds, because the mock carries
-   tools.
-2. **Non-text content parts are refused.** Widening `content` made image parts
-   expressible for the first time. They are rejected at decode rather than admitted,
-   because AEGIS cannot scan an image and will not forward to a provider what no filter
-   has read.
+**One limit the fix deliberately did not paper over.** Non-text content parts are
+refused. Widening `content` made image parts expressible for the first time. They are
+rejected at decode rather than admitted, because AEGIS cannot scan an image and will
+not forward to a provider what no filter has read.
+
+**And a portability limit worth knowing.** Five tool-calling constructs are legal
+OpenAI and cannot be expressed against Anthropic, chiefly a tool call that is not
+immediately followed by its result. They are refused by name rather than approximated.
+See [known limitations](known-limitations.md) §2.8.
 
 **And one thing that got stricter for everyone.** The gateway used to discard any
 request field it did not recognise. It now refuses them with a 400 naming the field.
@@ -217,15 +221,24 @@ covers it end to end, and `internal/filter/tool_surface_test.go` plants a canary
 credential in each surface and asserts both that the request is blocked and that the
 canary reaches neither the response body nor the audit logger.
 
-**Two refusals this test does not cover as passes.**
+**Verified against a live Anthropic-backed gateway**, 2026-08-28, not only in tests:
 
-- A tool-bearing request routed to the Anthropic adapter is **refused** with HTTP 400
-  and `tools_unsupported_by_provider`. The adapter does not translate Anthropic's
-  `tool_use` and `tool_result` content blocks, and forwarding the request without its
-  tools would be the original defect relocated rather than fixed. Every shipped alias
-  lists Anthropic first, so this is the common case with a real Anthropic key.
-- A non-text content part is refused with `unsupported_content_part`. See
-  [known limitations §2.7](known-limitations.md).
+| Check | Result |
+|---|---|
+| Two-turn agent loop on `aegis-fast` (routes to Anthropic) | tool call issued, result returned, final answer produced |
+| Streaming with prose before the call | tool call arrives at ordinal 0, arguments reassemble to valid JSON |
+| Credential in a tool call's arguments, a tool result, a tool definition, a tool call id, a stop sequence | all 451 |
+| Injection payload in a tool result | 451, injection filter |
+| Blocks written to `audit_events` (positive control) | 5 secrets, 1 injection |
+| Canaries anywhere in `pg_dump` | 0 |
+| Canaries in the gateway process log | 0 |
+
+The streaming row is the one that matters. Anthropic numbers every content block in
+one sequence and OpenAI numbers tool calls in their own, so prose before a call is what
+separates the two index spaces. The call still arrived at ordinal 0.
+
+**One refusal this test does not cover as a pass.** A non-text content part is refused
+with `unsupported_content_part`. See [known limitations §2.7](known-limitations.md).
 
 #### Test 5: Long context and many turns — PASSES (with caveats) ✅⚠️
 
@@ -341,14 +354,8 @@ Numbered as of 2026-08-27, after the tool-calling work landed.
 1. **~~Fix tool use for OpenAI-compatible agents~~. Done.** Landed on
    `feature/openai-tool-calling-support`. See Test 4 above.
 
-2. **Translate tools in the Anthropic adapter.** This is now the largest remaining gap
-   for Subject A, and closing the first one is what surfaced it. Every shipped alias
-   routes to Anthropic first, so a deployment with a real `ANTHROPIC_API_KEY` refuses
-   tool requests today. The work is contained: tool definitions to Anthropic's schema,
-   `tool_calls` to `tool_use` content blocks, `tool` messages to `tool_result` blocks on
-   a user turn, and `input_json_delta` accumulation in `TransformStreamChunk`. The
-   capability gate (`ProviderAdapter.SupportsTools`) is already in place, so the change
-   is to make it return true and mean it.
+2. **~~Translate tools in the Anthropic adapter~~. Done.** Landed on
+   `feature/anthropic-tool-translation`. `SupportsTools` returns true and means it.
 
 3. **Add `/v1/messages` Anthropic ingress (Subject B).** New route, ingress parser, and
    streaming translation. The expanded tool fields from step 1 were a prerequisite and
