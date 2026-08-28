@@ -113,15 +113,27 @@ curl -sS -N https://api.anthropic.com/v1/messages \
 echo "   event sequence:"
 grep -oE '"type":"[a-z_]+"' "$OUT/stream.txt" | sed 's/"type":"//;s/"//' | uniq -c | sed 's/^/     /'
 echo "   content_block_start blocks:"
-grep -o '"type":"content_block_start".*' "$OUT/stream.txt" | python3 -c "
+# The SSE payload is the whole `data:` line. Matching from the "type" key drops
+# the opening brace, so every json.loads below failed and this section printed
+# nothing at all, which is indistinguishable from a stream that carried no tool
+# blocks. Strip the `data: ` prefix and parse the object instead, and say so
+# when a line will not parse rather than swallowing it.
+grep '"type":"content_block_start"' "$OUT/stream.txt" | sed 's/^data: *//' | python3 -c "
 import sys,json
+seen=0
 for l in sys.stdin:
+    l=l.strip()
+    if not l: continue
     try: d=json.loads(l)
-    except Exception: continue
+    except Exception as e:
+        print(f\"     unparsed: {e}: {l[:120]}\")
+        continue
+    seen+=1
     cb=d.get('content_block',{})
-    print(f\"     index={d.get('index')} type={cb.get('type')} id={cb.get('id')} name={cb.get('name')} input={json.dumps(cb.get('input'))}\")"
+    print(f\"     index={d.get('index')} type={cb.get('type')} id={cb.get('id')} name={cb.get('name')} input={json.dumps(cb.get('input'))}\")
+if not seen: print('     (no content_block_start events found)')"
 echo "   input_json_delta fragments (first 8):"
-grep -o '"type":"input_json_delta".*' "$OUT/stream.txt" | head -8 | sed 's/^/     /'
+grep '"type":"input_json_delta"' "$OUT/stream.txt" | sed 's/^data: *//' | head -8 | sed 's/^/     /'
 echo "   indices seen on content_block_delta:"
 grep -o '"type":"content_block_delta"[^}]*' "$OUT/stream.txt" | grep -oE '"index":[0-9]+' | sort -u | sed 's/^/     /'
 
