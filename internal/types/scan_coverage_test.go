@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -424,5 +425,65 @@ func TestScanSurface_RawMessageIsTreatedAsText(t *testing.T) {
 	if len(got) != 1 || got[0] != "probe" {
 		t.Fatalf("json.RawMessage walked to %v, want [probe]. Tool parameter schemas ride in a "+
 			"json.RawMessage, and a walk that skips it would leave that field unclassified and unnoticed", got)
+	}
+}
+
+// TestSegmentRefsAreNeverScannedText enforces the invariant on TextSegment.Ref.
+//
+// Ref is interpolated into validation error labels by
+// internal/validation.segmentField, and those labels reach the client response
+// body and the structured log line. Validation runs before the filter chain, so
+// a Ref carrying scanned text copies a credential into both before anything has
+// looked for one.
+//
+// Ref used to carry the tool call id and the tool name. That was safe only
+// while neither was scanned. Once both became scanned text it was a leak, and
+// it was invisible because the fields involved were the ones this file had just
+// finished classifying as scanned.
+func TestSegmentRefsAreNeverScannedText(t *testing.T) {
+	t.Parallel()
+
+	req := &AegisRequest{
+		Stop: []string{"STOPTEXT"},
+		Tools: []Tool{{
+			Type: ToolTypeFunction,
+			Function: FunctionDef{
+				Name:        "TOOLNAME",
+				Description: "TOOLDESC",
+				Parameters:  json.RawMessage(`{"s":"TOOLPARAMS"}`),
+			},
+		}},
+		ToolChoice: ToolChoice{Function: "CHOSENTOOL"},
+		Messages: []Message{
+			{Role: RoleUser, Name: "PARTICIPANT", Content: PartsContent("PARTONE", "PARTTWO")},
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{
+				ID:       "CALLID",
+				Function: FunctionCallSpec{Name: "CALLEDTOOL", Arguments: `{"a":"ARGVALUE"}`},
+			}}},
+			{Role: RoleTool, ToolCallID: "RESULTID", Content: TextContent("RESULTTEXT")},
+		},
+	}
+
+	for _, seg := range req.TextSegments() {
+		if seg.Ref == "" {
+			continue
+		}
+		if seg.Ref == seg.Text {
+			t.Errorf("segment %s has Ref equal to its own scanned text (%q). Ref is interpolated "+
+				"into a validation error label that reaches the client and the log, so it must be "+
+				"positional: an index, or the name of the field", seg.Kind, seg.Ref)
+		}
+		// A Ref must be an index or a known field name, never a value carried
+		// from the request. Anything else is a value that got in.
+		if _, err := strconv.Atoi(seg.Ref); err == nil {
+			continue
+		}
+		switch seg.Ref {
+		case "name", "tool_call_id", "tool_choice":
+		default:
+			t.Errorf("segment %s has Ref %q, which is neither an index nor a known field name. "+
+				"If this is a value taken from the request it will be echoed into an error "+
+				"message; use the element's position instead", seg.Kind, seg.Ref)
+		}
 	}
 }
