@@ -502,6 +502,15 @@ func segmentField(msgIndex int, seg types.TextSegment) string {
 		return fmt.Sprintf("messages[%d].tool_calls[%s].function.name", msgIndex, seg.Ref)
 	case types.SegmentToolDefinition:
 		return fmt.Sprintf("tools[%s].function", seg.Ref)
+	case types.SegmentToolCallID:
+		// The correlator is the scanned text here, so it is deliberately not
+		// echoed back as the Ref label the way a tool call's other segments
+		// echo their id. Ref names which of the two correlator fields the
+		// value came from instead.
+		if seg.Ref == "tool_call_id" {
+			return fmt.Sprintf("messages[%d].tool_call_id", msgIndex)
+		}
+		return fmt.Sprintf("messages[%d].tool_calls[].id", msgIndex)
 	default:
 		return fmt.Sprintf("messages[%d].content", msgIndex)
 	}
