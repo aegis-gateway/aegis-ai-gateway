@@ -285,6 +285,13 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	// a fact that exists nowhere else.
 	toolCalls := newToolCallAccumulator()
 
+	// One transformer per stream. Anthropic's translation carries state for the
+	// life of a response (it maps content block indices onto tool call
+	// ordinals), and the adapter is shared across every concurrent request, so
+	// that state cannot live on the adapter. Adapters that need none get a
+	// passthrough wrapper around TransformStreamChunk.
+	transformer := adapters.NewStreamTransformerFor(adapter)
+
 	// A stream can end at any of six points below, including a timeout and a
 	// client disconnect. Attaching the reconstructed names on the way out
 	// rather than at each return means a path added later cannot forget to.
@@ -370,7 +377,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		case line := <-lineChan:
 			// Process chunk
-			if err := sh.processChunk(w, flusher, line, adapter, &metrics, toolCalls); err != nil {
+			if err := sh.processChunk(w, flusher, line, adapter, transformer, &metrics, toolCalls); err != nil {
 				slog.Error("error processing chunk", "error", err)
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
@@ -392,6 +399,7 @@ func (sh *StreamingHandler) processChunk(
 	flusher http.Flusher,
 	line string,
 	adapter adapters.ProviderAdapter,
+	transformer adapters.StreamTransformer,
 	metrics *StreamMetrics,
 	toolCalls *toolCallAccumulator,
 ) error {
@@ -414,8 +422,8 @@ func (sh *StreamingHandler) processChunk(
 		return nil
 	}
 
-	// Transform chunk through the adapter
-	transformed, err := adapter.TransformStreamChunk([]byte(data))
+	// Transform chunk through this stream's transformer
+	transformed, err := transformer.Transform([]byte(data))
 	if err != nil {
 		return fmt.Errorf("transform chunk failed: %w", err)
 	}

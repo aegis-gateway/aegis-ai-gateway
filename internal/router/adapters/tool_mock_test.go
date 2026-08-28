@@ -99,25 +99,22 @@ func TestOpenAIAdapter_OmitsAbsentToolChoice(t *testing.T) {
 	}
 }
 
-// TestAnthropicAdapter_DeclaresNoToolSupport pins the capability the handler's
-// fail-closed gate reads.
+// TestAnthropicAdapter_ForwardsTools replaces an earlier test that asserted the
+// opposite.
 //
-// If this ever flips to true without the adapter learning to translate tool_use
-// and tool_result content blocks, the gateway will resume silently stripping
-// tools from every request routed to Anthropic, which is the defect this work
-// removed.
-func TestAnthropicAdapter_DeclaresNoToolSupport(t *testing.T) {
+// That test existed to fire if anyone set SupportsTools to true without
+// teaching the adapter to translate, because the gateway would then resume
+// silently stripping tools from every request routed here. The translation now
+// exists, so the guard inverts: tools must actually reach the wire.
+func TestAnthropicAdapter_ForwardsTools(t *testing.T) {
 	t.Parallel()
 
 	a := NewAnthropicAdapter(config.ProviderConfig{}, nil)
-	if a.SupportsTools() {
-		t.Fatal("the Anthropic adapter reports tool support, but TransformRequest builds an " +
-			"anthropicRequestBody with no tools field. A tool-bearing request routed here " +
-			"would reach the provider stripped")
+	if !a.SupportsTools() {
+		t.Fatal("the Anthropic adapter reports no tool support, but it translates tools; the " +
+			"handler capability gate would refuse requests it can serve")
 	}
 
-	// The claim above is checked rather than asserted in prose: build a request
-	// carrying tools and confirm the outgoing body does not mention them.
 	httpReq, err := a.TransformRequest(context.Background(), &types.AegisRequest{
 		Model:    "claude-test",
 		Tools:    []types.Tool{{Type: types.ToolTypeFunction, Function: types.FunctionDef{Name: "read_file"}}},
@@ -127,8 +124,11 @@ func TestAnthropicAdapter_DeclaresNoToolSupport(t *testing.T) {
 		t.Fatalf("TransformRequest: %v", err)
 	}
 	body, _ := io.ReadAll(httpReq.Body)
-	if strings.Contains(string(body), "read_file") {
-		t.Error("the Anthropic adapter now forwards tools; SupportsTools must be updated to match")
+	if !strings.Contains(string(body), "read_file") {
+		t.Errorf("the tool did not reach the outgoing body: %s", body)
+	}
+	if !strings.Contains(string(body), "input_schema") {
+		t.Errorf("the tool has no input_schema, which the provider requires: %s", body)
 	}
 }
 
