@@ -104,18 +104,18 @@ var scanSurface = map[string]fieldRule{
 	// defines, validates, and matches against, so a secret cannot be smuggled
 	// in one and still route.
 	"AegisRequest.Model":                           {excluded, "an alias validated against configs/models.yaml; an unmatched value fails routing rather than reaching a provider", ""},
-	"AegisRequest.Stop":                            {excluded, "provider stop sequences, capped at four short strings by the validator and never part of the prompt", ""},
 	"AegisRequest.ProviderType":                    {excluded, "set from adapter.Name() after routing, never from the request body", ""},
 	"AegisRequest.ToolChoice.Mode":                 {excluded, `one of the literals "none", "auto" or "required"; the decoder refuses any other value`, ""},
 	"AegisRequest.Messages[].Role":                 {excluded, "one of a fixed set the validator enforces; an unknown role is a 400", ""},
-	"AegisRequest.Messages[].ToolCallID":           {excluded, "an opaque correlator the provider issued, echoed back to pair a result with its call", ""},
-	"AegisRequest.Messages[].ToolCalls[].ID":       {excluded, "an opaque correlator the provider issued", ""},
 	"AegisRequest.Messages[].ToolCalls[].Type":     {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
 	"AegisRequest.Tools[].Type":                    {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
 	"AegisRequest.Messages[].Content.Parts[].Type": {excluded, `must be the literal "text"; a part of any other type is refused at decode`, ""},
 
 	// Everything a client can put words into. Each must come back out of
 	// TextSegments, and the second test proves each does.
+	"AegisRequest.Stop":                                      {scanned, "", ""},
+	"AegisRequest.Messages[].ToolCallID":                     {scanned, "", ""},
+	"AegisRequest.Messages[].ToolCalls[].ID":                 {scanned, "", ""},
 	"AegisRequest.Messages[].Content.Str":                    {scanned, "", ""},
 	"AegisRequest.Messages[].Content.Parts[].Text":           {scanned, "", ""},
 	"AegisRequest.Messages[].Name":                           {scanned, "", ""},
