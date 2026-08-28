@@ -430,13 +430,26 @@ func TestControlCharInToolCallIDNamesTheRightField(t *testing.T) {
 			wantField: "messages[0].tool_call_id",
 		},
 		{
-			name: "null byte in tool_calls[].id",
+			// A second call, to prove the label carries the position rather
+			// than a fixed string. With an empty bracket both calls produced
+			// the same label and a caller could not tell which one to fix.
+			name: "null byte in the second tool call",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+					{ID: "call_ok", Type: types.ToolTypeFunction, Function: types.FunctionCallSpec{Name: "f"}},
+					{ID: "call_\x00bad", Type: types.ToolTypeFunction, Function: types.FunctionCallSpec{Name: "g"}},
+				}},
+			},
+			wantField: "messages[0].tool_calls[1].id",
+		},
+		{
+			name: "null byte in tool_calls[0].id",
 			messages: []types.Message{
 				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
 					{ID: "call_\x00abc", Type: types.ToolTypeFunction, Function: types.FunctionCallSpec{Name: "f"}},
 				}},
 			},
-			wantField: "messages[0].tool_calls[].id",
+			wantField: "messages[0].tool_calls[0].id",
 		},
 	}
 
@@ -452,6 +465,69 @@ func TestControlCharInToolCallIDNamesTheRightField(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("no validation error named %q; got %v", tt.wantField, errs)
+			}
+		})
+	}
+}
+
+// TestValidationErrorsDoNotEchoScannedValues is the reason the labels above are
+// positional.
+//
+// A validation error's full text goes to the client response body and to the
+// structured log line, and validation runs before the filter chain. So a label
+// built by interpolating a correlator or a tool name would copy a credential
+// into both, before anything had looked for one. The labels used to do exactly
+// that, which was safe only while those fields were not scanned text.
+func TestValidationErrorsDoNotEchoScannedValues(t *testing.T) {
+	const secret = "AKIAIOSFODNN7EXAMPLE"
+
+	validator := NewValidator(DefaultLimits(), nil)
+
+	// Each of these carries the secret in a field whose value used to become
+	// part of an error label, plus a control character elsewhere in the same
+	// element so that validation actually produces an error.
+	cases := []struct {
+		name string
+		req  *types.AegisRequest
+	}{
+		{
+			"secret in a tool call id",
+			&types.AegisRequest{
+				Model: "m",
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: types.TextContent("hi")},
+					{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{
+						ID:       "call_" + secret,
+						Type:     types.ToolTypeFunction,
+						Function: types.FunctionCallSpec{Name: "f", Arguments: "{\x00}"},
+					}}},
+				},
+			},
+		},
+		{
+			"secret in a tool name",
+			&types.AegisRequest{
+				Model: "m",
+				Tools: []types.Tool{{
+					Type:     types.ToolTypeFunction,
+					Function: types.FunctionDef{Name: secret},
+				}},
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: types.TextContent("hi\x00")},
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validator.Validate(tc.req)
+			if err == nil {
+				t.Fatal("expected a validation error; without one this proves nothing")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("the validation error echoes the credential back to the caller and into "+
+					"the log: %s", err.Error())
 			}
 		})
 	}

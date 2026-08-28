@@ -127,8 +127,18 @@ type TextSegment struct {
 	// MessageIndex is the index into Messages, or -1 for a request-level
 	// segment such as a tool definition.
 	MessageIndex int
-	// Ref names the element within the message: the tool call ID, the tool
-	// name, or the part index. Never the text itself.
+	// Ref locates the element within the message: an index, or the name of the
+	// field it came from.
+	//
+	// It is never a value that is itself scanned. Validation errors are built
+	// by interpolating Ref into a field label, and that label reaches both the
+	// client response body and the structured log, so a Ref carrying scanned
+	// text would copy a credential into both. It used to carry the tool call
+	// id and the tool name, which was safe only while neither was scanned;
+	// once they became scanned text it was a leak, and validation runs before
+	// the filter chain, so the leak fired before anything looked for a secret.
+	//
+	// TestSegmentRefsAreNeverScannedText enforces this.
 	Ref  string
 	Text string
 }
@@ -156,7 +166,7 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 	case ContentString:
 		if m.Content.Str != "" {
 			segs = append(segs, TextSegment{
-				Kind: kind, MessageIndex: msgIndex, Ref: m.ToolCallID, Text: m.Content.Str,
+				Kind: kind, MessageIndex: msgIndex, Text: m.Content.Str,
 			})
 		}
 	case ContentParts:
@@ -196,22 +206,22 @@ func (m Message) TextSegments(msgIndex int) []TextSegment {
 		})
 	}
 
-	for _, tc := range m.ToolCalls {
+	for i, tc := range m.ToolCalls {
 		if tc.ID != "" {
 			segs = append(segs, TextSegment{
-				Kind: SegmentToolCallID, MessageIndex: msgIndex, Ref: "tool_calls", Text: tc.ID,
+				Kind: SegmentToolCallID, MessageIndex: msgIndex, Ref: strconv.Itoa(i), Text: tc.ID,
 			})
 		}
 		if tc.Function.Name != "" {
 			segs = append(segs, TextSegment{
-				Kind: SegmentToolName, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Name,
+				Kind: SegmentToolName, MessageIndex: msgIndex, Ref: strconv.Itoa(i), Text: tc.Function.Name,
 			})
 		}
 		if tc.Function.Arguments == "" {
 			continue
 		}
 		segs = append(segs, TextSegment{
-			Kind: SegmentToolCallArguments, MessageIndex: msgIndex, Ref: tc.ID, Text: tc.Function.Arguments,
+			Kind: SegmentToolCallArguments, MessageIndex: msgIndex, Ref: strconv.Itoa(i), Text: tc.Function.Arguments,
 		})
 	}
 
@@ -232,21 +242,21 @@ func (r *AegisRequest) TextSegments() []TextSegment {
 	for i, m := range r.Messages {
 		segs = append(segs, m.TextSegments(i)...)
 	}
-	for _, t := range r.Tools {
-		name := t.Function.Name
-		if name != "" {
+	for i, t := range r.Tools {
+		idx := strconv.Itoa(i)
+		if t.Function.Name != "" {
 			segs = append(segs, TextSegment{
-				Kind: SegmentToolName, MessageIndex: -1, Ref: name, Text: name,
+				Kind: SegmentToolName, MessageIndex: -1, Ref: idx, Text: t.Function.Name,
 			})
 		}
 		if t.Function.Description != "" {
 			segs = append(segs, TextSegment{
-				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: t.Function.Description,
+				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: idx, Text: t.Function.Description,
 			})
 		}
 		if len(t.Function.Parameters) > 0 {
 			segs = append(segs, TextSegment{
-				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: name, Text: string(t.Function.Parameters),
+				Kind: SegmentToolDefinition, MessageIndex: -1, Ref: idx, Text: string(t.Function.Parameters),
 			})
 		}
 	}
