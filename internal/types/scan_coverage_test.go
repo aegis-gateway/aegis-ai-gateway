@@ -219,7 +219,7 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 	// One sentinel per scanned field, so a miss names the field that leaked
 	// rather than merely reporting that something did.
 	body := `{
-	  "model": "aegis-fast",
+	  "model": "SENTINEL-model-excluded",
 	  "stop": ["SENTINEL_stop_sequence"],
 	  "tools": [{
 	    "type": "function",
@@ -268,13 +268,36 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 		"AegisRequest.ToolChoice.Function":                       "SENTINEL_toolchoice_function",
 	}
 
+	// Excluded fields that can nonetheless hold arbitrary text get a sentinel
+	// too, and are asserted absent. This is the direction the test was missing.
+	//
+	// It was missing at the exact moment it mattered: a change moved Stop and
+	// both tool call correlators into TextSegments and added their sentinels,
+	// but left all three classified excluded, with the reasons that change had
+	// just rejected. Every test stayed green, because nothing compared an
+	// exclusion against what TextSegments actually emits. The map is the
+	// reviewable artifact of this file, and it documented the opposite of the
+	// behaviour for two commits.
+	excludedSentinels := map[string]string{
+		"AegisRequest.Model": "SENTINEL-model-excluded",
+	}
+
 	for path, rule := range scanSurface {
-		if rule.disposition != scanned {
-			continue
-		}
-		if _, ok := sentinels[path]; !ok {
-			t.Errorf("%s is classified scanned but the fixture plants no sentinel for it, so nothing "+
-				"here proves it is scanned. Add a sentinel to the fixture above", path)
+		switch rule.disposition {
+		case scanned:
+			if _, ok := sentinels[path]; !ok {
+				t.Errorf("%s is classified scanned but the fixture plants no sentinel for it, so nothing "+
+					"here proves it is scanned. Add a sentinel to the fixture above", path)
+			}
+			if _, ok := excludedSentinels[path]; ok {
+				t.Errorf("%s is classified scanned but appears in excludedSentinels", path)
+			}
+		case excluded, excludedRefusedByDecoder:
+			if _, ok := sentinels[path]; ok {
+				t.Errorf("%s is classified excluded, but the fixture plants a scanned-sentinel for it. "+
+					"The classification and the behaviour disagree, and the classification is what a "+
+					"reader reviews. Decide which is right and make both say it", path)
+			}
 		}
 	}
 
@@ -304,7 +327,19 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 			"TextSegments returned %d segment(s): %v", strings.Join(missing, "\n"), len(got), seen)
 	}
 
-	t.Logf("all %d scanned field(s) reached TextSegments across %d segment(s)", len(sentinels), len(got))
+	// The inverse. An excluded field whose value turns up in TextSegments means
+	// the map and the code disagree, and the map is what a reviewer reads.
+	for path, sentinel := range excludedSentinels {
+		if strings.Contains(haystack, sentinel) {
+			t.Errorf("%s is classified excluded but its value reached TextSegments. Either the field is "+
+				"client text and the classification is wrong, or the classification is right and "+
+				"something is scanning a field it need not. Both readings need a change, not a "+
+				"reclassification to whichever makes this pass", path)
+		}
+	}
+
+	t.Logf("all %d scanned field(s) reached TextSegments across %d segment(s); %d excluded field(s) stayed out",
+		len(sentinels), len(got), len(excludedSentinels))
 }
 
 // walkStringFields returns the Go field paths of every string-bearing field
