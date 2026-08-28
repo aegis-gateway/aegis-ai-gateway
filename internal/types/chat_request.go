@@ -167,7 +167,7 @@ var refusalReasons = map[string]string{
 	"user":                  "AEGIS derives the acting identity from the API key. A second, unverified identity in the body would appear in no audit record and gate no policy",
 	"safety_identifier":     "AEGIS derives the acting identity from the API key",
 	"prompt_cache_key":      "AEGIS does not manage provider-side prompt caching",
-	"stream_options":        "AEGIS does not forward streaming options. Usage in the stream is reported from whatever the provider sends unprompted",
+	"stream_options":        "the gateway sets this itself so a streamed request is priced, and a caller must not be able to switch its own spend tracking off. Usage is included in every stream regardless",
 	"functions":             "the deprecated functions API is not supported. Use tools",
 	"function_call":         "the deprecated function_call API is not supported. Use tool_choice",
 	"service_tier":          "AEGIS does not select a provider service tier",

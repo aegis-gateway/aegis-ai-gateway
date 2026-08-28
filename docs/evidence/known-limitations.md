@@ -300,29 +300,26 @@ opaque provider 400.
 Nothing is lost in the direction AEGIS translates, since it never sets the flag, but a
 tool failure signalled Anthropic-side cannot be represented if the ingress direction is
 ever added.
-### 2.9 Streaming cost accuracy is bounded by what the provider volunteers
+### 2.9 Streaming cost is recorded, and what still is not priced
 
-Cost is computed from provider-reported usage, not from a local token estimate
-(`internal/gateway/handler.go` reads `aegisResp.Usage`, which is populated from the
-provider's own `usage` block). Tool definitions consume input tokens, and because the
-count comes from the provider they are accounted for correctly with no work on the
-gateway's part. The same is true of tool call arguments and tool results.
+Cost comes from provider-reported usage rather than a local estimate, so tool
+definitions, tool call arguments and tool results are all accounted for with no work
+on the gateway's part.
 
-The exception is streaming. On a streamed response, usage is read from a usage-bearing
-chunk if the provider sends one. Some providers emit usage in a stream only when the
-client asks, via `stream_options: {"include_usage": true}`, and `stream_options` is
-refused (see [request field support](../reference/request-field-support.md)). So a
-streamed request may record zero tokens and therefore zero cost.
+Streaming used to be the exception, and badly: a streamed request recorded zero
+tokens and zero cost while the same request unstreamed recorded real figures. The
+daily spend budget is computed from those rows, so streamed traffic moved no budget
+at all. Both adapters now report usage on a stream, Anthropic from its native
+`message_start` and `message_delta` events and OpenAI because the gateway sets
+`stream_options` for itself.
 
-This is not new. Before this change `stream_options` was discarded silently and the
-outcome was identical; the difference is that the request now fails with a message
-rather than succeeding with an unpriced usage record. An operator relying on streaming
-spend data should treat a zero-token streaming usage record as missing data rather
-than as a free request, and should watch `aegis_requests_unpriced_total`.
-
-The only reason this is a limitation rather than a bug is that forwarding
-`stream_options` was outside the scope of the change that surfaced it. It is the
-narrowest piece of follow-up work this page records.
+**What is still not priced precisely.** Anthropic reports `cache_read_input_tokens`
+and `cache_creation_input_tokens` alongside the ordinary counts, and
+`cost.Calculator` can price cached input separately through `RequestDetails.CachedTokens`.
+The streaming path calls `CalculateSimple`, which has no cached-token parameter, so a
+cache read is currently priced at the full input rate. That overstates cost rather
+than understating it, which is the safer direction for a spend control, but it is not
+accurate and it is worth closing.
 
 ### 2.10 Tool names are not in the audit record
 

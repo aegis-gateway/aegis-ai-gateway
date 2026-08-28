@@ -79,6 +79,36 @@ type anthropicStreamTransformer struct {
 	toolOrdinal map[int]int
 	// nextOrdinal is the ordinal the next tool_use block will take.
 	nextOrdinal int
+
+	// Token counts, carried so the final chunk can report them.
+	//
+	// Anthropic reports usage natively: input_tokens on message_start, and both
+	// counts on message_delta. The gateway reads usage from a relayed chunk in
+	// the OpenAI shape, so an Anthropic stream that never emits one records
+	// zero tokens and therefore zero cost. That is not a reporting nicety: the
+	// daily spend budget is computed from these records, so a streamed request
+	// costing real money moved no budget at all.
+	inputTokens  int
+	outputTokens int
+
+	// model is the model the provider actually served, taken from
+	// message_start. The gateway reads it off a relayed chunk and uses it to
+	// look up pricing, so a stream that never carries one is priced at zero
+	// even when the token counts are right. Emitting usage without the model
+	// fixed half the problem and left the cost at zero.
+	model string
+}
+
+// anthropicUsage is the usage block, which appears in two different places.
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	// Cache counts are read but not yet used. CalculateSimple, which the
+	// streaming path calls, has no cached-token parameter; cost.Calculator
+	// does. Wiring that through would price cache reads correctly and is
+	// deliberately not done here.
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // anthropicStreamEvent is the subset of the event shape this translation reads.
@@ -98,6 +128,14 @@ type anthropicStreamEvent struct {
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
+
+	// message_start nests usage under message; message_delta carries it at the
+	// top level.
+	Message struct {
+		Model string         `json:"model"`
+		Usage anthropicUsage `json:"usage"`
+	} `json:"message"`
+	Usage anthropicUsage `json:"usage"`
 }
 
 func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
@@ -109,6 +147,17 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 	}
 
 	switch ev.Type {
+	case "message_start":
+		// Carries the served model and the input token count. Both are needed
+		// downstream: the counts to record spend, the model to price it.
+		if ev.Message.Model != "" {
+			t.model = ev.Message.Model
+		}
+		if ev.Message.Usage.InputTokens > 0 {
+			t.inputTokens = ev.Message.Usage.InputTokens
+		}
+		return nil, nil
+
 	case "content_block_start":
 		if ev.ContentBlock.Type != "tool_use" {
 			// A text block opening carries no delta a client needs.
@@ -125,9 +174,11 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 	case "content_block_delta":
 		switch ev.Delta.Type {
 		case "text_delta":
-			return json.Marshal(openAIStreamChunk{Choices: []openAIStreamChoice{{
-				Index: 0, Delta: openAIDelta{Content: ev.Delta.Text},
-			}}})
+			return json.Marshal(openAIStreamChunkWithUsage{
+				Model: t.model,
+				Choices: []openAIStreamChoice{{
+					Index: 0, Delta: openAIDelta{Content: ev.Delta.Text},
+				}}})
 		case "input_json_delta":
 			ordinal, ok := t.toolOrdinal[ev.Index]
 			if !ok {
@@ -144,18 +195,51 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		return nil, nil
 
 	case "message_delta":
+		// The final event: stop reason plus the settled token counts. Both are
+		// carried on one chunk, in the OpenAI shape, because that is what the
+		// gateway's usage extraction and every OpenAI client read.
+		if ev.Usage.InputTokens > 0 {
+			t.inputTokens = ev.Usage.InputTokens
+		}
+		if ev.Usage.OutputTokens > 0 {
+			t.outputTokens = ev.Usage.OutputTokens
+		}
 		finish := mapStopReason(ev.Delta.StopReason)
-		return json.Marshal(openAIStreamChunk{Choices: []openAIStreamChoice{{
-			Index: 0, Delta: openAIDelta{}, FinishReason: &finish,
-		}}})
+		chunk := openAIStreamChunkWithUsage{
+			Model:   t.model,
+			Choices: []openAIStreamChoice{{Index: 0, Delta: openAIDelta{}, FinishReason: &finish}},
+		}
+		if t.inputTokens > 0 || t.outputTokens > 0 {
+			chunk.Usage = &openAIUsage{
+				PromptTokens:     t.inputTokens,
+				CompletionTokens: t.outputTokens,
+				TotalTokens:      t.inputTokens + t.outputTokens,
+			}
+		}
+		return json.Marshal(chunk)
 
 	case "message_stop":
 		return []byte("[DONE]"), nil
 
 	default:
-		// message_start, content_block_stop, ping
+		// content_block_stop, ping
 		return nil, nil
 	}
+}
+
+// openAIStreamChunkWithUsage is the final chunk shape. Usage is a pointer so it
+// is absent rather than zero when the provider reported nothing, which keeps a
+// missing count distinguishable from a genuine zero.
+type openAIStreamChunkWithUsage struct {
+	Model   string               `json:"model,omitempty"`
+	Choices []openAIStreamChoice `json:"choices"`
+	Usage   *openAIUsage         `json:"usage,omitempty"`
+}
+
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // openAIToolCallDelta is a tool call fragment in OpenAI streaming shape. Index
