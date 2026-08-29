@@ -344,6 +344,17 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 	})
 }
 
+// UnconfiguredModel is recorded in place of a model name that is not a
+// configured alias.
+//
+// The model field on a denial is the one place a caller can choose what lands
+// in the sealed trail: the allowlist check runs before ResolveRoute, and
+// validation checks a model name's length and character set, not its existence.
+// Sealing the raw value would let anyone write up to 128 characters of their
+// own text into an immutable, exported record, which is the no-payload contract
+// broken through a field nobody thinks of as payload.
+const UnconfiguredModel = "(unconfigured)"
+
 // LogModelDenied records a request refused because the presenting API key's
 // model allowlist does not include the requested alias.
 //
@@ -355,8 +366,10 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 // would be the better long-term shape for CC6.1 evidence and is left as a
 // follow-up rather than introduced here.
 //
-// Model is a configured alias from models.yaml, never caller-supplied free
-// text: an unknown model is rejected by validation before this point.
+// The caller MUST pass a configured alias or UnconfiguredModel. This value is
+// sealed, and an unknown model name here is caller-controlled text: validation
+// does not check that a model exists, and this denial happens before
+// ResolveRoute would. See UnconfiguredModel.
 func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string) {
 	l.Log(Event{
 		RequestID:      requestID,

@@ -255,3 +255,50 @@ func TestListModelsAndChatCompletionsAgree(t *testing.T) {
 		}
 	}
 }
+
+// TestChatCompletions_DeniedUnknownModelIsNotSealedVerbatim is a zero-retention
+// test, not an allowlist one.
+//
+// The model field on an allowlist denial is the one place a caller chooses what
+// reaches the sealed audit trail. This check runs before ResolveRoute, and
+// validation checks a model name's length and character set rather than whether
+// it exists, so any syntactically valid string arrives here. Writing it to
+// audit_events.model let any caller holding a key with a non-empty allowlist
+// put up to 128 characters of their own text into an immutable, exported
+// record: the no-payload contract broken through a field nobody thinks of as
+// payload.
+//
+// Confirmed as a real violation before the fix, with the attacker string
+// appearing verbatim in the event.
+func TestChatCompletions_DeniedUnknownModelIsNotSealedVerbatim(t *testing.T) {
+	const attacker = "CALLER_CONTROLLED_TEXT_THAT_MUST_NEVER_BE_SEALED_0123456789"
+
+	spy := &modelDenialSpy{}
+	w := doAllowlistRequest(t, newAllowlistTestHandler(spy), attacker, []string{"aegis-fast"})
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got %d, want 403: an unconfigured model outside the allowlist is still a denial", w.Code)
+	}
+	if len(spy.denied) != 1 {
+		t.Fatalf("expected exactly 1 denial event, got %d", len(spy.denied))
+	}
+	if got := spy.denied[0].Model; got != audit.UnconfiguredModel {
+		t.Errorf("sealed model field = %q, want %q; caller-controlled text must not "+
+			"reach the audit trail", got, audit.UnconfiguredModel)
+	}
+}
+
+// The sentinel must not swallow real aliases: a denial for a configured model
+// still has to name it, or the trail cannot say which model was refused.
+func TestChatCompletions_DeniedConfiguredModelIsNamed(t *testing.T) {
+	spy := &modelDenialSpy{}
+	doAllowlistRequest(t, newAllowlistTestHandler(spy), "aegis-reasoning", []string{"aegis-fast"})
+
+	if len(spy.denied) != 1 {
+		t.Fatalf("expected exactly 1 denial event, got %d", len(spy.denied))
+	}
+	if got := spy.denied[0].Model; got != "aegis-reasoning" {
+		t.Errorf("sealed model field = %q, want the configured alias; the sentinel "+
+			"must not hide which model was refused", got)
+	}
+}

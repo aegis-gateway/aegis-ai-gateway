@@ -135,6 +135,15 @@ an `audit_events` row before any provider is selected. That row carries event ty
 recorded under the authentication event type, so a count of credential failures
 must filter on `reason` to exclude it.
 
+**The model name on that row is a configured alias or the literal `(unconfigured)`, never
+the caller's string.** The allowlist check runs before `ResolveRoute`, and validation checks
+a model name's length and character set rather than whether it exists, so an unrecognised
+name reaching that point is caller-controlled text. Sealing it verbatim would let anyone
+holding a key with a non-empty allowlist write up to 128 characters of their own content
+into the immutable, exported record. That was a real defect, found in review and fixed on
+2026-08-29; the unrecognised name remains in the process log, which is bounded and is not
+the attested record.
+
 Enforcement was added on 2026-08-29. Before that the field was populated and read
 only by `ListModels`, so it restricted what a key could see and not what it could
 use.

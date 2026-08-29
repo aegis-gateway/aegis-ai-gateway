@@ -204,8 +204,24 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"org_id", authInfo.OrganizationID,
 			"team_id", authInfo.TeamID,
 		)
+		// Only a CONFIGURED alias may be sealed.
+		//
+		// This check runs before ResolveRoute, and validation checks a model
+		// name's length and character set rather than its existence, so
+		// aegisReq.Model here is whatever the caller sent. Writing it to
+		// audit_events.model would let any caller holding a key with a
+		// non-empty allowlist put up to 128 characters of their own text into
+		// the sealed, exported trail: the no-payload contract broken through a
+		// field nobody thinks of as payload.
+		//
+		// The unknown name stays in the process log, which is bounded and not
+		// the attested record, so an operator can still see what was asked for.
+		deniedModel := aegisReq.Model
+		if _, configured := h.modelsCfg().Models[deniedModel]; !configured {
+			deniedModel = audit.UnconfiguredModel
+		}
 		if h.auditLogger != nil {
-			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, aegisReq.Model, r.RemoteAddr)
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, deniedModel, r.RemoteAddr)
 		}
 		httputil.WriteModelNotAllowedError(w, reqID,
 			"model "+aegisReq.Model+" is not permitted for this API key")
