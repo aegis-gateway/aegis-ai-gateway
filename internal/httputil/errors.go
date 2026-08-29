@@ -106,3 +106,9 @@ func WriteBudgetExceededError(w http.ResponseWriter, requestID, message string) 
 func WriteModelNotAllowedError(w http.ResponseWriter, requestID, message string) {
 	WriteError(w, requestID, http.StatusForbidden, "permission_error", "model_not_allowed", message)
 }
+
+// WriteGoneError refuses a route that existed, was documented, and has been
+// deliberately retired. 404 would read as a typo and invite a retry.
+func WriteGoneError(w http.ResponseWriter, requestID, message string) {
+	WriteError(w, requestID, http.StatusGone, "invalid_request_error", "endpoint_retired", message)
+}

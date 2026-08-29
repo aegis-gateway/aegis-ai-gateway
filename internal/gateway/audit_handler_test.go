@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
@@ -139,13 +140,43 @@ func TestAuditHandler_AcceptsValidParameters(t *testing.T) {
 	}
 }
 
-func TestAuditHandler_LogsSharesParameterHandling(t *testing.T) {
+// GET /aegis/v1/audit/logs is retired. It returned an empty list for its whole
+// life, because nothing has ever written audit_logs, and it emitted a full
+// 21-column CSV header first, so an export looked like a working feature
+// reporting no activity.
+//
+// It no longer validates query parameters: the arguments of a retired endpoint
+// are not worth an opinion. The replacement assertion is that it is gone, and
+// that it says where to go instead, since a 410 whose body does not name the
+// successor leaves the caller to guess.
+func TestAuditHandler_LogsIsRetired(t *testing.T) {
+	for _, query := range []string{"", "?format=csv", "?format=xml"} {
+		t.Run("logs"+query, func(t *testing.T) {
+			h := NewAuditHandler(nil)
+			w := httptest.NewRecorder()
+			h.Logs(w, newAuditRequest(t, "/aegis/v1/audit/logs"+query, orgAuth()))
+
+			if w.Code != http.StatusGone {
+				t.Fatalf("got %d, want 410: the endpoint is retired", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "/aegis/v1/audit/events") {
+				t.Errorf("the 410 body does not name the successor endpoint: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// The retirement must not open the route up. A retired endpoint that answers
+// before checking the caller is a smaller mistake than a live one, but it is
+// still a change in access posture made as a side effect.
+func TestAuditHandler_RetiredLogsStillRefusesUnauthenticated(t *testing.T) {
 	h := NewAuditHandler(nil)
 	w := httptest.NewRecorder()
-	h.Logs(w, newAuditRequest(t, "/aegis/v1/audit/logs?format=xml", orgAuth()))
+	req := httptest.NewRequest(http.MethodGet, "/aegis/v1/audit/logs", nil)
+	h.Logs(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected /logs to validate format too, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("an unauthenticated caller got %d, want 401", w.Code)
 	}
 }
 

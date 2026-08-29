@@ -1,3 +1,22 @@
+-- DEPRECATED, and unwritten since it was created.
+--
+-- No component in this repository inserts into audit_logs. A repository-wide
+-- search finds it only in this migration, in internal/audit/reader.go, and in
+-- the purge code. The per-request decision record lives in audit_events, which
+-- is what the sealer covers.
+--
+-- GET /aegis/v1/audit/logs was retired on 2026-08-29 and now returns 410 Gone
+-- pointing at /aegis/v1/audit/events. It had always returned an empty list,
+-- behind a full 21-column CSV header, so an export read as "no activity"
+-- rather than "this does not work".
+--
+-- The table is deliberately still here. Purge, the schema guard and migration
+-- history all reference it, and dropping it is a separate and riskier change.
+-- Removal is tracked in docs/evidence/known-limitations.md section 2.11.
+--
+-- Do not start writing this table to fix something. Add to audit_events, which
+-- is sealed; audit_logs is not.
+
 CREATE TABLE audit_logs (
     id              BIGSERIAL PRIMARY KEY,
     request_id      VARCHAR(50) NOT NULL UNIQUE,

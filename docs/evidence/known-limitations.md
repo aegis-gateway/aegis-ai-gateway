@@ -365,3 +365,30 @@ and requires `hash_schema_version=3`, and the verifier deliberately computes one
 set. Spending that on additive metadata is a bad trade. The decision, the three
 rejected alternatives, and the specific thing to watch for are recorded in
 [ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md), and the bump itself is tracked on [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38).
+
+### 2.11 `audit_logs` still exists and is still never written
+
+`audit_logs` is created by migration `002_create_audit_logs` and **nothing has ever
+inserted into it**. A repository-wide search finds the table in that migration, in
+`internal/audit/reader.go`, and in the purge code, and nowhere else. The per-request
+decision record lives in `audit_events`, which is the table the sealer covers.
+
+`GET /aegis/v1/audit/logs` was retired on 2026-08-29 and now returns **410 Gone** with a
+body naming `GET /aegis/v1/audit/events` as the replacement. Until then it returned an
+empty list, and in `?format=csv` it emitted a full 21-column header before the empty
+body, so an operator exporting the decision record received a well-formed file with no
+rows. That reads as "no activity in this window", which is a worse failure than an error:
+it answers the question incorrectly instead of declining to answer.
+
+The endpoint still authenticates and still refuses an unscoped or sentinel-organization
+key, unchanged. Nothing behind it reads a row, so scoping has nothing left to protect,
+but the access check was kept rather than dropped as a side effect of the deprecation.
+
+**Removal is pending and is not scheduled here.** The table stays because purge, the
+schema guard and migration history all reference it, and dropping it is a separate change
+with its own risk. `Reader.QueryLogs` and the `LogRow` type stay with it; they are
+unreachable from the HTTP surface and are marked deprecated in place rather than deleted
+piecemeal, so that the table and its reader are removed together or not at all.
+
+What a reader should take from this: the absence of rows in `audit_logs` is not evidence
+about traffic. It has never held anything.

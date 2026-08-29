@@ -375,4 +375,6 @@ Numbered as of 2026-08-27, after the tool-calling work landed.
    [known limitations §2.10](known-limitations.md).
 
 6. **~~Expose audit query endpoints over HTTP~~. Done.** `GET /aegis/v1/audit/events`
-   and `GET /aegis/v1/audit/logs` exist and are authenticated.
+   exists and is authenticated. `GET /aegis/v1/audit/logs` was retired on 2026-08-29 and
+   returns 410: it read `audit_logs`, which nothing has ever written. See
+   [known limitations §2.11](known-limitations.md).
