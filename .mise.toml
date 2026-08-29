@@ -148,7 +148,7 @@ done
 # gateway that never came up, reporting connection errors as test failures.
 [ "$ready" = "1" ] || { echo "gateway did not become healthy within 60s:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
 
-go test ./internal/audit/... ./internal/purge/... ./internal/gateway/... -v -tags=integration -count=1 -p 1
+go test ./internal/audit/... ./internal/purge/... ./internal/gateway/... ./internal/storage/... -v -tags=integration -count=1 -p 1
 """
 
 # ── Lint / Format ─────────────────────────────────────────────────
