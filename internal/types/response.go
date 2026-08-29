@@ -56,6 +56,15 @@ type Usage struct {
 // meaning rather than two.
 type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+
+	// Cache writes, split by entry lifetime because they are priced
+	// differently: a 5-minute write is 1.25x base input and a 1-hour write 2x.
+	// Both are subsets of PromptTokens and disjoint from CachedTokens.
+	//
+	// These have no OpenAI counterpart, which does not charge for cache writes,
+	// so they are omitted when zero and an OpenAI-shaped client never sees them.
+	CacheWrite5mTokens int `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens int `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // CachedPromptTokens returns the cached subset, or zero when the provider
@@ -65,6 +74,22 @@ func (u Usage) CachedPromptTokens() int {
 		return 0
 	}
 	return u.PromptTokensDetails.CachedTokens
+}
+
+// CacheWrite5mTokens returns the tokens written to a five-minute cache entry.
+func (u Usage) CacheWrite5mTokens() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CacheWrite5mTokens
+}
+
+// CacheWrite1hTokens returns the tokens written to a one-hour cache entry.
+func (u Usage) CacheWrite1hTokens() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CacheWrite1hTokens
 }
 
 type FilterSummary struct {

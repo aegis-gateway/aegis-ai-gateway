@@ -1,7 +1,14 @@
+# Anthropic publishes prompt caching as multipliers on the base input rate: a
+# 5-minute cache write is 1.25x input, a 1-hour cache write is 2x, and a cache
+# read is 0.1x. TestAnthropicCacheRatesMatchPublishedMultipliers asserts every
+# anthropic row against them. The cache_write_5m values were a factor of ten low
+# across all four models until 2026-08-29, and coverage validation, which only
+# checks that a routed model has a price at all, had nothing to say about it.
+#
 # Model pricing snapshot — USD per million tokens.
 # Update this file (and verified_at) whenever a provider announces price changes.
 # See docs/CONFIGURATION.md for field definitions and the "Keeping pricing current" section.
-verified_at: "2026-08-21"
+verified_at: "2026-08-29"
 
 providers:
   anthropic:
@@ -10,28 +17,32 @@ providers:
       claude-opus-5:
         input: 5.00
         cached_input: 0.50
-        cache_write_5m: 0.625
+        cache_write_5m: 6.25
+        cache_write_1h: 10.00
         output: 25.00
         batch_multiplier: 0.5
 
       claude-sonnet-5:
         input: 2.00
         cached_input: 0.20
-        cache_write_5m: 0.25
+        cache_write_5m: 2.50
+        cache_write_1h: 4.00
         output: 10.00
         batch_multiplier: 0.5
 
       claude-haiku-4-5-20251001:
         input: 1.00
         cached_input: 0.10
-        cache_write_5m: 0.125
+        cache_write_5m: 1.25
+        cache_write_1h: 2.00
         output: 5.00
         batch_multiplier: 0.5
 
       claude-fable-5:
         input: 10.00
         cached_input: 1.00
-        cache_write_5m: 1.25
+        cache_write_5m: 12.50
+        cache_write_1h: 20.00
         output: 50.00
         batch_multiplier: 0.5
 

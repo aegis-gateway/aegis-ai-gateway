@@ -16,6 +16,7 @@ package adapters
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
@@ -219,5 +220,70 @@ func TestAbsorbUsage_CacheCreationCounted(t *testing.T) {
 	tr.absorbUsage(anthropicUsage{InputTokens: 10, CacheCreationInputTokens: 500})
 	if got := tr.promptTokens(); got != 510 {
 		t.Errorf("prompt tokens = %d, want 510", got)
+	}
+}
+
+// TestStreamEmitsCacheWriteTiers asserts a streamed cache-warming request
+// carries its per-TTL write counts through to the usage details. The
+// transformer kept only the aggregate, and the emitted details had no write
+// fields at all, so the calculator saw ordinary input and billed a 5-minute
+// write at 1x instead of 1.25x and a 1-hour write at 1x instead of 2x.
+func TestStreamEmitsCacheWriteTiers(t *testing.T) {
+	t.Run("explicit tiers are preserved", func(t *testing.T) {
+		tr := &anthropicStreamTransformer{}
+		tr.absorbUsage(anthropicUsage{
+			InputTokens:              10,
+			CacheCreationInputTokens: 1500,
+			CacheCreation:            anthropicCacheCreation{Ephemeral5m: 1000, Ephemeral1h: 500},
+		})
+		w5, w1 := tr.cacheWriteTiers()
+		if w5 != 1000 || w1 != 500 {
+			t.Errorf("write tiers = (%d, %d), want (1000, 500)", w5, w1)
+		}
+	})
+
+	t.Run("aggregate-only falls back to the cheaper 5m tier", func(t *testing.T) {
+		tr := &anthropicStreamTransformer{}
+		tr.absorbUsage(anthropicUsage{InputTokens: 10, CacheCreationInputTokens: 800})
+		w5, w1 := tr.cacheWriteTiers()
+		if w5 != 800 || w1 != 0 {
+			t.Errorf("write tiers = (%d, %d), want (800, 0) — an unattributable write "+
+				"must go to the cheaper tier, never over-charged", w5, w1)
+		}
+	})
+
+	t.Run("a later event omitting the tiers does not erase them", func(t *testing.T) {
+		tr := &anthropicStreamTransformer{}
+		tr.absorbUsage(anthropicUsage{
+			InputTokens:              10,
+			CacheCreationInputTokens: 1000,
+			CacheCreation:            anthropicCacheCreation{Ephemeral1h: 1000},
+		})
+		tr.absorbUsage(anthropicUsage{InputTokens: 10, OutputTokens: 5})
+		w5, w1 := tr.cacheWriteTiers()
+		if w1 != 1000 {
+			t.Errorf("1h write tokens = %d, want 1000 — a later event without the cache "+
+				"fields erased the tier", w1)
+		}
+		if w5 != 0 {
+			t.Errorf("5m write tokens = %d, want 0", w5)
+		}
+	})
+}
+
+// TestStreamChunkCarriesCacheWriteFields checks the wire shape, not just the
+// accumulator: extractTokensFromChunk in the gateway reads cache_write_5m_tokens
+// and cache_write_1h_tokens off prompt_tokens_details, so the transformer has to
+// actually serialise them or the whole chain stays at zero.
+func TestStreamChunkCarriesCacheWriteFields(t *testing.T) {
+	d := openAIPromptTokensDetails{CachedTokens: 1, CacheWrite5mTokens: 2, CacheWrite1hTokens: 3}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"cached_tokens":1`, `"cache_write_5m_tokens":2`, `"cache_write_1h_tokens":3`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("emitted details %s missing %s — the gateway reads this field name", b, want)
+		}
 	}
 }
