@@ -407,6 +407,23 @@ func main() {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
 	}
+
+	// Drain the audit writes before the deferred dbPool.Close runs.
+	//
+	// srv.Shutdown waits for handlers, and audit writes are deliberately
+	// asynchronous so they add no latency to a request, so at this point there
+	// can be accepted events that have not been persisted. Closing the pool
+	// here would lose them, and every affected caller has already had a 200:
+	// a routine rollout would quietly drop the tail of the decision record.
+	//
+	// Bounded by the same shutdown deadline. If it expires with writes still
+	// outstanding that is a real gap, so it is logged as one rather than
+	// passed over.
+	if !auditLogger.Drain(ctx) {
+		logger.Error("shutdown deadline reached with audit writes still in flight; " +
+			"the decision record is incomplete for the final requests")
+	}
+
 	logger.Info("gateway stopped")
 }
 

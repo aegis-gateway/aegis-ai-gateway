@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -87,6 +88,13 @@ func i64Ptr(i int64) *int64 { return &i }
 type Logger struct {
 	db *pgxpool.Pool
 
+	// pending tracks the in-flight write goroutines so a shutdown can wait for
+	// them. Without it, srv.Shutdown returns once the handlers are done and the
+	// process closes the pool underneath writes that have not run yet, so a
+	// request that completed just before a routine SIGTERM answers the caller
+	// and loses its event on every rollout.
+	pending sync.WaitGroup
+
 	// metrics is optional. When present, every dropped write increments
 	// aegis_audit_write_failure_total, which is the only signal that the
 	// decision record is incomplete: a failed insert leaves no row and no gap
@@ -109,7 +117,36 @@ func NewLogger(db *pgxpool.Pool) *Logger {
 
 // Log records an audit event asynchronously.
 func (l *Logger) Log(event Event) {
-	go l.writeEvent(event)
+	l.pending.Add(1)
+	go func() {
+		defer l.pending.Done()
+		l.writeEvent(event)
+	}()
+}
+
+// Drain waits for the in-flight audit writes to finish, or for ctx to expire.
+//
+// It exists for shutdown. The writes are asynchronous so they never add latency
+// to a request, which means at SIGTERM there can be events that have been
+// accepted and not yet persisted. srv.Shutdown waits for handlers and knows
+// nothing about these goroutines, so without a drain a graceful rollout loses
+// the tail of the decision record while every affected caller received a 200.
+//
+// It reports whether everything drained. A false return means the deadline was
+// reached with writes still outstanding, which is a real gap in the record and
+// worth logging as one.
+func (l *Logger) Drain(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		l.pending.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // writeEvent writes the audit event to the database.

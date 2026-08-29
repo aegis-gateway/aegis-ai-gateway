@@ -552,11 +552,38 @@ If those fields need to be attested, they should be added in the same
 `hash_schema_version=3` bump as the tool names in §2.10, because the bump is the expensive
 part and doing it twice costs twice.
 
-**Loss visibility.** A failed audit write leaves no row and no gap in the id sequence,
-which only advances on a successful insert, so neither the sealer nor a reader can detect
-it. `aegis_audit_write_failure_total`, labelled by event type, is the only signal that the
-record is incomplete. **Any non-zero value means the completeness claim does not hold for
-that window.** Alert on any increase.
+**Loss visibility.** A failed audit write leaves no row, and what it leaves in the id
+sequence depends on where it failed. That distinction matters operationally, so it is
+worth stating exactly.
+
+- **Rejected before the id is allocated**, which is the case for an over-long value in a
+  bounded column: PostgreSQL coerces the parameter before evaluating the `BIGSERIAL`
+  default, so the sequence does not advance and the ids stay contiguous. Measured. Nothing
+  in the data records that anything was lost.
+- **Failed after the id is allocated**, which covers the write timing out on the logger's
+  five-second context, the connection dropping mid-statement, or any constraint checked on
+  the formed row: `nextval` has already run and sequence increments are **not rolled back**
+  by the aborted transaction, so the id is consumed permanently and a gap remains.
+
+`aegis_audit_write_failure_total`, labelled by event type, is incremented in both cases and
+is the only signal in the first. **Any non-zero value means the completeness claim does not
+hold for that window.** Alert on any increase.
+
+**A gap has a second consequence.** `checkpoint/sealer.go` deliberately refuses to seal
+past an id gap, because an in-flight transaction may still commit into it. That is correct
+for a gap that is about to close, and it means a permanently lost id **stalls sealing at
+that point** until an operator intervenes. So a transient database failure during an audit
+write can halt the checkpoint chain, not merely lose one row. Treat a sealer that has
+stopped advancing, visible as a rising `aegis_audit_last_seal_age_seconds`, together with a
+non-zero write-failure counter as that situation rather than as a sealer outage.
+
+**Shutdown.** Audit writes are asynchronous so they never add latency to a request, which
+means at SIGTERM there can be accepted events that are not yet persisted. `srv.Shutdown`
+waits for handlers and knows nothing about those goroutines, so the gateway drains them
+explicitly before closing the database pool, bounded by the same graceful-shutdown
+deadline. If that deadline expires with writes outstanding the gateway logs it as an
+incomplete record rather than exiting quietly. Before this, a routine rollout could drop
+the tail of the decision record while every affected caller had received a 200.
 
 **Volume.** `audit_events` now receives one row per request rather than one row per
 refusal. Measured on 2026-08-29: 50,000 events occupy 29 MB including indexes, about
