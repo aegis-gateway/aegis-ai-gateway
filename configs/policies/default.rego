@@ -55,6 +55,32 @@ allow := false if {
 	count(deny) > 0
 }
 
+# WARNING: whatever a deny rule puts in its message is SEALED.
+#
+# The joined deny string below becomes audit_events.reason, clipped to 512
+# characters. audit_events is the table the checkpoint sealer covers, and reason
+# is one of the twenty-six fields in the leaf hash at hash_schema_version=2, so
+# a deny message is hashed into the chain and served by the audit read API.
+# It cannot be edited afterwards without breaking verification.
+#
+# Never interpolate message content into a deny message. A rule as ordinary as
+#
+#     msg := sprintf("blocked: %s", [input.messages[0].content])
+#
+# writes up to 512 characters of the caller's prompt into the attested record,
+# permanently, in a table the product describes as holding no payload. The
+# gateway does not prevent this: it cannot tell an interpolated prompt from a
+# literal, so this is the operator's constraint to keep.
+#
+# The rule above is the pattern to copy. It interpolates input.request.model,
+# which is a configured alias and metadata of the same kind as provider or
+# status code. Interpolating a request FIELD the operator controls is fine;
+# interpolating message CONTENT is not.
+#
+# Safest of all is a rule identifier: "restricted_data_on_uncleared_alias" says
+# which rule fired without quoting anything the caller sent.
+#
+# See docs/evidence/known-limitations.md section 2.13.
 reason := concat("; ", deny) if {
 	count(deny) > 0
 }

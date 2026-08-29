@@ -417,3 +417,59 @@ should not be described as though it did. Up to 256 characters of provider-contr
 text, which may include a fragment of the caller's request, still reaches the log. The
 mitigation is volumetric, not semantic. Treat gateway logs as containing incidental
 third-party text, and set retention on them accordingly.
+
+### 2.13 A custom Rego rule can place message text into the sealed record
+
+Policy evaluation receives the caller's message text in full. `PolicyMessage.Content` in
+`internal/filter/policy/opa.go` carries each message flattened to a string, and `Parts`
+carries the structured form. That is necessary rather than incidental: a policy that
+cannot see the content cannot make a decision about it.
+
+The deny message a rule produces does not stay inside the evaluation. The path is:
+
+1. Rego builds a deny string, joined by `concat("; ", deny)` in the shipped bundle.
+2. `Evaluator.ScanRequest` concatenates it into `filter.Result.Message`.
+3. `internal/gateway/handler.go` passes that as the `reason` argument to the audit logger.
+4. `internal/audit/logger.go` writes it to `audit_events.reason`, clipped to 512
+   characters by `MaxReason` in `internal/audit/limits.go`.
+
+`audit_events` is the table the checkpoint sealer covers, and `reason` is one of the
+twenty-six fields in the leaf hash at `hash_schema_version=2`
+(`internal/audit/checkpoint/event.go`). So a deny message is hashed into the chain, served
+by the audit read API, and cannot be edited afterwards without breaking verification.
+
+A rule as ordinary as
+
+```rego
+msg := sprintf("blocked: %s", [input.messages[0].content])
+```
+
+therefore writes up to 512 characters of the caller's prompt into the attested trail,
+permanently, in a table this project describes as holding no payload.
+
+**This is operator-caused and the gateway does not prevent it.** The gateway cannot tell an
+interpolated prompt from a literal string: both arrive as a deny message and both are
+written. The zero-retention guarantee covers the code paths this project controls, and a
+custom Rego bundle is not one of them. Nothing in the shipped configuration does this; the
+default bundle interpolates only `input.request.model`.
+
+**What an operator should do instead.** Return a rule *identifier*, not interpolated
+content:
+
+```rego
+deny contains "restricted_data_on_uncleared_alias" if { ... }
+```
+
+That tells an operator which rule fired, which is the question a denial record has to
+answer, and quotes nothing the caller sent. Interpolating a request *field* the operator
+controls, such as `input.request.model` or `input.request.provider_type`, is fine: those
+are metadata of the same kind as provider or status code. Interpolating message *content*
+is not.
+
+**Not enforced in code, deliberately.** Detecting whether a deny string contains caller
+text would mean substring-matching every deny message against the request, which is both
+expensive on the request path and unreliable, and refusing to seal a denial because its
+message looked suspicious would drop a governance record for a heuristic. Making the
+constraint enforceable is a design decision that has not been taken. Until it is, this is
+a documented operator responsibility, and a Rego bundle that will be sealed deserves the
+same review as any other code that writes to the audit trail.
