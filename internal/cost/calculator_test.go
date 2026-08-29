@@ -295,3 +295,51 @@ func TestCalculate_LongContextIgnoresCachedSubset(t *testing.T) {
 		}
 	})
 }
+
+// TestCalculate_AbsentCachedRateFallsBackToInput covers a pricing entry with no
+// cached_input. Once cached tokens are split out of the prompt total, a missing
+// rate is zero — so a fully cached request would have recorded no input cost,
+// a spend-accounting bypass that shows up exactly when caching works best.
+func TestCalculate_AbsentCachedRateFallsBackToInput(t *testing.T) {
+	cfg := &config.PricingConfig{Providers: map[string]config.ProviderPricing{
+		"p": {Models: map[string]config.PriceEntry{
+			// No cached_input, and a long-context tier that also omits it.
+			"m": {
+				Input: 10, Output: 20,
+				LongContext: &config.LongContextPricing{
+					ThresholdTokens: 100_000, Input: 20, Output: 40,
+				},
+			},
+		}},
+	}}
+	c := NewCalculator(func() *config.PricingConfig { return cfg })
+
+	t.Run("standard tier", func(t *testing.T) {
+		got, ok := c.Calculate(RequestDetails{
+			Provider: "p", Model: "m",
+			PromptTokens: 1000, CachedTokens: 1000, CompletionTokens: 0,
+		})
+		if !ok {
+			t.Fatal("no price found")
+		}
+		want := (1000.0 / 1e6) * 10 // every token cached, charged at the input rate
+		if math.Abs(got-want) > 1e-9 {
+			t.Errorf("fully cached request cost %.9f, want %.9f — an absent cached "+
+				"rate must not price cached input at zero", got, want)
+		}
+	})
+
+	t.Run("long-context tier", func(t *testing.T) {
+		got, ok := c.Calculate(RequestDetails{
+			Provider: "p", Model: "m",
+			PromptTokens: 200_000, CachedTokens: 200_000, CompletionTokens: 0,
+		})
+		if !ok {
+			t.Fatal("no price found")
+		}
+		want := (200_000.0 / 1e6) * 20 // long-context input rate
+		if math.Abs(got-want) > 1e-9 {
+			t.Errorf("fully cached long-context request cost %.9f, want %.9f", got, want)
+		}
+	})
+}

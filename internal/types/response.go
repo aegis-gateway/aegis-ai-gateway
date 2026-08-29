@@ -34,6 +34,37 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// PromptTokensDetails carries the cached subset of PromptTokens, in the
+	// shape an OpenAI client already expects.
+	//
+	// Cached input is billed at a different rate: configs/pricing.yaml sets
+	// cached_input an order of magnitude below input on several models, and
+	// cost.Calculator has always known how to apply it. Nothing populated the
+	// count, so every cache read was priced at the full input rate.
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails breaks down PromptTokens.
+//
+// CachedTokens is a SUBSET of PromptTokens, which is OpenAI's convention and
+// the one cost.Calculator documents. Anthropic reports the opposite: its
+// input_tokens excludes the cached portion and reports it alongside. Verified
+// against the live API: a cached call returned input_tokens 8 with
+// cache_read_input_tokens 4411 for the same 4419-token prompt. The Anthropic
+// adapter normalises to this convention, so a caller and the calculator see one
+// meaning rather than two.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CachedPromptTokens returns the cached subset, or zero when the provider
+// reported none.
+func (u Usage) CachedPromptTokens() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CachedTokens
 }
 
 type FilterSummary struct {

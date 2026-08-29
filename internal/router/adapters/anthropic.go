@@ -166,11 +166,7 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 				FinishReason: mapStopReason(antResp.StopReason),
 			},
 		},
-		Usage: types.Usage{
-			PromptTokens:     antResp.Usage.InputTokens,
-			CompletionTokens: antResp.Usage.OutputTokens,
-			TotalTokens:      antResp.Usage.InputTokens + antResp.Usage.OutputTokens,
-		},
+		Usage: anthropicUsageToCanonical(antResp.Usage),
 	}, nil
 }
 
@@ -320,8 +316,32 @@ type anthropicResponseBody struct {
 	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      anthropicUsage          `json:"usage"`
+}
+
+// anthropicUsageToCanonical converts Anthropic's token counts to the canonical
+// shape, which follows OpenAI's convention.
+//
+// The two providers disagree about what the prompt count means. Anthropic's
+// input_tokens EXCLUDES anything served from or written to the cache and
+// reports those separately; OpenAI's prompt_tokens INCLUDES the cached portion
+// and breaks it out as a subset. Verified against the live API: a cached call
+// returned input_tokens 8 alongside cache_read_input_tokens 4411, for a prompt
+// of 4419 tokens.
+//
+// So the total has to be reassembled here. Carrying Anthropic's input_tokens
+// through as the prompt count would have understated that request by 4411
+// tokens, and handing the same figure to the calculator as a subset would have
+// made uncached input negative.
+func anthropicUsageToCanonical(u anthropicUsage) types.Usage {
+	prompt := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	usage := types.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      prompt + u.OutputTokens,
+	}
+	if u.CacheReadInputTokens > 0 {
+		usage.PromptTokensDetails = &types.PromptTokensDetails{CachedTokens: u.CacheReadInputTokens}
+	}
+	return usage
 }

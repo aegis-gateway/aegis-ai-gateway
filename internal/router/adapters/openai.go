@@ -128,6 +128,12 @@ func (a *OpenAIAdapter) TransformResponse(ctx context.Context, resp *http.Respon
 		},
 	}
 
+	// prompt_tokens already includes the cached portion, so this is carried
+	// through as the subset it is.
+	if d := oaiResp.Usage.PromptTokensDetails; d != nil && d.CachedTokens > 0 {
+		aegisResp.Usage.PromptTokensDetails = &types.PromptTokensDetails{CachedTokens: d.CachedTokens}
+	}
+
 	for _, c := range oaiResp.Choices {
 		aegisResp.Choices = append(aegisResp.Choices, types.Choice{
 			Index: c.Index,
@@ -191,5 +197,10 @@ type openAIResponseBody struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// OpenAI caches prompts automatically above a size threshold, with no
+		// opt-in from the caller, so this can be non-zero on any route.
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }

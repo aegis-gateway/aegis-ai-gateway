@@ -38,6 +38,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `TestSchemaLimitsMatchMigration` parses the migrations and fails if the column widths and the Go constants disagree, because that drift is silent in the direction that matters: Go clips to the larger number and PostgreSQL rejects the row.
 
 ### Fixed
+- **Cached input was billed at the full input rate.** `configs/pricing.yaml` sets a `cached_input` rate for every model, an order of magnitude below `input` on several, and `cost.Calculator` has always implemented it. Nothing ever populated `RequestDetails.CachedTokens`: neither adapter parsed the provider's cached count, and all three cost call sites used `CalculateSimple`, which leaves it zero. A fully cached million-token prompt on Opus was priced at $5.00 instead of $0.50.
+
+  This overstates spend, which is the safe direction for a budget and the corrosive one for trust: a reconciliation against the provider's own bill does not match, and the numbers are the product's own.
+
+  The two providers disagree about what a prompt count means, so the adapters normalise. Anthropic's `input_tokens` excludes the cached portion and reports it alongside; OpenAI's `prompt_tokens` includes it as a subset. AEGIS follows OpenAI's convention. Verified against the live API: a cached Anthropic call returns `input_tokens` 8 with `cache_read_input_tokens` 4411 for a 4419-token prompt, so carrying `input_tokens` through as the prompt count would have understated that request by 4411 tokens and handing it to the calculator as a subset would have made uncached input negative.
+
+  Responses now carry `prompt_tokens_details.cached_tokens`, in the shape an OpenAI client already expects.
 - **Every streamed request recorded zero spend.** A streamed completion persisted `prompt_tokens=0`, `completion_tokens=0` and `estimated_cost_usd=0.00` while the identical non-streamed request recorded real figures. The daily spend budget and the per-team cost aggregates are computed from those rows, so streamed traffic cost real money and moved no budget. Reproduced against a live gateway before and after.
 
   Two independent causes, one per adapter. **Anthropic** reports usage natively, on `message_start` and `message_delta`, and the stream translation relayed neither, so the gateway's usage extraction found nothing. **OpenAI** omits usage from a stream unless asked via `stream_options`, which AEGIS refuses on the way in; the gateway now sets it itself on every streamed request. That is the gateway asking for its own accounting data, not a client field being honoured: a caller must not be able to switch off the tracking its own spend limit is computed from. `stream_options` stays refused inbound.
