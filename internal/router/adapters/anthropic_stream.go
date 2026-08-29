@@ -96,7 +96,14 @@ type anthropicStreamTransformer struct {
 	uncachedInputTokens int
 	cachedTokens        int
 	cacheCreationTokens int
-	outputTokens        int
+	// Cache writes are tracked per TTL tier, because they are priced
+	// differently: 1.25x base input for the 5-minute tier and 2x for the
+	// 1-hour. Keeping only the aggregate, as this transformer did, left the
+	// calculator no way to tell them apart and every streamed cache-warming
+	// request was billed at plain 1x input.
+	cacheWrite5mTokens int
+	cacheWrite1hTokens int
+	outputTokens       int
 
 	// model is the model the provider actually served, taken from
 	// message_start. The gateway reads it off a relayed chunk and uses it to
@@ -107,6 +114,13 @@ type anthropicStreamTransformer struct {
 }
 
 // anthropicUsage is the usage block, which appears in two different places.
+// anthropicCacheCreation is the per-TTL breakdown of cache writes. Named rather
+// than anonymous so the streaming tests can construct one.
+type anthropicCacheCreation struct {
+	Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+}
+
 type anthropicUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
@@ -120,10 +134,7 @@ type anthropicUsage struct {
 	// The API splits cache creation by entry lifetime, and the two are priced
 	// differently: a 5-minute write is 1.25x base input, a 1-hour write 2x.
 	// cache_creation_input_tokens is their sum.
-	CacheCreation struct {
-		Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
-		Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
-	} `json:"cache_creation"`
+	CacheCreation anthropicCacheCreation `json:"cache_creation"`
 }
 
 // anthropicStreamEvent is the subset of the event shape this translation reads.
@@ -223,8 +234,13 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 				CompletionTokens: t.outputTokens,
 				TotalTokens:      t.promptTokens() + t.outputTokens,
 			}
-			if t.cachedTokens > 0 {
-				chunk.Usage.PromptTokensDetails = &openAIPromptTokensDetails{CachedTokens: t.cachedTokens}
+			write5m, write1h := t.cacheWriteTiers()
+			if t.cachedTokens > 0 || write5m > 0 || write1h > 0 {
+				chunk.Usage.PromptTokensDetails = &openAIPromptTokensDetails{
+					CachedTokens:       t.cachedTokens,
+					CacheWrite5mTokens: write5m,
+					CacheWrite1hTokens: write1h,
+				}
 			}
 		}
 		return json.Marshal(chunk)
@@ -255,7 +271,9 @@ type openAIUsage struct {
 }
 
 type openAIPromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens       int `json:"cached_tokens"`
+	CacheWrite5mTokens int `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens int `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // absorbUsage folds an Anthropic usage block into the running totals,
@@ -284,9 +302,28 @@ func (t *anthropicStreamTransformer) absorbUsage(u anthropicUsage) {
 	if u.CacheCreationInputTokens > 0 {
 		t.cacheCreationTokens = u.CacheCreationInputTokens
 	}
+	if u.CacheCreation.Ephemeral5m > 0 {
+		t.cacheWrite5mTokens = u.CacheCreation.Ephemeral5m
+	}
+	if u.CacheCreation.Ephemeral1h > 0 {
+		t.cacheWrite1hTokens = u.CacheCreation.Ephemeral1h
+	}
 	if u.OutputTokens > 0 {
 		t.outputTokens = u.OutputTokens
 	}
+}
+
+// cacheWriteTiers returns the per-TTL cache-write counts, applying the same
+// fallback as the non-streaming path in anthropicUsageToCanonical: a response
+// that reports only the aggregate is attributed to the 5-minute tier, the
+// default TTL and the cheaper of the two, so an unattributable write is never
+// over-charged.
+func (t *anthropicStreamTransformer) cacheWriteTiers() (write5m, write1h int) {
+	write5m, write1h = t.cacheWrite5mTokens, t.cacheWrite1hTokens
+	if write5m == 0 && write1h == 0 && t.cacheCreationTokens > 0 {
+		write5m = t.cacheCreationTokens
+	}
+	return write5m, write1h
 }
 
 // promptTokens is the total prompt size: uncached input plus everything that
