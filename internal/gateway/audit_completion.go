@@ -15,11 +15,31 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"net/http"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 )
+
+// providerFailureReason picks the reason for a request that failed before a
+// response was produced.
+//
+// A caller cancelling mid-request lands on the same error path as a provider
+// that could not be reached: both surface as an error from the send. Sealing
+// provider_unreachable for both attributes every routine client disconnect to a
+// provider outage, permanently and in the record an operator would use to judge
+// provider reliability.
+//
+// The request context distinguishes them. It is cancelled when the client goes
+// away, and untouched when the provider simply failed.
+func providerFailureReason(r *http.Request, providerReason string) string {
+	if errors.Is(r.Context().Err(), context.Canceled) {
+		return audit.ReasonClientDisconnected
+	}
+	return providerReason
+}
 
 // completedRequest builds the attested record of a request that passed every
 // gate, for both the completion and the provider-failure event.

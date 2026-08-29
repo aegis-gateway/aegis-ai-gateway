@@ -184,7 +184,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
-				audit.ReasonProviderUnreachable)
+				providerFailureReason(r, audit.ReasonProviderUnreachable))
 		}
 		return
 	}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
@@ -685,5 +686,84 @@ func TestStream_FailedChunkIsNotACompletion(t *testing.T) {
 	}
 	if len(spy.failures) != 1 {
 		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+}
+
+// sendFailingAdapter is registered under the name the test route uses, so
+// routing succeeds and the request reaches the send, which then fails. Pointing
+// the registry at a different name instead makes ResolveRoute fail first and no
+// audit event is produced at all, which is how the first version of these tests
+// managed to skip while proving nothing.
+type sendFailingAdapter struct{}
+
+func (sendFailingAdapter) Name() string { return "stub-provider" }
+func (sendFailingAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, "http://provider.invalid/v1/chat/completions", nil)
+}
+func (sendFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+func (sendFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
+	return nil, nil
+}
+func (sendFailingAdapter) TransformStreamChunk(c []byte) ([]byte, error) { return c, nil }
+func (sendFailingAdapter) SupportsStreaming() bool                       { return true }
+func (sendFailingAdapter) SupportsTools() bool                           { return false }
+
+func newSendFailingHandler(spy AuditLogger) *Handler {
+	h := newAllowlistTestHandler(spy)
+	reg := router.NewRegistry()
+	reg.Register("stub-provider", sendFailingAdapter{})
+	h.registry = reg
+	return h
+}
+
+// A caller cancelling mid-request reaches the same error path as a provider
+// that could not be reached: both surface as an error from the send. Sealing
+// provider_unreachable for both attributes every routine client disconnect to a
+// provider outage, in the record an operator uses to judge provider reliability.
+func TestChatCompletions_CallerCancellationIsNotAProviderOutage(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newSendFailingHandler(spy)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(ctx, info))
+	cancel() // the caller has gone before the send completes
+
+	h.ChatCompletions(httptest.NewRecorder(), req)
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d; the request must reach the "+
+			"send path or this test proves nothing", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got != audit.ReasonClientDisconnected {
+		t.Errorf("reason = %q, want %q: a cancelled caller is not a provider outage",
+			got, audit.ReasonClientDisconnected)
+	}
+}
+
+// The provider genuinely being unreachable must still say so, or the fix above
+// would relabel real outages as client disconnects.
+func TestChatCompletions_RealProviderFailureIsStillAProviderOutage(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newSendFailingHandler(spy)
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(context.Background(), info))
+
+	h.ChatCompletions(httptest.NewRecorder(), req)
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d; the request must reach the "+
+			"send path or this test proves nothing", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got == audit.ReasonClientDisconnected {
+		t.Errorf("a live caller's request was recorded as %q; only a cancelled context "+
+			"may produce that reason", got)
 	}
 }

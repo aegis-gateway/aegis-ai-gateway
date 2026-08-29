@@ -158,13 +158,24 @@ but nothing populates it, so it stays empty. Per-request data lives in
 
 ### `audit_events`
 
-Written by `audit.Logger`. Five event types are actually emitted, all of them
-denials or failures: `auth_failure`, `rate_limit_violation`, `budget_violation`,
-`filter_block`, `redis_failure`. The `auth_success`, `provider_failure`, and
-`request_complete` constants are declared in `internal/audit/logger.go` but no
-method emits them, so **successful requests produce no audit event**. Each row has
-a structured `metadata` JSONB column for event-specific context (e.g. filter type,
-spend amounts).
+Written by `audit.Logger`. Since 2026-08-29 the table records **both permitted and refused
+requests**.
+
+Emitted on refusal: `auth_failure` (which also carries the per-key model allowlist denial,
+distinguished by `reason = 'model_not_allowed'`), `rate_limit_violation`,
+`budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`.
+
+Emitted on the allow path: `request_complete` when a request passes every gate and the
+response is written and flushed, and `provider_failure` when it passes every gate and then
+fails, with an enumerated `reason` distinguishing an unreachable provider, a provider
+error, a truncated or interrupted stream, a stream that never started, an undelivered
+buffered response, and a client that disconnected.
+
+`auth_success` remains declared and unemitted, deliberately: it is subsumed by those two
+and would double the write volume for no evidentiary gain.
+
+Migration 013 promoted the event-specific context out of the `metadata` JSONB into typed
+columns, so a reader queries `filter_type`, `reason`, `spent_cents` and the rest directly.
 
 Writes are fire-and-forget (`Log()` spawns a goroutine) and are skipped silently
 when the database handle is nil, so audit capture is best-effort rather than

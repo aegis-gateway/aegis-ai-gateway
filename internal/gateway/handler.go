@@ -423,7 +423,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
-				audit.ReasonProviderUnreachable)
+				providerFailureReason(r, audit.ReasonProviderUnreachable))
 		}
 		return
 	}
