@@ -36,15 +36,10 @@ func TestClip_BoundsTheRequestIDToTheColumn(t *testing.T) {
 	}
 }
 
-// MaxRequestID has to match the column or the clip is decorative.
-func TestMaxRequestID_MatchesTheColumnWidth(t *testing.T) {
-	// migrations/005 declares request_id VARCHAR(50) on audit_events.
-	const columnWidth = 50
-	if MaxRequestID != columnWidth {
-		t.Errorf("MaxRequestID = %d but audit_events.request_id is VARCHAR(%d); "+
-			"an insert with a longer id fails and the row is lost", MaxRequestID, columnWidth)
-	}
-}
+// MaxRequestID, MaxEndpoint and MaxMethod are checked against the migrations by
+// TestSchemaLimitsMatchMigration in limits_test.go, not here. A test that
+// restates the width as a literal only proves the constant equals itself, which
+// is exactly the drift this bound exists to catch.
 
 // Every text column written to audit_events must be clipped, because an
 // over-long value is rejected by PostgreSQL rather than truncated and costs the

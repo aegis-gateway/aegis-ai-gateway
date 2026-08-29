@@ -48,6 +48,23 @@ func TestSchemaLimitsMatchMigration(t *testing.T) {
 		added[strings.ToLower(m[1])] = n
 	}
 
+	// Columns declared in the original CREATE TABLE, which neither pattern
+	// above sees. request_id, endpoint and method live only there, so without
+	// this a later migration could narrow them and every test would still pass
+	// while writeEvent lost whole rows on overflow.
+	created := map[string]int{}
+	createRe := regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?audit_events\s*\((.*?)\n\s*\);`)
+	colRe := regexp.MustCompile(`(?im)^\s*(\w+)\s+VARCHAR\((\d+)\)`)
+	for _, block := range createRe.FindAllStringSubmatch(sql, -1) {
+		for _, m := range colRe.FindAllStringSubmatch(block[1], -1) {
+			n, err := strconv.Atoi(m[2])
+			if err != nil {
+				t.Fatalf("unparseable width for %s: %v", m[1], err)
+			}
+			created[strings.ToLower(m[1])] = n
+		}
+	}
+
 	found := map[string]int{}
 	for _, m := range alter.FindAllStringSubmatch(sql, -1) {
 		n, err := strconv.Atoi(m[2])
@@ -67,6 +84,26 @@ func TestSchemaLimitsMatchMigration(t *testing.T) {
 		got, ok := found[col]
 		if !ok {
 			t.Errorf("no migration sets a VARCHAR width for audit_events.%s; limits.go declares %d", col, limit)
+			continue
+		}
+		if got != limit {
+			t.Errorf("audit_events.%s: migration says VARCHAR(%d), limits.go says %d", col, got, limit)
+		}
+	}
+
+	// Columns that exist only in the CREATE TABLE. An ALTER later in the
+	// migration history wins, matching the order they are applied.
+	for col, limit := range map[string]int{
+		"request_id": MaxRequestID,
+		"endpoint":   MaxEndpoint,
+		"method":     MaxMethod,
+	} {
+		got, ok := found[col]
+		if !ok {
+			got, ok = created[col]
+		}
+		if !ok {
+			t.Errorf("no migration declares a VARCHAR width for audit_events.%s; limits.go declares %d", col, limit)
 			continue
 		}
 		if got != limit {
