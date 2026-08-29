@@ -324,17 +324,19 @@ accurate and it is worth closing.
 ### 2.10 Tool names are not in the audit record
 
 `input.request.tools_offered` and `input.request.tools_called` are exposed to Rego, and
-the tool counts appear on the completion log line. **Neither is written to
-`audit_events` or `audit_logs`.**
+tool counts appear on the completion log line. **Neither is written to `audit_events`.**
 
 So the audit trail records that a request happened and, if it was denied, why. It does
 not record which capabilities were put in front of the model. For an agent workload
 that is a real gap: "a call was made" and "a shell tool was offered and called" are
 different facts, and only the first is in the evidence.
 
-Adding tool names to the audit record appears safe under the zero-retention rule. A
-tool name is metadata of the same kind as `model`, while arguments and results are
-payload, and `internal/audit/tool_no_payload_test.go` already pins that boundary. It
-was not implemented here because it needs a migration and a `hash_schema_version`
-decision, and because widening the leaf-hash field set is not something to do as a
-side effect of a compatibility fix.
+It is safe under the zero-retention rule. A tool name is metadata of the same kind as
+`model`, while arguments and results are payload, and
+`internal/audit/tool_no_payload_test.go` tests that boundary rather than asserting it.
+
+It is deferred anyway, because adding a field to `audit_events` changes every leaf hash
+and requires `hash_schema_version=3`, and the verifier deliberately computes one field
+set. Spending that on additive metadata is a bad trade. The decision, the three
+rejected alternatives, and the specific thing to watch for are recorded in
+[docs/design/audit-tool-names.md](../design/audit-tool-names.md).
