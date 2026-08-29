@@ -313,6 +313,11 @@ const (
 	// because the provider stopped, a deadline elapsed, or a chunk could not be
 	// processed.
 	ReasonStreamInterrupted = "stream_interrupted"
+	// ReasonResponseNotDelivered covers a buffered response the gateway could
+	// not write to the caller, most often because the caller went away after
+	// the provider answered. The work was done and billed; the answer did not
+	// arrive, so it is not a completion.
+	ReasonResponseNotDelivered = "response_not_delivered"
 	// ReasonStreamNotStarted covers a streamed request refused before any
 	// stream began, so the caller received an error status and no content.
 	ReasonStreamNotStarted = "stream_not_started"

@@ -518,20 +518,29 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Attest the allow, next to the usage write so the two cannot drift.
+	// Send the response BEFORE recording anything about it.
 	//
-	// audit_events held only refusals until this existed, so the sealed chain
-	// recorded what was denied and nothing about what was permitted. The usage
-	// row, the log line above and the Prometheus counters are all unsealed, so
-	// none of them is evidence.
-	//
-	// Asynchronous, like every other audit write: Logger.Log spawns a goroutine
-	// and this must never add latency to or fail the caller's request.
-	if h.auditLogger != nil {
-		h.auditLogger.LogRequestComplete(completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false))
+	// Completion is a claim about what the caller received. Encoding straight
+	// into the ResponseWriter can fail, most obviously when the caller has gone
+	// away, and the error used to be discarded, so a request whose body never
+	// arrived was still attested as a completed 200. The streaming path treats
+	// delivery failure explicitly and this path has to agree with it.
+	w.Header().Set("Content-Type", "application/json")
+	deliveryErr := json.NewEncoder(w).Encode(aegisResp)
+	if deliveryErr != nil {
+		slog.Warn("failed to deliver the response to the caller",
+			"request_id", reqID,
+			"error", deliveryErr,
+			"provider", providerKey,
+			"org_id", authInfo.OrganizationID,
+		)
 	}
 
-	// Record usage asynchronously (non-blocking)
+	// Record usage asynchronously (non-blocking).
+	//
+	// Unconditional: the provider did the work and the spend happened whether
+	// or not the bytes reached the caller, so omitting it on a delivery failure
+	// would under-report cost. Only the audit outcome depends on delivery.
 	if h.usageRecorder != nil {
 		h.usageRecorder.RecordUsage(storage.UsageRecord{
 			RequestID:          reqID,
@@ -557,9 +566,28 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Return OpenAI-compatible response
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(aegisResp)
+	// Attest the outcome, next to the usage write so the two cannot drift.
+	//
+	// audit_events held only refusals until this existed, so the sealed chain
+	// recorded what was denied and nothing about what was permitted. The usage
+	// row, the log line above and the Prometheus counters are all unsealed, so
+	// none of them is evidence.
+	//
+	// Asynchronous, like every other audit write: Logger.Log spawns a goroutine
+	// and this must never add latency to or fail the caller's request.
+	//
+	// The status is 200 either way, because that is the status line the gateway
+	// sent: the first write into the ResponseWriter commits it, so a failure
+	// part way through the body still went out as a 200. What changes is the
+	// event, not the status.
+	if h.auditLogger != nil {
+		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false)
+		if deliveryErr != nil {
+			h.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
+		} else {
+			h.auditLogger.LogRequestComplete(rec)
+		}
+	}
 }
 
 // ListModels handles GET /v1/models

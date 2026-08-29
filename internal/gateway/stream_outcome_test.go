@@ -427,3 +427,63 @@ func (n *nonFlusher) Header() http.Header {
 }
 func (n *nonFlusher) Write(p []byte) (int, error) { return len(p), nil }
 func (n *nonFlusher) WriteHeader(code int)        { n.code = code }
+
+// The buffered path must not attest a completion it did not deliver either.
+//
+// It used to emit request_complete before json.NewEncoder(w).Encode ran, and
+// discard that encoder's error, so a caller who went away after the provider
+// answered still produced a sealed "completed 200" for a body that never
+// arrived. This is the non-streaming mirror of the terminator-delivery case,
+// and the two paths have to agree.
+func TestChatCompletions_UndeliveredResponseIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+	}))
+
+	// A writer that fails every body write is what a ResponseWriter does once
+	// the peer has gone.
+	h.ChatCompletions(&failingWriter{}, req)
+
+	if len(spy.completes) != 0 {
+		t.Errorf("a response the caller never received was attested as complete: %+v",
+			spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got != audit.ReasonResponseNotDelivered {
+		t.Errorf("reason = %q, want %q", got, audit.ReasonResponseNotDelivered)
+	}
+}
+
+// The ordinary case must still be a completion, or the fix above would simply
+// stop attesting successful buffered requests.
+func TestChatCompletions_DeliveredResponseIsACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+	}))
+
+	w := httptest.NewRecorder()
+	h.ChatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200; this test's premise is wrong if the request did not succeed: %s",
+			w.Code, w.Body.String())
+	}
+	if len(spy.failures) != 0 {
+		t.Errorf("a delivered response was attested as a failure: %+v", spy.failures)
+	}
+	if len(spy.completes) != 1 {
+		t.Fatalf("expected exactly 1 completion event, got %d", len(spy.completes))
+	}
+}

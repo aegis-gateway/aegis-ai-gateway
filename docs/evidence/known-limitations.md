@@ -487,7 +487,7 @@ inside the leaf hash: `event_type`, `timestamp`, `request_id`, `organization_id`
 `provider` (the configured provider key, not the adapter type), `model` (the requested
 alias), and `mode` (`stream` or `buffered`). A `provider_failure` additionally carries
 `reason`, from a fixed set: `provider_unreachable`, `provider_error`, `stream_interrupted`,
-`stream_truncated`, `stream_not_started`, `client_disconnected`.
+`stream_truncated`, `stream_not_started`, `response_not_delivered`, `client_disconnected`.
 
 `stream_truncated` is worth calling out. A provider that closes the connection cleanly
 part way through a response produces EOF with no error, which is indistinguishable from a
@@ -496,8 +496,12 @@ OpenAI-compatible providers, `message_stop` for Anthropic). The caller receives 
 answer that looks whole. That is recorded as a failure rather than a completion.
 
 Completion is a claim about what the **caller** received, not about what the provider
-sent. A terminator the gateway failed to write to the client does not establish one, and
-neither does a terminator processed on the same tick the caller went away.
+sent. This holds on both paths. On a stream, a terminator the gateway failed to write does
+not establish completion, and neither does one processed on the same tick the caller went
+away. On a buffered response, the event is written only after the body has been encoded to
+the caller successfully; a response that could not be delivered is recorded as
+`response_not_delivered`. The usage row is written either way, because the provider did
+the work and the spend happened whether or not the bytes arrived.
 
 `status_code` on any of these is **what the caller received**, not what the provider
 returned. A stream sends its 200 header before the first chunk, so a stream that later
