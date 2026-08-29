@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -69,5 +70,58 @@ func TestAllowedModels_AbsentValueIsUnrestricted(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %v, want an empty allowlist", got)
+	}
+}
+
+// The cache path must fail closed too.
+//
+// parseAllowedModels fixed the database read, and the Redis path decoded cached
+// metadata straight into a KeyMetadata and returned it. An entry written before
+// that fix holds "allowed_models":null for a key whose stored value was
+// malformed, which decodes cleanly to an empty slice and grants every model.
+// Validating inside UnmarshalJSON gives both paths the same guarantee, rather
+// than leaving the second one to be remembered.
+func TestKeyMetadata_CachedAllowlistFailsClosed(t *testing.T) {
+	for _, raw := range []string{
+		`{"id":"k","allowed_models":null}`,
+		`{"id":"k","allowed_models":{"a":1}}`,
+		`{"id":"k","allowed_models":"aegis-fast"}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var km KeyMetadata
+			if err := json.Unmarshal([]byte(raw), &km); err == nil {
+				t.Errorf("decoded to AllowedModels=%v with no error; an unreadable "+
+					"cached allowlist grants every model", km.AllowedModels)
+			}
+		})
+	}
+}
+
+func TestKeyMetadata_CachedAllowlistRoundTrips(t *testing.T) {
+	original := &KeyMetadata{ID: "k", AllowedModels: []string{"aegis-fast", "aegis-slow"}}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var back KeyMetadata
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("a well-formed cache entry must decode: %v", err)
+	}
+	if len(back.AllowedModels) != 2 {
+		t.Errorf("got %v, want the two configured aliases", back.AllowedModels)
+	}
+}
+
+// A key with no allowlist is unrestricted by design, and its cached form omits
+// the field. Rejecting that would revoke every model from every such key, which
+// is a worse outage than the defect being fixed.
+func TestKeyMetadata_CachedAbsentAllowlistIsUnrestricted(t *testing.T) {
+	var km KeyMetadata
+	if err := json.Unmarshal([]byte(`{"id":"k"}`), &km); err != nil {
+		t.Fatalf("an absent allowlist must decode: %v", err)
+	}
+	if len(km.AllowedModels) != 0 {
+		t.Errorf("got %v, want an empty allowlist", km.AllowedModels)
 	}
 }

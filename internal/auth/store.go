@@ -27,7 +27,17 @@ import (
 )
 
 const redisCacheTTL = 5 * time.Minute
-const redisKeyPrefix = "aegis:key:"
+
+// redisKeyPrefix is versioned so a change to how cached metadata is validated
+// cannot be defeated by entries written under the old rules.
+//
+// v2 exists because entries cached before the allowlist decode failed closed
+// hold "allowed_models":null for keys whose stored value was malformed. Those
+// decode cleanly into an empty slice, which grants every model, and would have
+// been served unrestricted for the whole cache TTL after the fix rolled out.
+// Bumping the prefix makes them unreachable rather than trusting a TTL to
+// expire them.
+const redisKeyPrefix = "aegis:key:v2:"
 
 // KeyStore looks up API key metadata by hash.
 type KeyStore interface {

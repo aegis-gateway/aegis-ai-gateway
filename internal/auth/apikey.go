@@ -121,9 +121,37 @@ func (km *KeyMetadata) MarshalJSON() ([]byte, error) {
 	return json.Marshal((*Alias)(km))
 }
 
+// UnmarshalJSON decodes cached key metadata and validates the allowlist.
+//
+// The allowlist is an access control whose EMPTY value grants every model, so a
+// representation that cannot be read must not decode to one. Validating here
+// rather than at the call site means the Redis cache path and any future
+// decoder get the same guarantee as the database path by construction; the two
+// diverging is exactly how the cache kept serving unrestricted keys after the
+// database read was fixed.
 func (km *KeyMetadata) UnmarshalJSON(data []byte) error {
 	type Alias KeyMetadata
-	return json.Unmarshal(data, (*Alias)(km))
+	if err := json.Unmarshal(data, (*Alias)(km)); err != nil {
+		return err
+	}
+
+	// The decoded slice cannot distinguish an absent allowlist from a null or
+	// malformed one, so the raw field is re-read. An absent field is fine: that
+	// is a key with no allowlist, which is unrestricted by design.
+	var raw struct {
+		AllowedModels json.RawMessage `json:"allowed_models"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.AllowedModels) > 0 {
+		allowed, err := parseAllowedModels(raw.AllowedModels)
+		if err != nil {
+			return err
+		}
+		km.AllowedModels = allowed
+	}
+	return nil
 }
 
 // ParseDuration parses a duration string like "365d", "30d", "24h".
