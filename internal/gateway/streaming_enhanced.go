@@ -54,16 +54,18 @@ func DefaultStreamingConfig() StreamingConfig {
 
 // StreamMetrics tracks metrics during a streaming session.
 type StreamMetrics struct {
-	StartTime        time.Time
-	FirstChunkTime   time.Time
-	ChunkCount       int
-	PromptTokens     int
-	CachedTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	EstimatedCostUSD float64
-	Provider         string
-	Model            string
+	StartTime          time.Time
+	FirstChunkTime     time.Time
+	ChunkCount         int
+	PromptTokens       int
+	CachedTokens       int
+	CacheWrite5mTokens int
+	CacheWrite1hTokens int
+	CompletionTokens   int
+	TotalTokens        int
+	EstimatedCostUSD   float64
+	Provider           string
+	Model              string
 	// ToolCallNames are the tool names reconstructed from the stream's tool
 	// call deltas, in index order. Names only, never arguments.
 	ToolCallNames []string
@@ -162,11 +164,13 @@ func (sh *StreamingHandler) HandleStream(
 		// See the non-streaming path: Calculate, not CalculateSimple, so the
 		// cached subset is priced at the cached_input rate.
 		if cost, found := sh.handler.costCalc.Calculate(cost.RequestDetails{
-			Provider:         metrics.Provider,
-			Model:            metrics.Model,
-			PromptTokens:     metrics.PromptTokens,
-			CachedTokens:     metrics.CachedTokens,
-			CompletionTokens: metrics.CompletionTokens,
+			Provider:           metrics.Provider,
+			Model:              metrics.Model,
+			PromptTokens:       metrics.PromptTokens,
+			CachedTokens:       metrics.CachedTokens,
+			CacheWrite5mTokens: metrics.CacheWrite5mTokens,
+			CacheWrite1hTokens: metrics.CacheWrite1hTokens,
+			CompletionTokens:   metrics.CompletionTokens,
 		}); found {
 			metrics.EstimatedCostUSD = cost
 		} else {
@@ -482,7 +486,9 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 			CompletionTokens    int `json:"completion_tokens"`
 			TotalTokens         int `json:"total_tokens"`
 			PromptTokensDetails *struct {
-				CachedTokens int `json:"cached_tokens"`
+				CachedTokens       int `json:"cached_tokens"`
+				CacheWrite5mTokens int `json:"cache_write_5m_tokens"`
+				CacheWrite1hTokens int `json:"cache_write_1h_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
@@ -503,6 +509,8 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 		metrics.TotalTokens = chunkData.Usage.TotalTokens
 		if d := chunkData.Usage.PromptTokensDetails; d != nil {
 			metrics.CachedTokens = d.CachedTokens
+			metrics.CacheWrite5mTokens = d.CacheWrite5mTokens
+			metrics.CacheWrite1hTokens = d.CacheWrite1hTokens
 		}
 	}
 

@@ -340,8 +340,19 @@ func anthropicUsageToCanonical(u anthropicUsage) types.Usage {
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      prompt + u.OutputTokens,
 	}
-	if u.CacheReadInputTokens > 0 {
-		usage.PromptTokensDetails = &types.PromptTokensDetails{CachedTokens: u.CacheReadInputTokens}
+	write5m, write1h := u.CacheCreation.Ephemeral5m, u.CacheCreation.Ephemeral1h
+	if write5m == 0 && write1h == 0 && u.CacheCreationInputTokens > 0 {
+		// Older responses report only the sum. Attribute it to the 5-minute
+		// tier, the default TTL and the cheaper of the two, so an
+		// unattributable write is never over-charged.
+		write5m = u.CacheCreationInputTokens
+	}
+	if u.CacheReadInputTokens > 0 || write5m > 0 || write1h > 0 {
+		usage.PromptTokensDetails = &types.PromptTokensDetails{
+			CachedTokens:       u.CacheReadInputTokens,
+			CacheWrite5mTokens: write5m,
+			CacheWrite1hTokens: write1h,
+		}
 	}
 	return usage
 }

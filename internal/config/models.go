@@ -49,6 +49,7 @@ type PriceEntry struct {
 	Input           float64             `yaml:"input"`
 	CachedInput     float64             `yaml:"cached_input"`
 	CacheWrite5m    float64             `yaml:"cache_write_5m"`
+	CacheWrite1h    float64             `yaml:"cache_write_1h"`
 	Output          float64             `yaml:"output"`
 	BatchMultiplier float64             `yaml:"batch_multiplier"`
 	RegionalUplift  float64             `yaml:"regional_uplift,omitempty"`

@@ -116,6 +116,14 @@ type anthropicUsage struct {
 	// deliberately not done here.
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+
+	// The API splits cache creation by entry lifetime, and the two are priced
+	// differently: a 5-minute write is 1.25x base input, a 1-hour write 2x.
+	// cache_creation_input_tokens is their sum.
+	CacheCreation struct {
+		Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 // anthropicStreamEvent is the subset of the event shape this translation reads.

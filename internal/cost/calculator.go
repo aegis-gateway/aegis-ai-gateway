@@ -33,6 +33,16 @@ type RequestDetails struct {
 	CachedTokens     int // subset of PromptTokens served from cache
 	CompletionTokens int
 
+	// Cache writes, subsets of PromptTokens and disjoint from CachedTokens: a
+	// token is read from the cache or written to it, never both in one request.
+	//
+	// A write costs MORE than ordinary input, not less. Anthropic prices a
+	// 5-minute write at 1.25x base input and a 1-hour write at 2x, because
+	// caching pays off on reuse rather than on the first request. Pricing them
+	// as ordinary input understates a cache-warming request.
+	CacheWrite5mTokens int
+	CacheWrite1hTokens int
+
 	// Flags
 	IsBatch bool // apply batch_multiplier when true
 }
@@ -105,8 +115,32 @@ func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
 		cachedInputRate = inputRate
 	}
 
+	// Cache write rates get the same treatment, for the same reason and with
+	// one extra twist.
+	//
+	// Writes are subtracted out of the prompt total below, so an absent rate is
+	// a multiplication by zero and a cache-warming request records no input
+	// cost for the tokens it warmed with. That is the same bypass, reached by a
+	// different field.
+	//
+	// The twist is that falling back to the input rate UNDER-charges here
+	// rather than over-charging: a real write costs 1.25x input at five minutes
+	// and 2x at an hour. Under-charging is the wrong direction for a spend
+	// control, so the fallback is a floor rather than a fix, and what keeps a
+	// missing rate from being mistaken for a real one is
+	// TestAnthropicCacheRatesMatchPublishedMultipliers, not this line.
+	write5mRate := entry.CacheWrite5m
+	if write5mRate <= 0 {
+		write5mRate = inputRate
+	}
+	write1hRate := entry.CacheWrite1h
+	if write1hRate <= 0 {
+		write1hRate = inputRate
+	}
+
 	// Uncached prompt tokens = total prompt minus cached tokens.
-	uncachedPrompt := details.PromptTokens - details.CachedTokens
+	uncachedPrompt := details.PromptTokens - details.CachedTokens -
+		details.CacheWrite5mTokens - details.CacheWrite1hTokens
 	if uncachedPrompt < 0 {
 		uncachedPrompt = 0
 	}
@@ -116,7 +150,10 @@ func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
 	inputCost := (float64(uncachedPrompt) / perMillion) * inputRate
 	cachedCost := (float64(details.CachedTokens) / perMillion) * cachedInputRate
 	outputCost := (float64(details.CompletionTokens) / perMillion) * outputRate
-	totalCost := inputCost + cachedCost + outputCost
+	writeCost := (float64(details.CacheWrite5mTokens)/perMillion)*write5mRate +
+		(float64(details.CacheWrite1hTokens)/perMillion)*write1hRate
+
+	totalCost := inputCost + cachedCost + outputCost + writeCost
 
 	if details.IsBatch && entry.BatchMultiplier > 0 {
 		totalCost *= entry.BatchMultiplier
@@ -127,6 +164,8 @@ func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
 		"model", details.Model,
 		"prompt_tokens", details.PromptTokens,
 		"cached_tokens", details.CachedTokens,
+		"cache_write_5m_tokens", details.CacheWrite5mTokens,
+		"cache_write_1h_tokens", details.CacheWrite1hTokens,
 		"completion_tokens", details.CompletionTokens,
 		"is_batch", details.IsBatch,
 		"input_cost", inputCost,

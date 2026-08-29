@@ -328,11 +328,18 @@ subset. AEGIS follows OpenAI's convention throughout, so a caller sees one meani
 Verified against the live API: a cached Anthropic call returned `input_tokens` 8
 alongside `cache_read_input_tokens` 4411, for a prompt of 4419 tokens.
 
-**Cache writes are priced as ordinary input.** `configs/pricing.yaml` carries a
-`cache_write_5m` rate, and `cost.Calculator` has no field for it, so tokens spent
-creating a cache entry are billed at the `input` rate. Whether that overstates or
-understates depends on the model. It is a smaller error than the one above and it is
-in the same family: a rate configured in the file that no code path reads.
+**Cache writes are priced at the published write rate**, five-minute and one-hour
+tiers separately, as of 2026-08-29. They were previously billed as ordinary input
+because `cost.Calculator` had no field for the configured rate.
+
+Fixing that surfaced a data error worth recording, because it is the reason the
+validation now checks ratios rather than presence. Every Anthropic `cache_write_5m`
+value in `configs/pricing.yaml` was a factor of ten low: 0.625 where the published
+rate is 6.25, and the same slip on all four models. Coverage validation had nothing
+to say about it, since each row had *a* price. `TestAnthropicCacheRatesMatchPublishedMultipliers`
+now checks every Anthropic row against the published multipliers (a five-minute
+write is 1.25x input, a one-hour write 2x, a read 0.1x), deriving its scope from the
+file so a model added later is covered without anyone remembering.
 
 **The cached count is not persisted.** `usage_records` stores `prompt_tokens` without
 the breakdown, so the split is visible in the response and in the cost, but a later

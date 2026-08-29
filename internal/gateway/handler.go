@@ -394,11 +394,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// below input. CalculateSimple leaves CachedTokens zero, so every cache
 		// read was billed at the full rate.
 		if cost, found := h.costCalc.Calculate(cost.RequestDetails{
-			Provider:         aegisResp.Provider,
-			Model:            aegisResp.Model,
-			PromptTokens:     aegisResp.Usage.PromptTokens,
-			CachedTokens:     aegisResp.Usage.CachedPromptTokens(),
-			CompletionTokens: aegisResp.Usage.CompletionTokens,
+			Provider:           aegisResp.Provider,
+			Model:              aegisResp.Model,
+			PromptTokens:       aegisResp.Usage.PromptTokens,
+			CachedTokens:       aegisResp.Usage.CachedPromptTokens(),
+			CacheWrite5mTokens: aegisResp.Usage.CacheWrite5mTokens(),
+			CacheWrite1hTokens: aegisResp.Usage.CacheWrite1hTokens(),
+			CompletionTokens:   aegisResp.Usage.CompletionTokens,
 		}); found {
 			aegisResp.EstimatedCostUSD = cost
 		} else {
