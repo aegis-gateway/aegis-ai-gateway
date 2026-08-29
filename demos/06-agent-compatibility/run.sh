@@ -33,22 +33,15 @@ fi
 
 # ── Model selection ───────────────────────────────────────────────
 #
-# This demo needs an Anthropic key. Every alias in configs/models.yaml lists
-# Anthropic as its primary route with OpenAI only as a fallback, and
-# ResolveRoute does not fail over on an upstream auth error — a provider whose
-# key is empty stays registered and eligible, returns 401, and the request
-# fails. So there is no alias an OpenAI-only setup can drive today, and the
-# previous fallback here (aegis-balanced) is Anthropic-primary like the rest.
+# aegis-fast is Anthropic-primary with an OpenAI fallback. Either key works: a
+# provider with no api_key is left unregistered, so an uncredentialed primary
+# falls through to the fallback instead of failing on a 401.
 AGENT_MODEL="aegis-fast"
 
-if ! grep -qE '^ANTHROPIC_API_KEY=.+' .env; then
-  echo "ERROR: this demo requires ANTHROPIC_API_KEY." >&2
-  echo "" >&2
-  echo "  Every model alias routes to Anthropic first, and the gateway does not" >&2
-  echo "  fail over to the OpenAI fallback when the Anthropic key is missing —" >&2
-  echo "  the request reaches Anthropic, gets a 401, and surfaces as a 500." >&2
-  echo "  An OpenAI-only run would report transport failures rather than the" >&2
-  echo "  compatibility findings this demo exists to collect." >&2
+if ! grep -qE '^(OPENAI_API_KEY|ANTHROPIC_API_KEY)=.+' .env; then
+  echo "ERROR: this demo needs a provider key — set OPENAI_API_KEY or ANTHROPIC_API_KEY." >&2
+  echo "  The compatibility findings come from real provider responses, so the" >&2
+  echo "  mock provider would not exercise what this demo measures." >&2
   exit 1
 fi
 

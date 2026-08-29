@@ -234,8 +234,8 @@ func TestResolveRoute_FallbackOrder(t *testing.T) {
 func TestBuildFromConfig_MockRequiresExplicitOptIn(t *testing.T) {
 	provCfg := &config.ProvidersConfig{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
-			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "test-key"},
 		},
 	}
 
@@ -263,8 +263,8 @@ func TestBuildFromConfig_MockReplacesEveryProviderWhenOptedIn(t *testing.T) {
 
 	provCfg := &config.ProvidersConfig{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
-			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "test-key"},
 		},
 	}
 	registry := BuildFromConfig(provCfg)
@@ -295,8 +295,8 @@ func TestBuildFromConfig_MockTypeWithoutOptInFailsClosed(t *testing.T) {
 
 	provCfg := &config.ProvidersConfig{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
-			"sneaky":    {Type: adapters.MockAdapterName, BaseURL: "https://example.invalid/v1"},
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key"},
+			"sneaky":    {Type: adapters.MockAdapterName, BaseURL: "https://example.invalid/v1", APIKey: "test-key"},
 		},
 	}
 	registry := BuildFromConfig(provCfg)
@@ -321,5 +321,88 @@ func TestUsesMockProvider_EmptyRegistryIsNotMock(t *testing.T) {
 	// in fact it is answering nothing at all.
 	if NewRegistry().UsesMockProvider() {
 		t.Error("an empty registry reported itself as running on the mock provider")
+	}
+}
+
+// TestBuildFromConfig_SkipsUncredentialedProviders covers the behaviour that
+// produced review findings on four separate PRs. A provider with no api_key
+// cannot serve a request, but registering it made it *eligible*: ResolveRoute
+// selects a primary route on registration, classification and health alone, so
+// the request reached the provider, came back 401, and surfaced as a 500 while
+// the configured fallback was never tried.
+func TestBuildFromConfig_SkipsUncredentialedProviders(t *testing.T) {
+	provCfg := &config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic":     {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"}, // no key
+			"openai":        {Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "sk-test"},
+			"internal_vllm": {Type: "openai", BaseURL: "http://vllm.internal/v1", APIKey: "not-needed"},
+		},
+	}
+	reg := BuildFromConfig(provCfg)
+
+	if _, ok := reg.Get("anthropic"); ok {
+		t.Error("a provider with no api_key stayed registered; it is eligible for routing " +
+			"and every request through it dies on a 401 with the fallback unused")
+	}
+	if _, ok := reg.Get("openai"); !ok {
+		t.Error("a credentialed provider was not registered")
+	}
+	// A provider that genuinely needs no credential says so with a placeholder.
+	if _, ok := reg.Get("internal_vllm"); !ok {
+		t.Error(`api_key: "not-needed" must keep a keyless provider registered`)
+	}
+}
+
+// TestResolveRoute_FallsBackWhenPrimaryHasNoKey is the outcome that matters:
+// with only an OpenAI key set, an Anthropic-primary alias must reach its OpenAI
+// fallback instead of failing upstream. Every alias in configs/models.yaml is
+// Anthropic-primary, so before this change OPENAI_API_KEY alone drove nothing.
+func TestResolveRoute_FallsBackWhenPrimaryHasNoKey(t *testing.T) {
+	reg := BuildFromConfig(&config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"}, // no key
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "sk-test"},
+		},
+	})
+
+	models := &config.ModelsConfig{Models: map[string]config.ModelMapping{
+		"aegis-fast": {
+			Primary: config.ProviderRoute{Provider: "anthropic", Model: "claude-haiku", ClassificationCeiling: "INTERNAL"},
+			Fallback: []config.ProviderRoute{
+				{Provider: "openai", Model: "gpt-4o-mini", ClassificationCeiling: "INTERNAL"},
+			},
+		},
+	}}
+
+	route, err := ResolveRoute(models, reg, nil, "aegis-fast", "INTERNAL")
+	if err != nil {
+		t.Fatalf("no route resolved: %v — the OpenAI fallback should be reachable", err)
+	}
+	if route.ProviderKey != "openai" {
+		t.Errorf("routed to %q, want openai — the uncredentialed primary was selected", route.ProviderKey)
+	}
+	if route.Model != "gpt-4o-mini" {
+		t.Errorf("model = %q, want gpt-4o-mini", route.Model)
+	}
+}
+
+// TestResolveRoute_FailsClosedWhenNoProviderHasAKey asserts the other
+// direction: with nothing credentialed, an alias resolves to no provider rather
+// than to one that will 401.
+func TestResolveRoute_FailsClosedWhenNoProviderHasAKey(t *testing.T) {
+	reg := BuildFromConfig(&config.ProvidersConfig{
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+		},
+	})
+	models := &config.ModelsConfig{Models: map[string]config.ModelMapping{
+		"aegis-fast": {
+			Primary:  config.ProviderRoute{Provider: "anthropic", Model: "claude-haiku", ClassificationCeiling: "INTERNAL"},
+			Fallback: []config.ProviderRoute{{Provider: "openai", Model: "gpt-4o-mini", ClassificationCeiling: "INTERNAL"}},
+		},
+	}}
+	if _, err := ResolveRoute(models, reg, nil, "aegis-fast", "INTERNAL"); err == nil {
+		t.Error("resolved a route with no credentialed provider; the request would 401 upstream")
 	}
 }
