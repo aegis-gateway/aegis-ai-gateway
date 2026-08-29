@@ -15,8 +15,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -74,6 +76,38 @@ func (s *CachedKeyStore) Lookup(ctx context.Context, keyHash string) (*KeyMetada
 	return meta, nil
 }
 
+// parseAllowedModels decodes api_keys.allowed_models, failing closed.
+//
+// An empty result means "every model is permitted", which is the documented
+// default for a key that never set an allowlist. That makes a discarded decode
+// error dangerous: a JSONB object, a bare string, or an array holding a
+// non-string all leave the slice empty, so an unreadable value silently became
+// an unrestricted key. It is a fail-open on an access control, and it became
+// consequential when the allowlist started gating what a key may USE rather
+// than only what it may see.
+//
+// A JSON null is rejected rather than accepted as empty. It decodes cleanly
+// into a nil slice, so it would otherwise pass as "unrestricted" while
+// representing a value nobody chose. An ABSENT value is different and stays
+// unrestricted: that is the schema default for a key with no allowlist, and
+// rejecting it would revoke every model from every such key.
+func parseAllowedModels(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, errors.New("allowed_models is not a JSON array")
+	}
+
+	var out []string
+	if err := json.Unmarshal(trimmed, &out); err != nil {
+		return nil, fmt.Errorf("allowed_models is unreadable: %w", err)
+	}
+	return out, nil
+}
+
 func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMetadata, error) {
 	var meta KeyMetadata
 	var allowedModelsJSON []byte
@@ -110,9 +144,11 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 		meta.UserID = *userID
 	}
 
-	if len(allowedModelsJSON) > 0 {
-		_ = json.Unmarshal(allowedModelsJSON, &meta.AllowedModels)
+	allowed, err := parseAllowedModels(allowedModelsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("api key %s: %w", meta.ID, err)
 	}
+	meta.AllowedModels = allowed
 
 	// Update last_used_at asynchronously (fire-and-forget)
 	go func() {

@@ -27,6 +27,13 @@ package gateway
 // '[]' in the api_keys schema, so tightening it here would revoke every model
 // from every key that never set one.
 //
+// That default is only safe because an empty list can no longer mean "the
+// stored value could not be read". internal/auth/store.go used to discard the
+// JSON decode error, so a malformed allowed_models silently produced an empty
+// slice and this function then granted every model: a fail-open on an access
+// control. The lookup now refuses rather than returning a key whose
+// restrictions are unknown, so empty here means empty in the database.
+//
 // Matching is exact string equality against the models.yaml alias, not the
 // resolved provider model. A key allowlisted for "aegis-balanced" is therefore
 // refused "aegis-gpt4" even though that alias is configured as a deprecated
