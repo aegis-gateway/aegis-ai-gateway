@@ -257,3 +257,69 @@ aegis_audit_oldest_event_age_days > 400  # alert if oldest event is > 400 days
 ```
 
 Always check [CHANGELOG.md](../CHANGELOG.md) before upgrading between minor versions.
+
+## Reconciling recorded spend
+
+`usage_records.estimated_cost_usd` is what the gateway computed at the time of
+the request. When the pricing config is corrected, or a cost defect is fixed,
+the rows already written keep the old number — and every spend aggregate, budget
+decision and invoice check is computed from those rows.
+
+`reconcile-usage` reprices historical rows against the current pricing config
+and reports the difference.
+
+```
+go run ./cmd/reconcile-usage [flags]
+
+Flags:
+  -database-url URL            Postgres connection (default: $DATABASE_URL)
+  -pricing PATH                pricing.yaml to reprice against (default: configs/pricing.yaml)
+  -since / -until RFC3339      restrict to a time window
+  -detail-recorded-after TIME  when migration 014 was deployed (see below)
+  -group-by day|org|team|model|provider
+  -limit N                     stop after N rows
+  -apply                       write corrected costs (requires -detail-recorded-after)
+```
+
+### What can and cannot be recovered
+
+A row's cost depends on how its prompt tokens split between uncached input,
+cache reads and cache writes, because those are priced differently — a read at
+0.1x base input, a five-minute write at 1.25x, a one-hour write at 2x.
+
+Migration 014 added `cached_tokens`, `cache_write_5m_tokens` and
+`cache_write_1h_tokens`. **Rows written from that migration onwards carry the
+inputs their cost depends on, so they reprice exactly.** Rows written before it
+do not, and no amount of arithmetic recovers the split.
+
+`-detail-recorded-after` is the deployment time of migration 014 on the database
+being reconciled. Rows at or after it are repriced exactly; everything earlier is
+reported as a **range**: the cheapest the request could have been (whole prompt a
+cache read) and the dearest (whole prompt written to a one-hour entry). Without
+the flag every row is treated as bounds-only, which is why `-apply` refuses to
+run without it.
+
+A recorded cost falling outside its range is wrong regardless of what the cache
+split was. That is the strongest statement the surviving data supports about the
+historical rows, and it is how the exposure from the pre-014 cost defects should
+be sized.
+
+Rows that recorded no tokens at all are reported separately rather than repriced.
+Repricing zero tokens yields zero, which would agree with the recorded cost and
+mark the row correct; in fact it is the fingerprint of the streamed-usage defect,
+where the counts needed to reprice were never captured.
+
+### Applying corrections
+
+`-apply` rewrites `estimated_cost_usd` only on rows that reprice exactly, in a
+single transaction. Bounded rows are never rewritten: writing a bound would turn
+"this cannot be determined" into a number that later readers would treat as
+measured. Re-running after an apply is a no-op.
+
+```bash
+# 1. Look first. Nothing is written without -apply.
+go run ./cmd/reconcile-usage -detail-recorded-after 2026-08-29T12:00:00Z -group-by day
+
+# 2. Apply once the delta looks like what you expect.
+go run ./cmd/reconcile-usage -detail-recorded-after 2026-08-29T12:00:00Z -apply
+```
