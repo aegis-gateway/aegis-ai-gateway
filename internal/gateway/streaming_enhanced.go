@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -77,6 +78,16 @@ type StreamMetrics struct {
 	// stream that finished from one that timed out, and would attest a
 	// truncated response as a completion.
 	Outcome StreamOutcome
+
+	// terminatorSeen records that the provider sent its end-of-stream marker:
+	// [DONE] from an OpenAI-compatible provider, or message_stop from
+	// Anthropic, which the transformer renders as [DONE].
+	//
+	// EOF alone does not mean the response finished. A provider that closes
+	// the connection cleanly part way through produces a nil scanner error and
+	// is indistinguishable from a complete stream without this flag, so a
+	// truncated answer would be sealed as request_complete.
+	terminatorSeen bool
 }
 
 // StreamOutcome enumerates how a stream ended. It decides which audit event the
@@ -101,6 +112,10 @@ const (
 	StreamClientDisconnected StreamOutcome = "client_disconnect"
 	// StreamReadError means reading the provider stream failed.
 	StreamReadError StreamOutcome = "read_error"
+	// StreamTruncated means the provider closed the stream cleanly without
+	// sending its end-of-stream marker, so the client received a partial
+	// response that looked like a whole one.
+	StreamTruncated StreamOutcome = "truncated"
 	// StreamChunkError means a chunk could not be processed or forwarded.
 	StreamChunkError StreamOutcome = "chunk_error"
 )
@@ -193,9 +208,11 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
 
+		// The caller receives 500 from WriteInternalError below, so that is what
+		// the record says. The upstream status is in the log line above.
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, providerResp.StatusCode, true),
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
 				audit.ReasonProviderError)
 		}
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
@@ -316,6 +333,8 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
 		case StreamCompleted:
 			sh.handler.auditLogger.LogRequestComplete(rec)
+		case StreamTruncated:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
 		case StreamClientDisconnected:
 			// Not the provider's fault, and the reason says so. It is recorded
 			// as a failure because the response was not delivered in full, and
@@ -407,13 +426,6 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	scanner := bufio.NewScanner(providerResp.Body)
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
 
-	// Channel to detect client disconnect via context cancellation
-	clientDisconnected := make(chan bool, 1)
-	go func() {
-		<-ctx.Done()
-		clientDisconnected <- true
-	}()
-
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
 	defer chunkTimer.Stop()
@@ -439,16 +451,43 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		select {
 		case <-ctx.Done():
-			slog.Warn("stream total timeout exceeded",
+			// One case, and the cause decides which ending it was.
+			//
+			// There used to be a second case fed by a goroutine waiting on this
+			// same ctx.Done(), meaning both became ready at once and select
+			// chose between them at random: a total timeout could be recorded
+			// as a client disconnect and a disconnect as a timeout. That was
+			// survivable while it only mislabelled a log line. It is not
+			// survivable now that the outcome is sealed into the audit record.
+			//
+			// ctx is context.WithTimeout(r.Context(), TotalTimeout), so the two
+			// causes are already distinguishable: the deadline elapsing yields
+			// DeadlineExceeded, and the caller hanging up cancels the parent
+			// and yields Canceled.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				slog.Warn("stream total timeout exceeded",
+					"request_id", reqID,
+					"chunks_sent", metrics.ChunkCount,
+				)
+				if sh.handler.metrics != nil {
+					sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				}
+				// Only the timeout gets an error frame. A disconnected client
+				// is not there to read one.
+				_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+				flusher.Flush()
+				metrics.Outcome = StreamTotalTimeout
+				return metrics
+			}
+
+			slog.Info("client disconnected during streaming",
 				"request_id", reqID,
 				"chunks_sent", metrics.ChunkCount,
 			)
 			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
 			}
-			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
-			flusher.Flush()
-			metrics.Outcome = StreamTotalTimeout
+			metrics.Outcome = StreamClientDisconnected
 			return metrics
 
 		case <-chunkTimer.C:
@@ -464,28 +503,31 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			metrics.Outcome = StreamChunkTimeout
 			return metrics
 
-		case <-clientDisconnected:
-			slog.Info("client disconnected during streaming",
-				"request_id", reqID,
-				"chunks_sent", metrics.ChunkCount,
-			)
-			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
-			}
-			metrics.Outcome = StreamClientDisconnected
-			return metrics
-
 		case <-scanChan:
-			// Scanner finished
-			metrics.Outcome = StreamCompleted
-			if err := scanner.Err(); err != nil {
-				slog.Error("error reading stream", "error", err, "provider", adapter.Name())
+			// The scanner reached EOF. That is not the same as the response
+			// being finished: a provider that closes the connection cleanly
+			// part way through gives a nil error here and would otherwise be
+			// attested as a completion, sealing a truncated answer as a whole
+			// one. Only the terminator establishes completion.
+			switch {
+			case scanner.Err() != nil:
+				slog.Error("error reading stream", "error", scanner.Err(), "provider", adapter.Name())
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "scanner_error")
 				}
-				// The scanner stopping on an error is not a completed stream,
-				// even though it arrives on the same channel as a clean end.
 				metrics.Outcome = StreamReadError
+			case !metrics.terminatorSeen:
+				slog.Warn("provider closed the stream without an end-of-stream marker",
+					"request_id", reqID,
+					"provider", providerKey,
+					"chunks_sent", metrics.ChunkCount,
+				)
+				if sh.handler.metrics != nil {
+					sh.handler.metrics.RecordStreamingError(adapter.Name(), "truncated")
+				}
+				metrics.Outcome = StreamTruncated
+			default:
+				metrics.Outcome = StreamCompleted
 			}
 			return metrics
 
@@ -500,14 +542,17 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				return metrics
 			}
 
-			// Check if stream ended.
+			// Check if the stream ended.
 			//
-			// This is the NORMAL completion path for an SSE stream and it is a
-			// separate return from the scanner-finished case above. It was
-			// missed when outcomes were first threaded through this loop, so a
-			// cleanly completed stream carried the zero-value outcome and was
-			// attested as a provider failure. The allow-path canary caught it.
-			if strings.Contains(line, "[DONE]") {
+			// Keyed off the flag processChunk sets, not off the raw line: the
+			// Anthropic terminator is message_stop, which only becomes [DONE]
+			// after transformation, so a raw-line test silently covered
+			// OpenAI alone and let every Anthropic stream end at EOF instead.
+			//
+			// This is the NORMAL completion path and it is a separate return
+			// from the scanner-finished case above. Missing it is what once
+			// left a completed stream carrying the zero-value outcome.
+			if metrics.terminatorSeen {
 				metrics.Outcome = StreamCompleted
 				return metrics
 			}
@@ -537,8 +582,9 @@ func (sh *StreamingHandler) processChunk(
 
 	data := strings.TrimPrefix(line, "data: ")
 
-	// End of stream
+	// End of stream, OpenAI-compatible form.
 	if data == "[DONE]" {
+		metrics.terminatorSeen = true
 		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return nil
@@ -555,8 +601,13 @@ func (sh *StreamingHandler) processChunk(
 		return nil
 	}
 
-	// Check if the adapter signaled end of stream
+	// Check if the adapter signaled end of stream. This is the Anthropic path:
+	// message_stop arrives as an ordinary data line and the transformer renders
+	// it as [DONE], so the raw line never contains the marker. The loop's own
+	// terminator check used to test the RAW line, which meant it only ever
+	// matched OpenAI and every Anthropic stream fell through to EOF.
 	if string(transformed) == "[DONE]" {
+		metrics.terminatorSeen = true
 		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return nil

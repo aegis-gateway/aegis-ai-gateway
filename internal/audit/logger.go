@@ -313,6 +313,10 @@ const (
 	// because the provider stopped, a deadline elapsed, or a chunk could not be
 	// processed.
 	ReasonStreamInterrupted = "stream_interrupted"
+	// ReasonStreamTruncated covers a stream the provider closed cleanly without
+	// sending its end-of-stream marker. The caller received a partial response
+	// that looked complete, which is why it is not attested as one.
+	ReasonStreamTruncated = "stream_truncated"
 	// ReasonClientDisconnected covers a stream the caller abandoned. It is not
 	// a provider fault, and is recorded separately so that an operator counting
 	// provider failures is not misled by callers hanging up.

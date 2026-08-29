@@ -422,9 +422,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"provider", providerKey,
 			"adapter", adapter.Name(),
 		)
+		// http.StatusInternalServerError, not providerResp.StatusCode: the
+		// audit record states the outcome the CALLER observed, and the caller
+		// receives 500 from WriteInternalError below. Recording an upstream 401
+		// here would seal a row saying the client got 401 when it did not. The
+		// upstream status is in the log line above, where it belongs.
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, providerResp.StatusCode, false),
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
 				audit.ReasonProviderError)
 		}
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")

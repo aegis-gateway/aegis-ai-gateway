@@ -487,7 +487,20 @@ inside the leaf hash: `event_type`, `timestamp`, `request_id`, `organization_id`
 `provider` (the configured provider key, not the adapter type), `model` (the requested
 alias), and `mode` (`stream` or `buffered`). A `provider_failure` additionally carries
 `reason`, from a fixed set: `provider_unreachable`, `provider_error`, `stream_interrupted`,
-`client_disconnected`.
+`stream_truncated`, `client_disconnected`.
+
+`stream_truncated` is worth calling out. A provider that closes the connection cleanly
+part way through a response produces EOF with no error, which is indistinguishable from a
+finished stream except by the absence of the protocol terminator (`[DONE]` for
+OpenAI-compatible providers, `message_stop` for Anthropic). The caller receives a partial
+answer that looks whole. That is recorded as a failure rather than a completion.
+
+`status_code` on any of these is **what the caller received**, not what the provider
+returned. A stream sends its 200 header before the first chunk, so a stream that later
+fails was still a 200 on the wire; and when a provider returns a non-200 the gateway sends
+the caller 500 rather than passing the upstream status through. The provider's own status
+is in the logs. Recording it here would make the sealed row state something the client
+never saw.
 
 **What it does not carry: latency, prompt and completion tokens, the resolved concrete
 model, and classification.** There are no columns for them, and the reason not to add
