@@ -190,9 +190,16 @@ not twenty-three as the brief states; none covered this. A dropped write was an 
 line and nothing else. `aegis_audit_write_failure_total`, labelled by event type, is now
 incremented wherever a write is dropped.
 
-This matters more than it looks: a failed insert leaves no row **and no gap in the id
-sequence**, because the sequence only advances on a successful insert. The sealer seals a
-contiguous range that is missing an event it never saw. The counter is the only signal.
+This matters more than it looks, and what it leaves behind depends on where the write
+failed. **Rejected before the id is allocated**, as an over-long value in a bounded column
+is: the sequence does not advance, the ids stay contiguous, the sealer seals a range
+missing an event it never saw, and the counter is the only signal. **Failed after the id is
+allocated**, as a timeout, a cancellation or a connection loss is: sequence increments are
+not rolled back, so the id is consumed permanently and the resulting gap **stalls the
+sealer**, which refuses to seal past one.
+
+That distinction was corrected during review and is recorded below; the original text here
+claimed the no-gap case unconditionally.
 
 It proved itself during this work: a misconfigured gateway wrote to a database at an older
 schema and every audit write failed with `column "api_key_prefix" does not exist`, visible
@@ -314,11 +321,15 @@ Two corrections to statements made in this report or in review:
   [#63](https://github.com/aegis-gateway/aegis-ai-gateway/pull/63), already on
   `main`. Fixed here.
 
-**What this says about the work order.** Phases 1 to 4 drew no findings. Phase 5
-reads like a call-site change and is really a question about what an HTTP handler
-can honestly know about a response it has sent, which took 13 rounds to pin down.
-Anyone estimating similar work should price the attestation semantics, not the
-plumbing.
+**What this says about the work order.** Twenty-two of the twenty-four findings were on
+Phase 5. Phases 2, 3 and 4 drew none. **Phase 1 drew one, and it was the most serious of
+them all**: the unconfigured-model retention defect described above. A phase can be small,
+uncontroversial and still be where the worst defect lands, which is an argument against
+reading a low finding count as a clean bill of health.
+
+Phase 5 reads like a call-site change and is really a question about what an HTTP handler
+can honestly know about a response it has sent, which took 13 rounds to pin down. Anyone
+estimating similar work should price the attestation semantics, not the plumbing.
 
 ## What a human still needs to decide
 
