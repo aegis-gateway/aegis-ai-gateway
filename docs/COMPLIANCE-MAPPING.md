@@ -29,7 +29,8 @@ for X.*
 | Artifact | Where it comes from | What it helps answer |
 |---|---|---|
 | Per-request decision record: identity, model, provider, classification, outcome, timing, tokens, cost | [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go), tables `audit_logs` and `audit_events` | Can you show what an automated system did, for a given request, after the fact |
-| Denial record for every refusal, with the reason string and the stage that produced it | `LogFilterBlock`, `LogRateLimitViolation`, `LogRedisFailure` in [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go) | Can you show that a control fired, and why |
+| Denial record for every refusal, with the reason string and the stage that produced it | `LogFilterBlock`, `LogRateLimitViolation`, `LogRedisFailure`, `LogPricingDenied`, `LogModelDenied` in [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go) | Can you show that a control fired, and why |
+| Record of every **permitted** request, not only refusals | `LogRequestComplete` and `LogProviderFailure` in `internal/audit/logger.go`, written on both the streaming and non-streaming paths | Can you show what a key actually did, not only what it was stopped from doing |
 | Records readable and exportable as JSON or CSV, scoped to one organization | [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go), `GET /aegis/v1/audit/events` | Can you hand an assessor the record without giving them database access. `GET /aegis/v1/audit/logs` is retired and returns 410; `audit_logs` was never written |
 | Merkle checkpoints over event ranges, chained to their predecessor (RFC 6962) | [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint) | Can you show a record has not been altered or deleted since it was sealed |
 | Inclusion proofs for a single event within a sealed range | [`checkpoint/verifier.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint/verifier.go) | Can you prove one specific decision was in the sealed set |
@@ -76,6 +77,31 @@ AEGIS.
 | CC7.2 | Monitoring for anomalies | Denial record, rate-limit and budget violations |
 | CC7.3 | Evaluation of security events | Denial record with reason and stage |
 | P4.2 | Retention and disposal of personal information | Purge, plus the absence of payload retention |
+
+### What the decision record covers, and at what assurance
+
+Since 2026-08-29 `audit_events` records **both permitted and refused requests**. A
+permitted request writes `request_complete`; one that passed every gate and then failed at
+the provider writes `provider_failure`. Previously only refusals were written, so the
+sealed chain could show what a control stopped and could not show what a key actually did.
+
+An allow event carries, all of it covered by the checkpoint leaf hash: event type,
+timestamp, request ID, organization, team, user, API key ID and key prefix, endpoint,
+method, status code, the configured provider key, the requested model alias, and whether
+the response was streamed. A `provider_failure` adds an enumerated reason.
+
+It does **not** carry latency, prompt and completion token counts, the resolved concrete
+model, or classification. `audit_events` has twenty-six columns and all twenty-six are in
+the leaf hash; adding a column changes every leaf hash and requires a
+`hash_schema_version` bump, and adding one outside the hash would leave the evidence
+fields unattested. Those values are in `usage_records` for the same request ID, which is
+**not sealed**. An assessor relying on token counts or latency should be told they are
+recorded but not attested. See
+[known limitations §2.14](evidence/known-limitations.md).
+
+A dropped audit write leaves no row and no gap in the id sequence, so it is undetectable
+from the data. `aegis_audit_write_failure_total` is the only signal; a non-zero value means
+the record is incomplete for that window.
 
 ### Model allowlist semantics
 

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
@@ -70,7 +71,39 @@ type StreamMetrics struct {
 	// ToolCallNames are the tool names reconstructed from the stream's tool
 	// call deltas, in index order. Names only, never arguments.
 	ToolCallNames []string
+
+	// Outcome is how the stream ended. Every exit from the monitoring loop
+	// returns the same metrics value, so without this the caller cannot tell a
+	// stream that finished from one that timed out, and would attest a
+	// truncated response as a completion.
+	Outcome StreamOutcome
 }
+
+// StreamOutcome enumerates how a stream ended. It decides which audit event the
+// request produces, so it is a closed set rather than a free string.
+type StreamOutcome string
+
+const (
+	// StreamOutcomeUnset is the zero value: no exit set an outcome.
+	//
+	// It exists so that "nobody said" is distinguishable from any real
+	// outcome. Letting the zero value fall into a default branch is what
+	// silently classified every completed stream as a failure when the [DONE]
+	// return was missed, and a seventh exit added later would do it again.
+	StreamOutcomeUnset StreamOutcome = ""
+	// StreamCompleted means the provider closed the stream normally.
+	StreamCompleted StreamOutcome = "completed"
+	// StreamTotalTimeout means the whole-stream deadline elapsed.
+	StreamTotalTimeout StreamOutcome = "total_timeout"
+	// StreamChunkTimeout means the gap between chunks exceeded its deadline.
+	StreamChunkTimeout StreamOutcome = "chunk_timeout"
+	// StreamClientDisconnected means the caller went away mid-stream.
+	StreamClientDisconnected StreamOutcome = "client_disconnect"
+	// StreamReadError means reading the provider stream failed.
+	StreamReadError StreamOutcome = "read_error"
+	// StreamChunkError means a chunk could not be processed or forwarded.
+	StreamChunkError StreamOutcome = "chunk_error"
+)
 
 // StreamingHandler manages enhanced streaming with metrics, timeouts, and cost tracking.
 type StreamingHandler struct {
@@ -127,6 +160,11 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), "request_failed")
 		}
 
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+				audit.ReasonProviderUnreachable)
+		}
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
@@ -155,6 +193,11 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
 
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, providerResp.StatusCode, true),
+				audit.ReasonProviderError)
+		}
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		return
 	}
@@ -242,6 +285,46 @@ func (sh *StreamingHandler) HandleStream(
 			TokensPerSecond:    sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
 			StreamDurationMs:   float64(totalDuration.Milliseconds()),
 		})
+	}
+
+	// Attest the streamed request, exactly once, from one place.
+	//
+	// Every exit from streamWithMonitoring returns the same metrics value, so
+	// this is the only point that can tell a completed stream from an
+	// interrupted one, and the only point that runs for all of them. Emitting
+	// inside the loop instead would mean six call sites and a real chance of
+	// two events or none.
+	//
+	// The status code recorded is what the CLIENT actually received. A stream
+	// sends its 200 header before the first chunk, so a stream that later times
+	// out or is abandoned was still a 200 on the wire; recording anything else
+	// would be inventing a response that was never sent. The event type and
+	// reason carry the outcome instead.
+	if sh.handler.auditLogger != nil {
+		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, true)
+		switch metrics.Outcome {
+		case StreamOutcomeUnset:
+			// A path out of the monitoring loop set no outcome. The event is
+			// still written, because dropping it would be a hole in the record,
+			// but it is recorded as interrupted rather than guessed as a
+			// success, and it says loudly that the gateway has a bug.
+			slog.Error("stream ended with no outcome set; attesting it as interrupted",
+				"request_id", reqID,
+				"chunks", metrics.ChunkCount,
+				"fix", "every return from streamWithMonitoring must set metrics.Outcome",
+			)
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
+		case StreamCompleted:
+			sh.handler.auditLogger.LogRequestComplete(rec)
+		case StreamClientDisconnected:
+			// Not the provider's fault, and the reason says so. It is recorded
+			// as a failure because the response was not delivered in full, and
+			// a partial delivery attested as a completion would be a false
+			// record of what the caller received.
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonClientDisconnected)
+		default:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
+		}
 	}
 
 	// Record usage asynchronously
@@ -365,6 +448,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			}
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
 			flusher.Flush()
+			metrics.Outcome = StreamTotalTimeout
 			return metrics
 
 		case <-chunkTimer.C:
@@ -377,6 +461,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			}
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
 			flusher.Flush()
+			metrics.Outcome = StreamChunkTimeout
 			return metrics
 
 		case <-clientDisconnected:
@@ -387,15 +472,20 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			if sh.handler.metrics != nil {
 				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
 			}
+			metrics.Outcome = StreamClientDisconnected
 			return metrics
 
 		case <-scanChan:
 			// Scanner finished
+			metrics.Outcome = StreamCompleted
 			if err := scanner.Err(); err != nil {
 				slog.Error("error reading stream", "error", err, "provider", adapter.Name())
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "scanner_error")
 				}
+				// The scanner stopping on an error is not a completed stream,
+				// even though it arrives on the same channel as a clean end.
+				metrics.Outcome = StreamReadError
 			}
 			return metrics
 
@@ -406,11 +496,19 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
 				}
+				metrics.Outcome = StreamChunkError
 				return metrics
 			}
 
-			// Check if stream ended
+			// Check if stream ended.
+			//
+			// This is the NORMAL completion path for an SSE stream and it is a
+			// separate return from the scanner-finished case above. It was
+			// missed when outcomes were first threaded through this loop, so a
+			// cleanly completed stream carried the zero-value outcome and was
+			// attested as a provider failure. The allow-path canary caught it.
 			if strings.Contains(line, "[DONE]") {
+				metrics.Outcome = StreamCompleted
 				return metrics
 			}
 		}

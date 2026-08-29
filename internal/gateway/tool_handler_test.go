@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
@@ -104,6 +105,8 @@ func (b *blockRecordingAudit) LogFilterBlock(requestID, orgID, teamID, keyID, fi
 }
 func (b *blockRecordingAudit) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
 func (b *blockRecordingAudit) LogModelDenied(_, _, _, _, _ string, _ string)         {}
+func (b *blockRecordingAudit) LogRequestComplete(_ audit.CompletedRequest)           {}
+func (b *blockRecordingAudit) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
 
 // newToolHandler wires a handler with the real filter chain and validator, an
 // alias routed to the given adapter, and no pricing gate.

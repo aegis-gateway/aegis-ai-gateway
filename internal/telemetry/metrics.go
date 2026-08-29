@@ -74,6 +74,19 @@ type Metrics struct {
 	// A large value on a deployment with retention configured indicates a purge is overdue.
 	// Set to -1 when the table is empty.
 	AuditOldestEventAgeDays prometheus.Gauge
+
+	// AuditWriteFailureTotal counts audit events that were not persisted,
+	// labelled by event type.
+	//
+	// This is the only signal that the decision record is incomplete. A dropped
+	// audit write leaves no row and no gap in the id sequence, because the
+	// sequence only advances on a successful insert, so the sealer cannot
+	// detect it: it seals a contiguous range that is missing an event it never
+	// saw. Nothing downstream can reconstruct the loss either.
+	//
+	// Any non-zero value means the trail has holes and the completeness claim
+	// does not hold for the affected window. Alert on any increase.
+	AuditWriteFailureTotal *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -224,7 +237,27 @@ func NewMetrics() *Metrics {
 				"A large value on a deployment with retention configured indicates a purge is overdue. " +
 				"Set to -1 when the table is empty.",
 		}),
+
+		AuditWriteFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_audit_write_failure_total",
+			Help: "Audit events that could not be written, by event type. " +
+				"A dropped write leaves no row and no id gap, so the sealer " +
+				"cannot detect it: any non-zero value means the decision " +
+				"record is incomplete for that window. Alert on any increase.",
+		}, []string{"event_type"}),
 	}
+}
+
+// RecordAuditWriteFailure records an audit event that was not persisted.
+//
+// Nil-safe on the receiver: the audit logger is constructed in contexts that
+// have no metrics registry, and losing the counter must not also lose the write
+// attempt that was trying to report a loss.
+func (m *Metrics) RecordAuditWriteFailure(eventType string) {
+	if m == nil || m.AuditWriteFailureTotal == nil {
+		return
+	}
+	m.AuditWriteFailureTotal.WithLabelValues(eventType).Inc()
 }
 
 // RecordRequest records metrics for a completed request.

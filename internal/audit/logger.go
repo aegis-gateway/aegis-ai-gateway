@@ -22,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 )
 
 // EventType represents the type of audit event.
@@ -84,6 +86,20 @@ func i64Ptr(i int64) *int64 { return &i }
 // Logger writes audit events to the database.
 type Logger struct {
 	db *pgxpool.Pool
+
+	// metrics is optional. When present, every dropped write increments
+	// aegis_audit_write_failure_total, which is the only signal that the
+	// decision record is incomplete: a failed insert leaves no row and no gap
+	// in the id sequence, so the sealer cannot detect the loss.
+	metrics *telemetry.Metrics
+}
+
+// WithMetrics returns a logger that reports dropped writes to the given
+// registry. Separate from NewLogger so existing callers, including tests that
+// have no registry, are unaffected.
+func (l *Logger) WithMetrics(m *telemetry.Metrics) *Logger {
+	l.metrics = m
+	return l
 }
 
 // NewLogger creates a new audit logger.
@@ -164,6 +180,10 @@ func (l *Logger) writeEvent(event Event) {
 	)
 
 	if err != nil {
+		// The write is lost and unrecoverable: nothing retries it, and no gap
+		// appears anywhere for the sealer or a reader to notice. The counter is
+		// the only durable trace that the record is incomplete.
+		l.metrics.RecordAuditWriteFailure(string(event.EventType))
 		slog.Error("failed to write audit event",
 			"error", err,
 			"request_id", event.RequestID,
@@ -277,6 +297,138 @@ func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, i
 		Model:          strPtr(model),
 		Reason:         strPtr("model_not_allowed"),
 	})
+}
+
+// Provider failure reasons. Enumerated because audit_events.reason is sealed
+// and free text there is permanent: a provider error body is unbounded and
+// echoes caller content, so it must never reach this column.
+const (
+	// ReasonProviderUnreachable covers a transport failure: the request never
+	// produced a response, including after retries.
+	ReasonProviderUnreachable = "provider_unreachable"
+	// ReasonProviderError covers a response the provider returned and the
+	// gateway could not use, which includes any non-200 status.
+	ReasonProviderError = "provider_error"
+	// ReasonStreamInterrupted covers a stream that began and did not finish
+	// because the provider stopped, a deadline elapsed, or a chunk could not be
+	// processed.
+	ReasonStreamInterrupted = "stream_interrupted"
+	// ReasonClientDisconnected covers a stream the caller abandoned. It is not
+	// a provider fault, and is recorded separately so that an operator counting
+	// provider failures is not misled by callers hanging up.
+	ReasonClientDisconnected = "client_disconnected"
+)
+
+// CompletedRequest is what an allow event records.
+//
+// A struct rather than a long parameter list because the two call sites, the
+// non-streaming handler and the streaming handler, are in different files and
+// must not drift: a positional argument swapped between them would compile.
+type CompletedRequest struct {
+	RequestID      string
+	OrganizationID string
+	TeamID         string
+	UserID         string
+	KeyID          string
+	KeyPrefix      string
+	Endpoint       string
+	// RequestedModel is the alias the caller asked for, from models.yaml.
+	RequestedModel string
+	// ProviderKey is the configured provider name that served the request, not
+	// the adapter type. The two differ: azure_openai and internal_vllm are both
+	// served by the OpenAI adapter and both report "openai".
+	ProviderKey string
+	StatusCode  int
+	IPAddress   string
+	Stream      bool
+}
+
+// LogRequestComplete records that a request passed every gate and completed.
+//
+// Until this existed, audit_events held only refusals. A permitted request
+// produced a usage_records row, a log line and Prometheus counters, none of
+// which the sealer covers, so the chain attested what was refused and nothing
+// about what was allowed. A decision record that only records denials cannot
+// answer "what did this key actually do", which is the question an assessor
+// asks first.
+//
+// WHAT THIS EVENT CANNOT CARRY, and why. audit_events has twenty-six columns
+// and all twenty-six are in the leaf hash at hash_schema_version=2, a 1:1
+// correspondence verified against internal/audit/checkpoint/event.go. There is
+// no column for latency, for prompt or completion tokens, for the resolved
+// concrete model, or for classification. Adding one and putting it in the hash
+// changes every leaf hash and requires hash_schema_version=3, which is deferred
+// under ADR 0011 and tracked on issue #38. Adding one and leaving it OUT of the
+// hash would be worse: it would be the first audit_events column not covered by
+// the chain, so the fields carrying the evidence would be the fields nothing
+// attests, while the record looked more complete than it is.
+//
+// So this event carries identity, outcome, and routing, all attested. The token
+// counts and latency for the same request_id are in usage_records, which is not
+// sealed. See docs/evidence/known-limitations.md section 2.14.
+func (l *Logger) LogRequestComplete(req CompletedRequest) {
+	l.Log(Event{
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now(),
+		EventType:      EventRequestComplete,
+		OrganizationID: req.OrganizationID,
+		TeamID:         req.TeamID,
+		UserID:         strPtr(req.UserID),
+		APIKeyID:       strPtr(req.KeyID),
+		APIKeyPrefix:   strPtr(req.KeyPrefix),
+		IPAddress:      req.IPAddress,
+		Endpoint:       req.Endpoint,
+		Method:         "POST",
+		StatusCode:     req.StatusCode,
+		Provider:       strPtr(req.ProviderKey),
+		Model:          strPtr(req.RequestedModel),
+		// Mode distinguishes a streamed completion from a buffered one. The
+		// two take different code paths with different usage accounting, and
+		// an assessor reading the trail cannot otherwise tell them apart.
+		Mode: strPtr(streamMode(req.Stream)),
+	})
+}
+
+// LogProviderFailure records a request that passed every gate and then failed at
+// the provider.
+//
+// Without it an allowed request that fails produces no attested event at all,
+// which is the same completeness hole as an unattested success in a different
+// place: the trail would show requests that were permitted and completed, and
+// requests that were refused, with the failures missing entirely.
+//
+// reason is a fixed classification string, never provider text. Provider error
+// bodies are unbounded and echo caller content, and audit_events.reason is
+// sealed, so anything put here is permanent. internal/redact exists for the log
+// path; this column takes an enumerated value only.
+func (l *Logger) LogProviderFailure(req CompletedRequest, reason string) {
+	l.Log(Event{
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now(),
+		EventType:      EventProviderFailure,
+		OrganizationID: req.OrganizationID,
+		TeamID:         req.TeamID,
+		UserID:         strPtr(req.UserID),
+		APIKeyID:       strPtr(req.KeyID),
+		APIKeyPrefix:   strPtr(req.KeyPrefix),
+		IPAddress:      req.IPAddress,
+		Endpoint:       req.Endpoint,
+		Method:         "POST",
+		StatusCode:     req.StatusCode,
+		ErrorMessage:   "Provider request failed",
+		Provider:       strPtr(req.ProviderKey),
+		Model:          strPtr(req.RequestedModel),
+		Mode:           strPtr(streamMode(req.Stream)),
+		Reason:         strPtr(reason),
+	})
+}
+
+// streamMode renders the transport as an enumerated value for the mode column.
+func streamMode(stream bool) string {
+	if stream {
+		return "stream"
+	}
+	return "buffered"
 }
 
 // LogRedisFailure logs a Redis connectivity failure.

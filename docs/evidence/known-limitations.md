@@ -473,3 +473,53 @@ message looked suspicious would drop a governance record for a heuristic. Making
 constraint enforceable is a design decision that has not been taken. Until it is, this is
 a documented operator responsibility, and a Rego bundle that will be sealed deserves the
 same review as any other code that writes to the audit trail.
+
+### 2.14 The allow event carries identity and outcome, not tokens or latency
+
+`audit_events` records permitted requests as of 2026-08-29. `request_complete` is written
+when a request passes every gate and completes; `provider_failure` when a request passes
+every gate and then fails at the provider. Before this, only refusals were written, so the
+sealed chain attested what was denied and nothing about what was allowed.
+
+**What an allow event carries**, all of it in existing columns and therefore all of it
+inside the leaf hash: `event_type`, `timestamp`, `request_id`, `organization_id`,
+`team_id`, `user_id`, `api_key_id`, `api_key_prefix`, `endpoint`, `method`, `status_code`,
+`provider` (the configured provider key, not the adapter type), `model` (the requested
+alias), and `mode` (`stream` or `buffered`). A `provider_failure` additionally carries
+`reason`, from a fixed set: `provider_unreachable`, `provider_error`, `stream_interrupted`,
+`client_disconnected`.
+
+**What it does not carry: latency, prompt and completion tokens, the resolved concrete
+model, and classification.** There are no columns for them, and the reason not to add
+columns is specific rather than conservative.
+
+`audit_events` has twenty-six columns and all twenty-six are fields in the leaf hash at
+`hash_schema_version=2`. That correspondence is exact, and it is what makes "the row is
+attested" mean the whole row. Adding a column and putting it in the hash changes every
+leaf hash and requires `hash_schema_version=3`, which is deferred under
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md) and tracked on
+[issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38). Adding a column
+and leaving it out of the hash would be worse than not adding it: the fields carrying the
+evidence would be the only fields nothing attests, and the record would look more complete
+than it is.
+
+So the token counts and the latency for a given `request_id` are in `usage_records`, which
+is **not sealed**. Joining the two gives the full picture of a request and gives it at two
+different levels of assurance. An assessor should be told which half is attested.
+
+If those fields need to be attested, they should be added in the same
+`hash_schema_version=3` bump as the tool names in §2.10, because the bump is the expensive
+part and doing it twice costs twice.
+
+**Loss visibility.** A failed audit write leaves no row and no gap in the id sequence,
+which only advances on a successful insert, so neither the sealer nor a reader can detect
+it. `aegis_audit_write_failure_total`, labelled by event type, is the only signal that the
+record is incomplete. **Any non-zero value means the completeness claim does not hold for
+that window.** Alert on any increase.
+
+**Volume.** `audit_events` now receives one row per request rather than one row per
+refusal. Measured on 2026-08-29: 50,000 events occupy 29 MB including indexes, about
+600 bytes per row, and seal at roughly 31,000 events per second into 10,000-leaf
+checkpoints of about 215 bytes each. A deployment serving a million requests a day should
+budget in the region of 600 MB a day of `audit_events` growth and plan retention
+accordingly.

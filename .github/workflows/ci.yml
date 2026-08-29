@@ -254,6 +254,14 @@ jobs:
           echo "TEST_API_KEY=$key" >> "$GITHUB_ENV"
 
       - name: Start the gateway
+        # AEGIS_MOCK_PROVIDER so the allow-path canaries can reach 200. CI has
+        # no provider credentials, and those tests assert on a PERMITTED
+        # request: without a provider that answers they would fail on the
+        # status check having proved nothing about the audit trail. The
+        # refusal canary is unaffected, because the secrets filter blocks that
+        # request before routing.
+        env:
+          AEGIS_MOCK_PROVIDER: "true"
         run: |
           go run ./cmd/gateway > /tmp/gateway.log 2>&1 &
           echo $! > /tmp/gateway.pid
@@ -299,11 +307,23 @@ jobs:
           set -euo pipefail
           log=$(mktemp)
           go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1 -p 1 | tee "$log"
-          if ! grep -q -- "--- PASS: TestNoPayload_CanaryEndToEnd" "$log"; then
-            echo "::error::TestNoPayload_CanaryEndToEnd did not report PASS; the zero-retention claim is unevidenced by this run"
-            exit 1
-          fi
-          echo "zero-retention canary passed by name"
+          # Each canary is checked BY NAME. `go test -run` exits 0 when its
+          # pattern matches nothing, so a rename or a move would otherwise
+          # leave this step green having run nothing. The allow-path pair is
+          # listed separately from the refusal canary because they cover
+          # different halves of the claim: what was denied, and what was
+          # permitted.
+          for canary in \
+            TestNoPayload_CanaryEndToEnd \
+            TestNoPayload_AllowPathCanaryEndToEnd \
+            TestNoPayload_StreamingAllowPathCanaryEndToEnd
+          do
+            if ! grep -q -- "--- PASS: $canary" "$log"; then
+              echo "::error::$canary did not report PASS; the decision-record claim is unevidenced by this run"
+              exit 1
+            fi
+          done
+          echo "all three audit canaries passed by name"
         env:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           TEST_SERVER_URL: http://localhost:8080

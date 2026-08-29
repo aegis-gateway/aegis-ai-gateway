@@ -265,8 +265,13 @@ func main() {
 		cfg.Routing.CircuitBreaker.RecoveryProbeInterval,
 	)
 
-	// Build audit logger
-	auditLogger := audit.NewLogger(dbPool)
+	// Build audit logger.
+	//
+	// WithMetrics so a dropped audit write increments
+	// aegis_audit_write_failure_total. That counter is the only signal that the
+	// decision record is incomplete: a failed insert leaves no row and no gap
+	// in the id sequence, so neither the sealer nor a reader can detect it.
+	auditLogger := audit.NewLogger(dbPool).WithMetrics(metrics)
 
 	// Build retry executor
 	retryConfig := retry.Config{

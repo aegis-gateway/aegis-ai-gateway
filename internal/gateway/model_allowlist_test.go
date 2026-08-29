@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -34,6 +35,8 @@ type modelDenialSpy struct {
 
 func (s *modelDenialSpy) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
 func (s *modelDenialSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
+func (s *modelDenialSpy) LogRequestComplete(_ audit.CompletedRequest)           {}
+func (s *modelDenialSpy) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
 func (s *modelDenialSpy) LogModelDenied(requestID, org, team, key, model string, _ string) {
 	s.denied = append(s.denied, struct{ RequestID, Org, Team, Key, Model string }{
 		requestID, org, team, key, model})

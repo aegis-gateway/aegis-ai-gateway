@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -43,6 +44,8 @@ type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
 	LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string)
+	LogRequestComplete(req audit.CompletedRequest)
+	LogProviderFailure(req audit.CompletedRequest, reason string)
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -392,6 +395,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.healthTracker != nil {
 			h.healthTracker.RecordFailure(adapter.Name())
 		}
+		// This request passed every gate and then failed at the provider.
+		// Without an event here it would produce no attested record at all,
+		// which is the completeness hole an allow event exists to close,
+		// reached from the other side.
+		if h.auditLogger != nil {
+			h.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+				audit.ReasonProviderUnreachable)
+		}
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
@@ -410,6 +422,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"provider", providerKey,
 			"adapter", adapter.Name(),
 		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, providerResp.StatusCode, false),
+				audit.ReasonProviderError)
+		}
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
 	}
@@ -494,6 +511,19 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			CompletionTokens: aegisResp.Usage.CompletionTokens,
 			CostUSD:          aegisResp.EstimatedCostUSD,
 		})
+	}
+
+	// Attest the allow, next to the usage write so the two cannot drift.
+	//
+	// audit_events held only refusals until this existed, so the sealed chain
+	// recorded what was denied and nothing about what was permitted. The usage
+	// row, the log line above and the Prometheus counters are all unsealed, so
+	// none of them is evidence.
+	//
+	// Asynchronous, like every other audit write: Logger.Log spawns a goroutine
+	// and this must never add latency to or fail the caller's request.
+	if h.auditLogger != nil {
+		h.auditLogger.LogRequestComplete(completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false))
 	}
 
 	// Record usage asynchronously (non-blocking)

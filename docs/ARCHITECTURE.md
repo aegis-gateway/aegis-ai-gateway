@@ -110,7 +110,20 @@ The adapter's `TransformResponse` normalizes the provider response into `types.A
 
 Two writes happen asynchronously (non-blocking) after the response is sent:
 
-- **`audit.Logger`** — writes security-relevant events (auth failures, filter blocks, rate limit violations) to `audit_events`.
+- **`audit.Logger`** — writes security-relevant events to `audit_events`: refusals (auth
+  failures, filter blocks, rate limit and budget violations, pricing denials, model
+  allowlist denials) and, since 2026-08-29, permitted requests as well. A request that
+  passes every gate and completes writes `request_complete`; one that passes every gate
+  and then fails at the provider writes `provider_failure`. Before that the sealed chain
+  attested what was refused and nothing about what was allowed.
+
+  An allow event carries identity, outcome and routing: request ID, organization, team,
+  user, key ID and key prefix, endpoint, method, status code, the configured provider key,
+  the requested model alias, and whether the response was streamed. It does **not** carry
+  latency, token counts, the resolved concrete model, or classification: there are no
+  columns for those, and adding one would require a `hash_schema_version` bump. Those
+  fields live in `usage_records` for the same request ID, which is not sealed. See
+  [known limitations §2.14](evidence/known-limitations.md).
 - **`storage.UsageRecorder`** — writes per-request token and cost data to `usage_records`.
 
 Neither write blocks the response path. Failures are logged but do not affect the client.
