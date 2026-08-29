@@ -45,3 +45,24 @@ func TestMaxRequestID_MatchesTheColumnWidth(t *testing.T) {
 			"an insert with a longer id fails and the row is lost", MaxRequestID, columnWidth)
 	}
 }
+
+// Every text column written to audit_events must be clipped, because an
+// over-long value is rejected by PostgreSQL rather than truncated and costs the
+// whole row. The organization, team and user ids are bounded upstream by the
+// api_keys schema; the rest are clipped here.
+//
+// This asserts the two request-derived ones, which are the ones that stop being
+// safe the moment a wildcard or path-parameter route is added.
+func TestClip_BoundsTheRequestDerivedColumns(t *testing.T) {
+	for name, tc := range map[string]struct {
+		value string
+		limit int
+	}{
+		"endpoint": {strings.Repeat("/x", 500), MaxEndpoint},
+		"method":   {strings.Repeat("M", 50), MaxMethod},
+	} {
+		if got := len(clip(tc.value, tc.limit)); got != tc.limit {
+			t.Errorf("%s clipped to %d, want %d", name, got, tc.limit)
+		}
+	}
+}

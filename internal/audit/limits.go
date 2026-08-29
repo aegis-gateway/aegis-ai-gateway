@@ -56,7 +56,18 @@ const (
 	// row: the request succeeded, returned 200, and left nothing in the trail.
 	// Now that every permitted request writes an event, that was reachable on
 	// the happy path by any caller.
-	MaxRequestID      = 50
+	MaxRequestID = 50
+	// MaxEndpoint and MaxMethod match audit_events.endpoint VARCHAR(200) and
+	// method VARCHAR(10).
+	//
+	// Both are derived from the request. Today every route is an exact match,
+	// so the path can only be one of a handful of literals and neither can
+	// overflow. They are clipped anyway because that stops being true the
+	// moment someone adds a wildcard or path-parameter route, and the failure
+	// mode is the one that already cost a request its whole audit row: an
+	// over-long value is rejected by PostgreSQL rather than truncated.
+	MaxEndpoint       = 200
+	MaxMethod         = 10
 	MaxAPIKeyPrefix   = 32
 	MaxLimitDimension = 32
 	MaxFilterType     = 32

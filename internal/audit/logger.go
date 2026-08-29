@@ -200,6 +200,8 @@ func (l *Logger) writeEvent(event Event) {
 	// far more than a dropped one.
 	event.RequestID = clip(event.RequestID, MaxRequestID)
 	event.IPAddress = clip(event.IPAddress, MaxIPAddress)
+	event.Endpoint = clip(event.Endpoint, MaxEndpoint)
+	event.Method = clip(event.Method, MaxMethod)
 	event.ErrorMessage = clip(event.ErrorMessage, MaxErrorMessage)
 	event.UserAgent = clip(event.UserAgent, MaxUserAgent)
 	event.APIKeyPrefix = clipPtr(event.APIKeyPrefix, MaxAPIKeyPrefix)
