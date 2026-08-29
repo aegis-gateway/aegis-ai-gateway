@@ -268,9 +268,10 @@ func main() {
 	// Build audit logger.
 	//
 	// WithMetrics so a dropped audit write increments
-	// aegis_audit_write_failure_total. That counter is the only signal that the
-	// decision record is incomplete: a failed insert leaves no row and no gap
-	// in the id sequence, so neither the sealer nor a reader can detect it.
+	// aegis_audit_write_failure_total. A write rejected before its id is
+	// allocated leaves no row and no gap, and the counter is then the only
+	// signal; one that fails after allocation leaves a permanent gap that
+	// stalls the sealer. See docs/evidence/known-limitations.md 2.14.
 	auditLogger := audit.NewLogger(dbPool).WithMetrics(metrics)
 
 	// Build retry executor
@@ -403,12 +404,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulShutdown)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
-		os.Exit(1)
-	}
+	shutdownErr := srv.Shutdown(ctx)
 
-	// Drain the audit writes before the deferred dbPool.Close runs.
+	// Drain the audit writes before the deferred dbPool.Close runs, and before
+	// any exit.
 	//
 	// srv.Shutdown waits for handlers, and audit writes are deliberately
 	// asynchronous so they add no latency to a request, so at this point there
@@ -416,12 +415,29 @@ func main() {
 	// here would lose them, and every affected caller has already had a 200:
 	// a routine rollout would quietly drop the tail of the decision record.
 	//
-	// Bounded by the same shutdown deadline. If it expires with writes still
-	// outstanding that is a real gap, so it is logged as one rather than
-	// passed over.
-	if !auditLogger.Drain(ctx) {
-		logger.Error("shutdown deadline reached with audit writes still in flight; " +
+	// Its own deadline, not the shutdown context. Those writes are spawned as
+	// handlers return, which is when Shutdown returns, so whatever remains of
+	// the graceful budget is at its smallest exactly when this needs it. A
+	// long-running stream can consume the whole budget on its own, and the
+	// events most at risk would then get no time at all.
+	//
+	// Sized from audit.WriteTimeout, which bounds a single insert, plus a
+	// margin. No in-flight write can outlive that, so the drain cannot cut one
+	// short and cannot hang either.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), audit.WriteTimeout+time.Second)
+	if !auditLogger.Drain(drainCtx) {
+		logger.Error("audit writes still in flight after the drain deadline; " +
 			"the decision record is incomplete for the final requests")
+	}
+	drainCancel()
+
+	// Reported after the drain, not before. A shutdown that times out is
+	// exactly the case where handlers were still running and their audit
+	// events are most likely to be outstanding, so exiting on it first would
+	// abandon the writes this drain exists to save.
+	if shutdownErr != nil {
+		logger.Error("graceful shutdown failed", "error", shutdownErr)
+		os.Exit(1)
 	}
 
 	logger.Info("gateway stopped")

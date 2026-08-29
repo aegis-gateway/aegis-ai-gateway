@@ -47,11 +47,18 @@ func TestDrain_WaitsForAcceptedWrites(t *testing.T) {
 func TestDrain_ReportsAnExpiredDeadline(t *testing.T) {
 	l := NewLogger(nil)
 
-	// Hold one write open so the drain cannot finish.
+	// Hold one write open so the drain cannot finish. Both counters are
+	// incremented because that is what Log does: pending is what Drain waits
+	// on, and inFlight is what it consults when the deadline wins. Touching
+	// only one would make this test disagree with the code it is checking,
+	// which is how it first passed against a drain that could not see the
+	// outstanding write at all.
 	release := make(chan struct{})
 	l.pending.Add(1)
+	l.inFlight.Add(1)
 	go func() {
 		<-release
+		l.inFlight.Add(-1)
 		l.pending.Done()
 	}()
 	defer close(release)
@@ -76,5 +83,28 @@ func TestDrain_ReturnsImmediatelyWhenIdle(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("Drain took %v with nothing pending", elapsed)
+	}
+}
+
+// A drain that finished must not be reported as a timeout just because the
+// deadline had also passed.
+//
+// select chooses at random when both channels are ready, so a shutdown that
+// drained exactly as its deadline landed would report loss half the time and
+// the process would log an incomplete decision record that did not happen.
+// Passing an already-cancelled context with nothing pending is the
+// deterministic form of that race: the first select must pick one of the two
+// arms, and the answer must be "drained" either way.
+func TestDrain_AlreadyCancelledContextWithNothingPendingIsNotALoss(t *testing.T) {
+	l := NewLogger(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // expired before Drain is even called
+
+	for i := 0; i < 50; i++ {
+		if !l.Drain(ctx) {
+			t.Fatalf("attempt %d: Drain reported outstanding writes when none were pending; "+
+				"a cancelled context alone is not evidence of loss", i)
+		}
 	}
 }

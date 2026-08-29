@@ -78,14 +78,22 @@ type Metrics struct {
 	// AuditWriteFailureTotal counts audit events that were not persisted,
 	// labelled by event type.
 	//
-	// This is the only signal that the decision record is incomplete. A dropped
-	// audit write leaves no row and no gap in the id sequence, because the
-	// sequence only advances on a successful insert, so the sealer cannot
-	// detect it: it seals a contiguous range that is missing an event it never
-	// saw. Nothing downstream can reconstruct the loss either.
+	// What a failure leaves behind depends on where it failed, and the
+	// difference matters operationally.
+	//
+	// Rejected BEFORE the id is allocated, such as an over-long value in a
+	// bounded column: the sequence does not advance, the ids stay contiguous,
+	// and this counter is the only signal that anything was lost.
+	//
+	// Failed AFTER the id is allocated, such as the insert timing out or the
+	// connection dropping: sequence increments are not rolled back, so the id
+	// is consumed permanently and the gap stalls the sealer, which refuses to
+	// seal past one.
 	//
 	// Any non-zero value means the trail has holes and the completeness claim
-	// does not hold for the affected window. Alert on any increase.
+	// does not hold for the affected window. Alert on any increase, and read it
+	// together with aegis_audit_last_seal_age_seconds: both rising is the
+	// stalled-chain case, not a sealer outage.
 	AuditWriteFailureTotal *prometheus.CounterVec
 }
 
@@ -241,9 +249,12 @@ func NewMetrics() *Metrics {
 		AuditWriteFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "aegis_audit_write_failure_total",
 			Help: "Audit events that could not be written, by event type. " +
-				"A dropped write leaves no row and no id gap, so the sealer " +
-				"cannot detect it: any non-zero value means the decision " +
-				"record is incomplete for that window. Alert on any increase.",
+				"Any non-zero value means the decision record is incomplete " +
+				"for that window. A write rejected before its id is allocated " +
+				"leaves no trace but this counter; one that fails after " +
+				"allocation leaves a permanent id gap that stalls the sealer. " +
+				"Alert on any increase, and read alongside " +
+				"aegis_audit_last_seal_age_seconds.",
 		}, []string{"event_type"}),
 	}
 }

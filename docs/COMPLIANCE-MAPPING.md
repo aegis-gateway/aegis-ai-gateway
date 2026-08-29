@@ -106,9 +106,12 @@ kernel, and remote receipt would require an application-level acknowledgement th
 does not carry. Read the row as evidence of what the gateway
 produced and sent.
 
-A dropped audit write leaves no row and no gap in the id sequence, so it is undetectable
-from the data. `aegis_audit_write_failure_total` is the only signal; a non-zero value means
-the record is incomplete for that window.
+A dropped audit write is not always detectable from the data. One rejected before its id is
+allocated leaves no row and no gap, and `aegis_audit_write_failure_total` is the only
+signal. One that fails after allocation consumes the id permanently and leaves a gap, which
+stalls the sealer, since it refuses to seal past a gap. A non-zero counter means the record
+is incomplete for that window; the counter rising together with
+`aegis_audit_last_seal_age_seconds` means the chain has stopped advancing as well.
 
 ### Model allowlist semantics
 

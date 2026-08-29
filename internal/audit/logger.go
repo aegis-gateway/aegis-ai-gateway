@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -84,6 +85,11 @@ func strPtr(s string) *string {
 
 func i64Ptr(i int64) *int64 { return &i }
 
+// WriteTimeout bounds a single audit insert. It is exported so a shutdown can
+// size its drain budget from the real value rather than guessing: no in-flight
+// write can outlive it, so a drain deadline above it cannot cut one short.
+const WriteTimeout = 5 * time.Second
+
 // Logger writes audit events to the database.
 type Logger struct {
 	db *pgxpool.Pool
@@ -95,10 +101,23 @@ type Logger struct {
 	// and loses its event on every rollout.
 	pending sync.WaitGroup
 
+	// inFlight is the same count as pending, readable without blocking.
+	//
+	// A WaitGroup cannot be asked whether it is zero, and on a drain timeout
+	// that is exactly the question: the deadline passing is not itself evidence
+	// that anything was lost, because the writes may have finished while the
+	// select was running, or the goroutine that reports completion may simply
+	// not have been scheduled yet. This is the fact the timeout branch checks.
+	inFlight atomic.Int64
+
 	// metrics is optional. When present, every dropped write increments
-	// aegis_audit_write_failure_total, which is the only signal that the
-	// decision record is incomplete: a failed insert leaves no row and no gap
-	// in the id sequence, so the sealer cannot detect the loss.
+	// aegis_audit_write_failure_total.
+	//
+	// A write rejected before the id is allocated, such as an over-long value
+	// in a bounded column, leaves no row and no gap, and the counter is then
+	// the only signal. A write that fails AFTER the id is allocated consumes it
+	// permanently, because sequence increments are not rolled back, and the
+	// resulting gap stalls the sealer. See known-limitations 2.14.
 	metrics *telemetry.Metrics
 }
 
@@ -118,8 +137,14 @@ func NewLogger(db *pgxpool.Pool) *Logger {
 // Log records an audit event asynchronously.
 func (l *Logger) Log(event Event) {
 	l.pending.Add(1)
+	l.inFlight.Add(1)
 	go func() {
-		defer l.pending.Done()
+		// inFlight first, so that a Wait returning implies a zero count rather
+		// than the two disagreeing for an instant.
+		defer func() {
+			l.inFlight.Add(-1)
+			l.pending.Done()
+		}()
 		l.writeEvent(event)
 	}()
 }
@@ -145,7 +170,12 @@ func (l *Logger) Drain(ctx context.Context) bool {
 	case <-done:
 		return true
 	case <-ctx.Done():
-		return false
+		// The deadline passing is not evidence of loss on its own. select
+		// chooses at random when both arms are ready, and the goroutine that
+		// closes done may not have been scheduled even when every write has
+		// finished. Reporting a timeout on either would make the process log an
+		// incomplete decision record that did not happen, so the count decides.
+		return l.inFlight.Load() == 0
 	}
 }
 
@@ -155,7 +185,7 @@ func (l *Logger) writeEvent(event Event) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), WriteTimeout)
 	defer cancel()
 
 	// Clip every value that lands in a bounded column before the insert. See
