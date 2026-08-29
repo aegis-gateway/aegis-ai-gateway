@@ -320,6 +320,15 @@ jobs:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           TEST_REDIS_URL: localhost:6379
 
+      # The usage INSERT keeps three parallel lists in step — columns, $N
+      # placeholders and Exec arguments — and RecordUsage swallows a mismatch
+      # into a goroutine, so getting it wrong costs every usage row silently.
+      # This step is the only thing that reaches Postgres to check.
+      - name: Usage storage round trip
+        run: go test ./internal/storage/... -tags=integration -v -count=1
+        env:
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+
       - name: Gateway logs
         if: always()
         run: cat /tmp/gateway.log || true
