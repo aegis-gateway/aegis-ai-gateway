@@ -199,6 +199,47 @@ func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string)
 	})
 }
 
+// ModelNotAllowedReason is the fixed reason string recorded when a key is
+// refused a model alias its allowlist does not carry.
+//
+// A constant, and free of caller-supplied text. The alias itself is recorded in
+// the model column, where it is an operator-configured identifier drawn from
+// configs/models.yaml rather than an arbitrary string: DecodeChatCompletion
+// accepts any model value, but a request whose alias is not a configured key
+// never reaches this call site because it is refused as an unknown model first.
+const ModelNotAllowedReason = "model alias not in the key's allowed_models"
+
+// LogModelDenied records a request refused because the API key's allowed_models
+// does not carry the requested alias.
+//
+// It reuses EventAuthFailure rather than introducing an event type: this is an
+// authorization denial against an identified key, which is the category that
+// constant names, and the audit read API and the sealed chain both key off the
+// existing set.
+//
+// It does not reuse LogAuthFailure, which is the pre-identification path and
+// deliberately records UnattributedOrg. This caller is authenticated and its
+// organization is known, so recording the sentinel here would file a tenant's
+// own authorization denials under the operator sentinel that Reader refuses to
+// scope to, and the organization would never see them in its own audit export.
+func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, statusCode int, ip string) {
+	l.Log(Event{
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventAuthFailure,
+		OrganizationID: orgID,
+		TeamID:         teamID,
+		APIKeyID:       &keyID,
+		IPAddress:      ip,
+		Endpoint:       "/v1/chat/completions",
+		Method:         "POST",
+		StatusCode:     statusCode,
+		ErrorMessage:   "Model not permitted for this API key",
+		Reason:         strPtr(ModelNotAllowedReason),
+		Model:          strPtr(model),
+	})
+}
+
 // LogRateLimitViolation logs a rate limit violation.
 func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, ip string) {
 	l.Log(Event{

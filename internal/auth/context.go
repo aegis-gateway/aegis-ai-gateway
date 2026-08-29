@@ -45,3 +45,27 @@ func AuthFromContext(ctx context.Context) (*AuthInfo, bool) {
 	info, ok := ctx.Value(authContextKey).(*AuthInfo)
 	return info, ok
 }
+
+// ModelAllowed reports whether this key may use the given model alias.
+//
+// An empty AllowedModels means every configured alias is permitted. That is the
+// semantics ListModels has always had, and it is the semantics the database
+// carries: cmd/keygen writes an empty JSON array for a key with no restriction,
+// so "unset" and "permits nothing" would otherwise be the same stored value.
+// Reading an empty list as a deny-all would revoke every key issued to date.
+//
+// It is a method on AuthInfo rather than a helper beside either call site
+// because the model listing and the model enforcement must agree: a key that is
+// shown an alias by GET /v1/models and then refused it by
+// POST /v1/chat/completions is a bug in whichever of the two moved last.
+func (a *AuthInfo) ModelAllowed(model string) bool {
+	if len(a.AllowedModels) == 0 {
+		return true
+	}
+	for _, m := range a.AllowedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}

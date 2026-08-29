@@ -42,6 +42,7 @@ import (
 type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
+	LogModelDenied(requestID, orgID, teamID, keyID, model string, statusCode int, ip string)
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -177,6 +178,43 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.metrics.RecordFilterAction(fr.FilterName, "flag")
 			}
 		}
+	}
+
+	// Enforce the API key's model allowlist before routing.
+	//
+	// This is an authorization check on the alias the caller asked for, not on
+	// the concrete model it resolves to: allowed_models holds alias names, and
+	// GET /v1/models advertises alias names, so enforcing on anything else
+	// would let the listing and the enforcement disagree. AuthInfo.ModelAllowed
+	// is the single definition both use.
+	//
+	// Deliberately after the filter chain and before ResolveRoute. Before
+	// routing, because a request the key may not make must not reach a
+	// provider, be priced, or open a circuit. After the filters, because a
+	// request carrying a secret is already recorded as a filter_block today,
+	// and moving this check above them would replace that attested event with
+	// this one rather than adding to it. The narrower governance record wins,
+	// which is the same ordering rule the tool-capability refusal below states.
+	if !authInfo.ModelAllowed(aegisReq.Model) {
+		slog.Warn("request refused: model not in the key's allowlist",
+			"request_id", reqID,
+			"model", aegisReq.Model,
+			"org_id", authInfo.OrganizationID,
+			"team_id", authInfo.TeamID,
+		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID,
+				authInfo.KeyID, aegisReq.Model, http.StatusServiceUnavailable, r.RemoteAddr)
+		}
+		// The same status and envelope as the classification-ceiling refusal
+		// below, which is the other way a key can be denied a route it named.
+		// Two refusals that mean "this key may not reach that provider" should
+		// not be distinguishable by shape, and the specific cause is in the
+		// audit row rather than in a response to the caller who tripped it.
+		httputil.WriteServiceUnavailableError(w, reqID,
+			"No provider available: no eligible provider for model "+aegisReq.Model+
+				" at classification "+string(aegisReq.Classification))
+		return
 	}
 
 	// Route to provider
@@ -496,18 +534,11 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	modelsCfg := h.modelsCfg()
 	var models []modelObject
 	for name, mapping := range modelsCfg.Models {
-		// Filter by allowed models if set
-		if len(authInfo.AllowedModels) > 0 {
-			allowed := false
-			for _, m := range authInfo.AllowedModels {
-				if m == name {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
+		// The same predicate ChatCompletions enforces. Listing an alias here
+		// that the completion path would refuse is the defect this shared
+		// method exists to make impossible.
+		if !authInfo.ModelAllowed(name) {
+			continue
 		}
 
 		_ = mapping

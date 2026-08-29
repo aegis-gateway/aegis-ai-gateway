@@ -12,6 +12,16 @@ to `0344929`, where `internal/audit/reader.go` does not exist, so the citation f
 export claim resolved to a missing file. Caught in review.
 Every row cites a package, file, or test. A row with no citation is not in this table.
 
+**One row is ahead of the pin, and says so rather than being quietly dropped.** The CC6.1
+row cites per-key model allowlist *enforcement*. At both pinned commits the allowlist was
+stored on the key and applied only by `GET /v1/models`; `ChatCompletions` did not consult
+it, so a key restricted to one alias was served any of them. That is now enforced before
+routing, with `TestChatCompletions_ModelAllowlist` and
+`TestModelAllowlist_ListAndCompletionAgree` covering it, but the change postdates
+`c74fa7a` and the row is therefore not verifiable against the tree those links resolve to.
+It is cited by path and test name until the next verification pass re-pins this document.
+Do not quote the CC6.1 row against a pinned tree before then.
+
 ## How to read this
 
 Each row says: here is an artifact the gateway emits, here is where it comes from, and
@@ -72,7 +82,7 @@ AEGIS.
 
 | Criterion | Subject | Which artifacts above are relevant |
 |---|---|---|
-| CC6.1 | Logical access controls | API key authentication, per-key model allowlists ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)) |
+| CC6.1 | Logical access controls | API key authentication ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)), classification ceilings on each route, per-key model allowlists enforced on the completion path (`internal/gateway/handler.go`, `internal/auth/context.go`, `TestChatCompletions_ModelAllowlist`). See the note below on this row's pin. |
 | CC7.2 | Monitoring for anomalies | Denial record, rate-limit and budget violations |
 | CC7.3 | Evaluation of security events | Denial record with reason and stage |
 | P4.2 | Retention and disposal of personal information | Purge, plus the absence of payload retention |

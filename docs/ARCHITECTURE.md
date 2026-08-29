@@ -74,7 +74,25 @@ type Filter interface {
 
 If a filter blocks, `audit.Logger.LogFilterBlock` writes a `filter_block` event to `audit_events` (async) and the handler returns HTTP 451.
 
-### 5. Provider routing (`internal/router`)
+### 5. Model allowlist enforcement (`internal/gateway`, `internal/auth`)
+
+Before routing, `ChatCompletions` checks the requested alias against the calling key's
+`allowed_models` using `AuthInfo.ModelAllowed` (`internal/auth/context.go`). An empty
+allowlist permits every configured alias; a non-empty one permits exactly the aliases it
+names, matched literally, so a deprecated alias is not implied by the alias it names.
+
+A key that is refused gets HTTP 503 in the same envelope as the classification-ceiling
+refusal in step 6, and an `auth_failure` event is written to `audit_events` carrying the
+authenticated organization, the requested alias, and a fixed reason string. The two
+refusals are deliberately indistinguishable to the caller: both mean the key may not reach
+that route, and the specific cause is in the audit record rather than in the response.
+
+`GET /v1/models` filters its listing through the same `ModelAllowed` method, so the
+listing and the enforcement cannot disagree.
+`TestModelAllowlist_ListAndCompletionAgree` (`internal/gateway/model_allowlist_test.go`)
+asserts that.
+
+### 6. Provider routing (`internal/router`)
 
 `router.ResolveRoute` maps the requested model alias to a concrete `(provider, model)` pair using `configs/models.yaml`. The routing algorithm:
 
@@ -85,13 +103,13 @@ If a filter blocks, `audit.Logger.LogFilterBlock` writes a `filter_block` event 
 
 Classification levels are ordered `PUBLIC < INTERNAL < CONFIDENTIAL < RESTRICTED`. A route with `classification_ceiling: CONFIDENTIAL` accepts PUBLIC, INTERNAL, and CONFIDENTIAL requests but rejects RESTRICTED ones.
 
-### 6. OPA policy evaluation (`internal/filter/policy`)
+### 7. OPA policy evaluation (`internal/filter/policy`)
 
 After routing (so `provider_type` is known), `policy.Evaluator.ScanRequest` builds a `PolicyInput` struct and evaluates it against compiled Rego modules querying `data.aegis.policy.allow` and `data.aegis.policy.reason`. If OPA returns `allow = false`, the request is blocked with HTTP 451 and a `filter_block` event is written to `audit_events`.
 
 The policy evaluator fails closed: if no policies are loaded or evaluation times out (default 100 ms), the request is blocked.
 
-### 7. Provider HTTP call (`internal/router/adapters`)
+### 8. Provider HTTP call (`internal/router/adapters`)
 
 The resolved `adapters.ProviderAdapter` transforms the `AegisRequest` into the provider's native format and sends it. For non-streaming requests the call is wrapped in `retry.Executor`, which retries on 5xx, 429, 408, and network errors using exponential backoff with jitter (default: 2 retries, initial 100 ms, max 5 s).
 
@@ -102,11 +120,11 @@ Supported adapter types:
 
 For streaming requests (`stream: true`), `StreamingHandler.HandleStream` forwards SSE chunks directly to the client with per-chunk and total timeouts.
 
-### 8. Response and cost calculation (`internal/cost`, `internal/gateway`)
+### 9. Response and cost calculation (`internal/cost`, `internal/gateway`)
 
 The adapter's `TransformResponse` normalizes the provider response into `types.AegisResponse`. The `cost.Calculator` looks up per-token prices from `configs/models.yaml` and computes an estimated USD cost from prompt and completion token counts.
 
-### 9. Audit write (`internal/audit`, `internal/storage`)
+### 10. Audit write (`internal/audit`, `internal/storage`)
 
 Two writes happen asynchronously (non-blocking) after the response is sent:
 
@@ -122,6 +140,11 @@ Neither write blocks the response path. Failures are logged but do not affect th
 ### `api_keys`
 
 Created by the `keygen` CLI tool. Stores a SHA-256 hash of the key (never the plaintext), along with organization/team/user attribution, classification ceiling, optional model allowlist, rate limits, and lifecycle timestamps (created, expires, last used, revoked).
+
+`allowed_models` is a permission, enforced on both the completion path and the model
+listing (step 5 above). `keygen` writes an empty JSON array for every key it issues, and
+an empty array means unrestricted: reading it as "permits nothing" would revoke every key
+already in existence.
 
 ### `audit_logs`
 

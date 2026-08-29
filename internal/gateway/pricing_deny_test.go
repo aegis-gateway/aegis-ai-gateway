@@ -284,6 +284,7 @@ func (s *spyAuditLogger) LogFilterBlock(_, _, _, _, _, _ string, _ string) {}
 func (s *spyAuditLogger) LogPricingDenied(_, _, _, _, provider, model, mode string, _ string) {
 	s.pricingDenied = append(s.pricingDenied, struct{ Provider, Model, Mode string }{provider, model, mode})
 }
+func (s *spyAuditLogger) LogModelDenied(_, _, _, _, _ string, _ int, _ string) {}
 
 // newPricingTestHandler wires a handler whose only routed alias points at
 // providerKey/routedModel, with pricing supplied by pricingCfg.
