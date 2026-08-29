@@ -100,14 +100,15 @@ depends = ["services:up", "db:migrate"]
 # ./test/integration/ does not exist and never has. The integration tests live
 # beside the code they cover, behind the `integration` build tag.
 #
-# Two things stop `go test ./... -tags=integration` from working:
+# Two things stop a bare `go test ./... -tags=integration` from working — both
+# are tests that demand live infrastructure and fail rather than skip without
+# it, which is why this task provides the infrastructure first:
 #
-#  1. internal/gateway/integration_test.go does not compile — it references
-#     config.RateLimitConfig, config.RetryConfig and config.ValidationConfig,
-#     none of which exist. It has never built under the integration tag, so it
-#     provides no coverage today. Repairing it needs a decision about what it
-#     was meant to assert, so it is left out of this task rather than deleted
-#     or silently "fixed" into something that passes.
+#  1. internal/gateway/integration_test.go needs TEST_DATABASE_URL and a Redis
+#     on localhost:6379, and it seeds an api_keys row. It fails rather than
+#     skips when those are missing — the file spent a long time not compiling
+#     under this tag, which no one noticed precisely because nothing insisted
+#     on running it.
 #  2. TestNoPayload_CanaryEndToEnd fails rather than skips without a running
 #     gateway, deliberately, because it backs a public claim. So the task has
 #     to provide one.
@@ -147,7 +148,7 @@ done
 # gateway that never came up, reporting connection errors as test failures.
 [ "$ready" = "1" ] || { echo "gateway did not become healthy within 60s:" >&2; cat /tmp/aegis-integration-gateway.log >&2; exit 1; }
 
-go test ./internal/audit/... ./internal/purge/... -v -tags=integration -count=1 -p 1
+go test ./internal/audit/... ./internal/purge/... ./internal/gateway/... -v -tags=integration -count=1 -p 1
 """
 
 # ── Lint / Format ─────────────────────────────────────────────────
