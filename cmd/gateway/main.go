@@ -562,8 +562,21 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// X-Request-ID is echoed back and used as the correlation key in the
+		// logs, the usage row and the audit event. audit_events.request_id is
+		// VARCHAR(50), and PostgreSQL rejects an over-long value rather than
+		// truncating it, so an unbounded header cost the entire audit row: the
+		// request returned 200 and left no attested record. Since every
+		// permitted request now writes an event, any caller could trigger that
+		// with one long header.
+		//
+		// An over-long id is replaced rather than truncated. Truncating could
+		// collide with another caller's id, and rejecting the request with a
+		// 400 would turn a header the gateway can simply handle into a new
+		// failure mode for traffic that works today. The caller still learns
+		// which id was used, because it is echoed in the response header.
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
+		if reqID == "" || len(reqID) > audit.MaxRequestID {
 			reqID = generateRequestID()
 		}
 		w.Header().Set("X-Request-ID", reqID)

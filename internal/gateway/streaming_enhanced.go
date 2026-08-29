@@ -577,7 +577,16 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
 				}
-				metrics.Outcome = StreamChunkError
+				// A chunk failing to write is the usual way a caller hanging up
+				// first becomes visible, so the cause is consulted here for the
+				// same reason the terminator path consults it: otherwise a
+				// disconnect is sealed as a provider interruption, and the two
+				// are different facts about who caused the request to end.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					metrics.Outcome = outcomeForContext(ctxErr)
+				} else {
+					metrics.Outcome = StreamChunkError
+				}
 				return metrics
 			}
 

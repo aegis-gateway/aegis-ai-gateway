@@ -99,10 +99,11 @@ fields unattested. Those values are in `usage_records` for the same request ID, 
 recorded but not attested. See
 [known limitations §2.14](evidence/known-limitations.md).
 
-A `request_complete` row means the gateway wrote and flushed the full response without
-error. It is **not** proof the caller received it: a successful flush establishes only that
-the bytes reached the local kernel, and remote receipt would require an application-level
-acknowledgement the protocol does not carry. Read the row as evidence of what the gateway
+A `request_complete` row means the gateway wrote the full response without error and
+flushed it where the response writer supports on-demand flushing. It is **not** proof the
+caller received it: a successful flush establishes only that the bytes reached the local
+kernel, and remote receipt would require an application-level acknowledgement the protocol
+does not carry. Read the row as evidence of what the gateway
 produced and sent.
 
 A dropped audit write leaves no row and no gap in the id sequence, so it is undetectable

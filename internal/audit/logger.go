@@ -125,6 +125,13 @@ func (l *Logger) writeEvent(event Event) {
 	// limits.go: PostgreSQL errors on varchar overflow rather than truncating, so
 	// an unclipped value costs the whole audit row, and two of these columns are
 	// written on the unauthenticated auth-failure path.
+	// RequestID first, because it is the only bounded column whose value a
+	// caller supplies directly and the only one whose overflow silently costs a
+	// permitted request's whole record. cmd/gateway bounds it at the middleware
+	// so the id in the response header, the logs and the usage row all match;
+	// this is the backstop for any other producer, and a truncated row is worth
+	// far more than a dropped one.
+	event.RequestID = clip(event.RequestID, MaxRequestID)
 	event.IPAddress = clip(event.IPAddress, MaxIPAddress)
 	event.ErrorMessage = clip(event.ErrorMessage, MaxErrorMessage)
 	event.UserAgent = clip(event.UserAgent, MaxUserAgent)

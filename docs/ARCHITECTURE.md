@@ -117,9 +117,9 @@ Two writes happen asynchronously (non-blocking) after the response is sent:
   and then fails at the provider writes `provider_failure`. Before that the sealed chain
   attested what was refused and nothing about what was allowed.
 
-  `request_complete` means the gateway wrote and flushed the full response without error,
-  which is not the same as the caller receiving it; a flush proves only that the bytes
-  reached the local kernel. An allow event carries identity, outcome and routing: request
+  `request_complete` means the gateway wrote the full response without error and flushed it
+  where the response writer supports on-demand flushing. That is not the same as the caller
+  receiving it: a flush proves only that the bytes reached the local kernel. An allow event carries identity, outcome and routing: request
   ID, organization, team, user, key ID and key prefix, endpoint, method, the status the
   gateway sent, the configured provider key, the requested model alias, and whether the
   response was streamed. It does **not** carry
