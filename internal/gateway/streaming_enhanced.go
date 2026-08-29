@@ -112,6 +112,9 @@ const (
 	StreamClientDisconnected StreamOutcome = "client_disconnect"
 	// StreamReadError means reading the provider stream failed.
 	StreamReadError StreamOutcome = "read_error"
+	// StreamNotStarted means streaming was refused before any header went out,
+	// so the caller received an error status rather than a stream.
+	StreamNotStarted StreamOutcome = "not_started"
 	// StreamTruncated means the provider closed the stream cleanly without
 	// sending its end-of-stream marker, so the client received a partial
 	// response that looked like a whole one.
@@ -318,7 +321,8 @@ func (sh *StreamingHandler) HandleStream(
 	// would be inventing a response that was never sent. The event type and
 	// reason carry the outcome instead.
 	if sh.handler.auditLogger != nil {
-		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, true)
+		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey,
+			clientStatusFor(metrics.Outcome), true)
 		switch metrics.Outcome {
 		case StreamOutcomeUnset:
 			// A path out of the monitoring loop set no outcome. The event is
@@ -333,6 +337,8 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
 		case StreamCompleted:
 			sh.handler.auditLogger.LogRequestComplete(rec)
+		case StreamNotStarted:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamNotStarted)
 		case StreamTruncated:
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
 		case StreamClientDisconnected:
@@ -366,11 +372,38 @@ func (sh *StreamingHandler) HandleStream(
 			CacheWrite1hTokens: metrics.CacheWrite1hTokens,
 			EstimatedCostUSD:   metrics.EstimatedCostUSD,
 			DurationMs:         totalDuration.Milliseconds(),
-			StatusCode:         http.StatusOK,
+			StatusCode:         clientStatusFor(metrics.Outcome),
 			Project:            aegisReq.Project,
 			Stream:             true,
 		})
 	}
+}
+
+// outcomeForContext maps a cancelled stream context onto an outcome.
+//
+// ctx is context.WithTimeout(r.Context(), TotalTimeout), so the deadline
+// elapsing yields DeadlineExceeded while the caller hanging up cancels the
+// parent and yields Canceled. Both callers use this so the two endings cannot
+// be told apart differently in two places.
+func outcomeForContext(err error) StreamOutcome {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return StreamTotalTimeout
+	}
+	return StreamClientDisconnected
+}
+
+// clientStatusFor reports the HTTP status the caller received.
+//
+// A stream sends its 200 header before the first chunk, so any ending after
+// that point was still a 200 on the wire however badly it went. The exception
+// is a stream that never started, where the caller got an error status and
+// nothing else. Both the audit event and the usage row have to agree with what
+// the client saw, or the record contradicts the response.
+func clientStatusFor(outcome StreamOutcome) int {
+	if outcome == StreamNotStarted {
+		return http.StatusInternalServerError
+	}
+	return http.StatusOK
 }
 
 // streamWithMonitoring handles the actual streaming with timeouts and monitoring.
@@ -387,8 +420,11 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		// No stream is sent and the caller receives 500. Say so in the result:
+		// the zero value would leave the outcome unset, and the attested event
+		// and the usage row would both record the 200 that was never written.
 		httputil.WriteInternalError(w, reqID, "Streaming not supported")
-		return StreamMetrics{}
+		return StreamMetrics{Outcome: StreamNotStarted}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -464,7 +500,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			// causes are already distinguishable: the deadline elapsing yields
 			// DeadlineExceeded, and the caller hanging up cancels the parent
 			// and yields Canceled.
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if outcomeForContext(ctx.Err()) == StreamTotalTimeout {
 				slog.Warn("stream total timeout exceeded",
 					"request_id", reqID,
 					"chunks_sent", metrics.ChunkCount,
@@ -553,6 +589,20 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			// from the scanner-finished case above. Missing it is what once
 			// left a completed stream carrying the zero-value outcome.
 			if metrics.terminatorSeen {
+				// select chooses at random between ready cases, so the
+				// terminator can be processed on the very tick the caller goes
+				// away or the deadline lands. Delivering the marker into a dead
+				// connection is not a completed response, so the context is
+				// consulted before claiming one.
+				if err := ctx.Err(); err != nil {
+					metrics.Outcome = outcomeForContext(err)
+					slog.Info("stream ended as its terminator arrived; not attesting completion",
+						"request_id", reqID,
+						"outcome", string(metrics.Outcome),
+						"chunks_sent", metrics.ChunkCount,
+					)
+					return metrics
+				}
 				metrics.Outcome = StreamCompleted
 				return metrics
 			}
@@ -583,10 +633,17 @@ func (sh *StreamingHandler) processChunk(
 	data := strings.TrimPrefix(line, "data: ")
 
 	// End of stream, OpenAI-compatible form.
+	//
+	// The write error is checked rather than discarded, and terminatorSeen is
+	// set only after it succeeds. Completion is a claim about what the CALLER
+	// received, so a terminator the gateway failed to deliver does not
+	// establish one.
 	if data == "[DONE]" {
-		metrics.terminatorSeen = true
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+			return fmt.Errorf("writing end-of-stream marker: %w", err)
+		}
 		flusher.Flush()
+		metrics.terminatorSeen = true
 		return nil
 	}
 
@@ -607,9 +664,11 @@ func (sh *StreamingHandler) processChunk(
 	// terminator check used to test the RAW line, which meant it only ever
 	// matched OpenAI and every Anthropic stream fell through to EOF.
 	if string(transformed) == "[DONE]" {
-		metrics.terminatorSeen = true
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+			return fmt.Errorf("writing end-of-stream marker: %w", err)
+		}
 		flusher.Flush()
+		metrics.terminatorSeen = true
 		return nil
 	}
 

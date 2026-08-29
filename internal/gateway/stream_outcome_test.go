@@ -322,3 +322,108 @@ func TestStream_ProviderErrorRecordsTheStatusTheCallerReceived(t *testing.T) {
 		t.Errorf("reason = %q, want %q", got, audit.ReasonProviderError)
 	}
 }
+
+// failingWriter accepts headers and flushes but fails every body write, which
+// is what a ResponseWriter does once the peer has gone away.
+type failingWriter struct {
+	hdr  http.Header
+	code int
+}
+
+func (f *failingWriter) Header() http.Header {
+	if f.hdr == nil {
+		f.hdr = make(http.Header)
+	}
+	return f.hdr
+}
+func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (f *failingWriter) WriteHeader(code int)      { f.code = code }
+func (f *failingWriter) Flush()                    {}
+
+// A terminator the caller never received does not establish completion.
+//
+// processChunk used to discard the error from writing [DONE] and set the
+// terminator flag regardless, so a stream whose final marker failed to reach
+// the client was sealed as request_complete.
+func TestStream_UndeliveredTerminatorIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	adapter := &scriptedStreamAdapter{body: "data: [DONE]\n\n"}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	sh.HandleStream(&failingWriter{}, req, "req-undelivered", providerReq, adapter,
+		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if len(spy.completes) != 0 {
+		t.Errorf("a stream whose terminator never reached the client was attested as complete: %+v",
+			spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+}
+
+// Streaming refused before any header goes out means the caller received 500,
+// not the 200 a stream would have sent. Both the audit event and the usage row
+// have to say so.
+func TestStream_NotStartedRecordsTheErrorStatus(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{TotalTimeout: 5 * time.Second})
+	adapter := &scriptedStreamAdapter{body: "data: [DONE]\n\n"}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	// nonFlusher deliberately does not implement http.Flusher, which is what a
+	// middleware wrapper that drops the optional interface looks like.
+	sh.HandleStream(&nonFlusher{}, req, "req-not-started", providerReq, adapter,
+		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if len(spy.completes) != 0 {
+		t.Errorf("a request that never streamed was attested as complete: %+v", spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Req.StatusCode; got != http.StatusInternalServerError {
+		t.Errorf("audit event status = %d, want 500: no stream started, so the caller "+
+			"never received the 200 a stream would have sent", got)
+	}
+	if got := spy.failures[0].Reason; got != audit.ReasonStreamNotStarted {
+		t.Errorf("reason = %q, want %q", got, audit.ReasonStreamNotStarted)
+	}
+}
+
+// nonFlusher is a ResponseWriter that does not implement http.Flusher.
+type nonFlusher struct {
+	hdr  http.Header
+	code int
+}
+
+func (n *nonFlusher) Header() http.Header {
+	if n.hdr == nil {
+		n.hdr = make(http.Header)
+	}
+	return n.hdr
+}
+func (n *nonFlusher) Write(p []byte) (int, error) { return len(p), nil }
+func (n *nonFlusher) WriteHeader(code int)        { n.code = code }

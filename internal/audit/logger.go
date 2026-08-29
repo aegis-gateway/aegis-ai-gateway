@@ -313,6 +313,9 @@ const (
 	// because the provider stopped, a deadline elapsed, or a chunk could not be
 	// processed.
 	ReasonStreamInterrupted = "stream_interrupted"
+	// ReasonStreamNotStarted covers a streamed request refused before any
+	// stream began, so the caller received an error status and no content.
+	ReasonStreamNotStarted = "stream_not_started"
 	// ReasonStreamTruncated covers a stream the provider closed cleanly without
 	// sending its end-of-stream marker. The caller received a partial response
 	// that looked complete, which is why it is not attested as one.
