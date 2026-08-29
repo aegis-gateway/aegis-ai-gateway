@@ -89,6 +89,7 @@ type anthropicStreamTransformer struct {
 	// daily spend budget is computed from these records, so a streamed request
 	// costing real money moved no budget at all.
 	inputTokens  int
+	cachedTokens int
 	outputTokens int
 
 	// model is the model the provider actually served, taken from
@@ -153,9 +154,7 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		if ev.Message.Model != "" {
 			t.model = ev.Message.Model
 		}
-		if ev.Message.Usage.InputTokens > 0 {
-			t.inputTokens = ev.Message.Usage.InputTokens
-		}
+		t.absorbUsage(ev.Message.Usage)
 		return nil, nil
 
 	case "content_block_start":
@@ -198,12 +197,7 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		// The final event: stop reason plus the settled token counts. Both are
 		// carried on one chunk, in the OpenAI shape, because that is what the
 		// gateway's usage extraction and every OpenAI client read.
-		if ev.Usage.InputTokens > 0 {
-			t.inputTokens = ev.Usage.InputTokens
-		}
-		if ev.Usage.OutputTokens > 0 {
-			t.outputTokens = ev.Usage.OutputTokens
-		}
+		t.absorbUsage(ev.Usage)
 		finish := mapStopReason(ev.Delta.StopReason)
 		chunk := openAIStreamChunkWithUsage{
 			Model:   t.model,
@@ -214,6 +208,9 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 				PromptTokens:     t.inputTokens,
 				CompletionTokens: t.outputTokens,
 				TotalTokens:      t.inputTokens + t.outputTokens,
+			}
+			if t.cachedTokens > 0 {
+				chunk.Usage.PromptTokensDetails = &openAIPromptTokensDetails{CachedTokens: t.cachedTokens}
 			}
 		}
 		return json.Marshal(chunk)
@@ -237,9 +234,30 @@ type openAIStreamChunkWithUsage struct {
 }
 
 type openAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                        `json:"prompt_tokens"`
+	CompletionTokens    int                        `json:"completion_tokens"`
+	TotalTokens         int                        `json:"total_tokens"`
+	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+type openAIPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// absorbUsage folds an Anthropic usage block into the running totals,
+// normalising to the canonical convention where the prompt count INCLUDES the
+// cached portion. Anthropic's input_tokens excludes it. See
+// anthropicUsageToCanonical.
+func (t *anthropicStreamTransformer) absorbUsage(u anthropicUsage) {
+	if total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens; total > 0 {
+		t.inputTokens = total
+	}
+	if u.CacheReadInputTokens > 0 {
+		t.cachedTokens = u.CacheReadInputTokens
+	}
+	if u.OutputTokens > 0 {
+		t.outputTokens = u.OutputTokens
+	}
 }
 
 // openAIToolCallDelta is a tool call fragment in OpenAI streaming shape. Index

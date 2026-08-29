@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
@@ -57,6 +58,7 @@ type StreamMetrics struct {
 	FirstChunkTime   time.Time
 	ChunkCount       int
 	PromptTokens     int
+	CachedTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	EstimatedCostUSD float64
@@ -157,12 +159,15 @@ func (sh *StreamingHandler) HandleStream(
 
 	// Calculate final cost if we have token counts.
 	if sh.handler.costCalc != nil && metrics.TotalTokens > 0 {
-		if cost, found := sh.handler.costCalc.CalculateSimple(
-			metrics.Provider,
-			metrics.Model,
-			metrics.PromptTokens,
-			metrics.CompletionTokens,
-		); found {
+		// See the non-streaming path: Calculate, not CalculateSimple, so the
+		// cached subset is priced at the cached_input rate.
+		if cost, found := sh.handler.costCalc.Calculate(cost.RequestDetails{
+			Provider:         metrics.Provider,
+			Model:            metrics.Model,
+			PromptTokens:     metrics.PromptTokens,
+			CachedTokens:     metrics.CachedTokens,
+			CompletionTokens: metrics.CompletionTokens,
+		}); found {
 			metrics.EstimatedCostUSD = cost
 		} else {
 			slog.Warn("pricing_unknown: no pricing data for served model",
@@ -473,9 +478,12 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 	var chunkData struct {
 		Model string `json:"model"`
 		Usage *struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			TotalTokens         int `json:"total_tokens"`
+			PromptTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 
@@ -493,6 +501,9 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 		metrics.PromptTokens = chunkData.Usage.PromptTokens
 		metrics.CompletionTokens = chunkData.Usage.CompletionTokens
 		metrics.TotalTokens = chunkData.Usage.TotalTokens
+		if d := chunkData.Usage.PromptTokensDetails; d != nil {
+			metrics.CachedTokens = d.CachedTokens
+		}
 	}
 
 	return nil

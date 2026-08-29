@@ -389,12 +389,17 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate cost using actual provider and model served.
 	if h.costCalc != nil {
-		if cost, found := h.costCalc.CalculateSimple(
-			aegisResp.Provider,
-			aegisResp.Model,
-			aegisResp.Usage.PromptTokens,
-			aegisResp.Usage.CompletionTokens,
-		); found {
+		// Calculate rather than CalculateSimple: the cached subset is priced at
+		// the cached_input rate, which several models set an order of magnitude
+		// below input. CalculateSimple leaves CachedTokens zero, so every cache
+		// read was billed at the full rate.
+		if cost, found := h.costCalc.Calculate(cost.RequestDetails{
+			Provider:         aegisResp.Provider,
+			Model:            aegisResp.Model,
+			PromptTokens:     aegisResp.Usage.PromptTokens,
+			CachedTokens:     aegisResp.Usage.CachedPromptTokens(),
+			CompletionTokens: aegisResp.Usage.CompletionTokens,
+		}); found {
 			aegisResp.EstimatedCostUSD = cost
 		} else {
 			slog.Warn("pricing_unknown: no pricing data for served model",

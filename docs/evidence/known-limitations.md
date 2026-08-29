@@ -313,13 +313,31 @@ at all. Both adapters now report usage on a stream, Anthropic from its native
 `message_start` and `message_delta` events and OpenAI because the gateway sets
 `stream_options` for itself.
 
-**What is still not priced precisely.** Anthropic reports `cache_read_input_tokens`
-and `cache_creation_input_tokens` alongside the ordinary counts, and
-`cost.Calculator` can price cached input separately through `RequestDetails.CachedTokens`.
-The streaming path calls `CalculateSimple`, which has no cached-token parameter, so a
-cache read is currently priced at the full input rate. That overstates cost rather
-than understating it, which is the safer direction for a spend control, but it is not
-accurate and it is worth closing.
+**Cached input is priced at the cached rate.** Both adapters report the cached subset
+of the prompt and both cost paths apply `cached_input`, which several models set an
+order of magnitude below `input`. That was not true until 2026-08-29: the rates were
+configured, `cost.Calculator` implemented them, and nothing ever populated the count,
+so every cache read was billed at the full input rate.
+
+Two things remain worth knowing.
+
+**The two providers disagree about what a prompt count means, and the adapters
+normalise.** Anthropic's `input_tokens` excludes anything served from or written to
+the cache; OpenAI's `prompt_tokens` includes the cached portion and reports it as a
+subset. AEGIS follows OpenAI's convention throughout, so a caller sees one meaning.
+Verified against the live API: a cached Anthropic call returned `input_tokens` 8
+alongside `cache_read_input_tokens` 4411, for a prompt of 4419 tokens.
+
+**Cache writes are priced as ordinary input.** `configs/pricing.yaml` carries a
+`cache_write_5m` rate, and `cost.Calculator` has no field for it, so tokens spent
+creating a cache entry are billed at the `input` rate. Whether that overstates or
+understates depends on the model. It is a smaller error than the one above and it is
+in the same family: a rate configured in the file that no code path reads.
+
+**The cached count is not persisted.** `usage_records` stores `prompt_tokens` without
+the breakdown, so the split is visible in the response and in the cost, but a later
+reconciliation against a provider bill cannot see how much of a request was cached.
+Adding it is a migration, and nothing else needs one right now.
 
 ### 2.10 Tool names are not in the audit record
 
