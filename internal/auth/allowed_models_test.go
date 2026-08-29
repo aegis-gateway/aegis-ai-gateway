@@ -60,13 +60,27 @@ func TestAllowedModels_WellFormedValuesDecode(t *testing.T) {
 	}
 }
 
-// An absent value is not a malformed one: a key that never set an allowlist is
-// unrestricted by design, and rejecting that would revoke every model from
-// every such key.
-func TestAllowedModels_AbsentValueIsUnrestricted(t *testing.T) {
-	got, err := parseAllowedModels(nil)
+// An ABSENT value is rejected, which reverses what an earlier version of this
+// test asserted.
+//
+// The reasoning then was that absent is the schema default for a key with no
+// allowlist. It is not: the default is '[]', an explicit empty array, and a nil
+// byte slice means a SQL NULL that an import or a manual UPDATE left behind.
+// Reading that as "no restriction" grants every model on a key whose
+// restrictions could not be determined.
+//
+// It also made the two lookup paths disagree, because a nil slice marshals to
+// "allowed_models":null in the cache, which the decoder refuses: the same key
+// succeeded on a cache miss and failed on a cache hit.
+func TestAllowedModels_AbsentValueIsRejected(t *testing.T) {
+	if _, err := parseAllowedModels(nil); err == nil {
+		t.Error("an absent allowed_models decoded without error; the no-allowlist " +
+			"value is [], so nil means a SQL NULL and must fail closed")
+	}
+	// The genuine no-allowlist value still works.
+	got, err := parseAllowedModels([]byte(`[]`))
 	if err != nil {
-		t.Fatalf("an absent allowed_models must not be an error: %v", err)
+		t.Fatalf("[] is the documented unrestricted value and must decode: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %v, want an empty allowlist", got)
@@ -113,15 +127,25 @@ func TestKeyMetadata_CachedAllowlistRoundTrips(t *testing.T) {
 	}
 }
 
-// A key with no allowlist is unrestricted by design, and its cached form omits
-// the field. Rejecting that would revoke every model from every such key, which
-// is a worse outage than the defect being fixed.
-func TestKeyMetadata_CachedAbsentAllowlistIsUnrestricted(t *testing.T) {
+// A cached entry with no allowed_models field is rejected, which also reverses
+// an earlier assertion here.
+//
+// KeyMetadata always marshals the field, so its absence means the entry did not
+// come from this type, and an unrestricted key is not a safe default for a value
+// of unknown origin. A key that genuinely has no allowlist caches as [] and
+// still decodes.
+func TestKeyMetadata_CachedAbsentAllowlistIsRejected(t *testing.T) {
 	var km KeyMetadata
-	if err := json.Unmarshal([]byte(`{"id":"k"}`), &km); err != nil {
-		t.Fatalf("an absent allowlist must decode: %v", err)
+	if err := json.Unmarshal([]byte(`{"id":"k"}`), &km); err == nil {
+		t.Errorf("decoded to AllowedModels=%v with no error; this type always writes "+
+			"the field, so its absence is not a value we produced", km.AllowedModels)
 	}
-	if len(km.AllowedModels) != 0 {
-		t.Errorf("got %v, want an empty allowlist", km.AllowedModels)
+
+	var unrestricted KeyMetadata
+	if err := json.Unmarshal([]byte(`{"id":"k","allowed_models":[]}`), &unrestricted); err != nil {
+		t.Fatalf("a genuinely unrestricted key must still decode: %v", err)
+	}
+	if len(unrestricted.AllowedModels) != 0 {
+		t.Errorf("got %v, want an empty allowlist", unrestricted.AllowedModels)
 	}
 }

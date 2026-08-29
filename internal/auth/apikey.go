@@ -136,21 +136,22 @@ func (km *KeyMetadata) UnmarshalJSON(data []byte) error {
 	}
 
 	// The decoded slice cannot distinguish an absent allowlist from a null or
-	// malformed one, so the raw field is re-read. An absent field is fine: that
-	// is a key with no allowlist, which is unrestricted by design.
+	// malformed one, so the raw field is re-read and validated by the same
+	// function the database path uses. An absent field is rejected too: this
+	// type always marshals allowed_models, so its absence means the entry did
+	// not come from here, and an unrestricted key is not a safe default for a
+	// value of unknown origin.
 	var raw struct {
 		AllowedModels json.RawMessage `json:"allowed_models"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	if len(raw.AllowedModels) > 0 {
-		allowed, err := parseAllowedModels(raw.AllowedModels)
-		if err != nil {
-			return err
-		}
-		km.AllowedModels = allowed
+	allowed, err := parseAllowedModels(raw.AllowedModels)
+	if err != nil {
+		return err
 	}
+	km.AllowedModels = allowed
 	return nil
 }
 

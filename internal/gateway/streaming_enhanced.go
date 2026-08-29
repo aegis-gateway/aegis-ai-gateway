@@ -435,7 +435,20 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Request-ID", reqID)
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+
+	// The header flush is checked like every other write on this path. Leaving
+	// it unchecked meant a stream whose 200 never reached the client could
+	// still be attested as complete if the later chunk and terminator writes
+	// happened to succeed, which contradicts the claim that the full response
+	// was written and flushed.
+	if err := flushToClient(w); err != nil {
+		slog.Error("failed to flush the streaming response header",
+			"request_id", reqID,
+			"error", err,
+			"provider", providerKey,
+		)
+		return StreamMetrics{Outcome: StreamNotStarted}
+	}
 
 	metrics := StreamMetrics{
 		StartTime: time.Now(),

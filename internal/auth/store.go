@@ -96,14 +96,23 @@ func (s *CachedKeyStore) Lookup(ctx context.Context, keyHash string) (*KeyMetada
 // consequential when the allowlist started gating what a key may USE rather
 // than only what it may see.
 //
-// A JSON null is rejected rather than accepted as empty. It decodes cleanly
-// into a nil slice, so it would otherwise pass as "unrestricted" while
-// representing a value nobody chose. An ABSENT value is different and stays
-// unrestricted: that is the schema default for a key with no allowlist, and
-// rejecting it would revoke every model from every such key.
+// EVERY anomalous representation is rejected, including an absent value. The
+// database's normal no-allowlist value is the default '[]', not NULL, so a nil
+// byte slice here means a SQL NULL that an import or a manual UPDATE left
+// behind, and reading it as "no restriction" grants every model on a key whose
+// restrictions could not be determined.
+//
+// An earlier version of this function accepted nil as unrestricted, reasoning
+// that it was the schema default. It is not: the default is '[]'. That mistake
+// also made the two lookup paths disagree, because a nil slice marshals to
+// "allowed_models":null in the Redis cache, which the decoder refuses, so the
+// same key succeeded on a cache miss and failed on a cache hit.
+//
+// Migration 015 backfills and constrains the column so the anomaly cannot
+// exist. This stays as the guard for a database that has not been migrated.
 func parseAllowedModels(raw []byte) ([]string, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, errors.New("allowed_models is absent; the no-allowlist value is [], not NULL")
 	}
 
 	trimmed := bytes.TrimSpace(raw)

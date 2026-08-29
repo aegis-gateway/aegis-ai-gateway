@@ -767,3 +767,72 @@ func TestChatCompletions_RealProviderFailureIsStillAProviderOutage(t *testing.T)
 			"may produce that reason", got)
 	}
 }
+
+// headerFlushFailingWriter fails only the first flush, which is the streaming
+// header, and succeeds afterwards. That is the shape the reviewer described: a
+// one-shot failure whose later writes all succeed.
+type headerFlushFailingWriter struct {
+	hdr     http.Header
+	code    int
+	flushes int
+}
+
+func (h *headerFlushFailingWriter) Header() http.Header {
+	if h.hdr == nil {
+		h.hdr = make(http.Header)
+	}
+	return h.hdr
+}
+func (h *headerFlushFailingWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (h *headerFlushFailingWriter) WriteHeader(code int)        { h.code = code }
+func (h *headerFlushFailingWriter) Flush()                      {}
+func (h *headerFlushFailingWriter) FlushError() error {
+	h.flushes++
+	if h.flushes == 1 {
+		return io.ErrClosedPipe
+	}
+	return nil
+}
+
+// A stream whose 200 header never reached the client did not start, however
+// well the later writes went.
+func TestStream_FailedHeaderFlushIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	adapter := &scriptedStreamAdapter{body: "data: [DONE]\n\n"}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	w := &headerFlushFailingWriter{}
+	sh.HandleStream(w, req, "req-header-flush", providerReq, adapter,
+		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if w.flushes == 0 {
+		t.Fatal("no flush was attempted; this test's premise is wrong")
+	}
+	if len(spy.completes) != 0 {
+		t.Errorf("a stream whose header never reached the client was attested as "+
+			"complete: %+v", spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got != audit.ReasonStreamNotStarted {
+		t.Errorf("reason = %q, want %q", got, audit.ReasonStreamNotStarted)
+	}
+	if got := spy.failures[0].Req.StatusCode; got != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: no stream started", got)
+	}
+}
