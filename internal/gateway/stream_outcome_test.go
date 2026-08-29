@@ -487,3 +487,122 @@ func TestChatCompletions_DeliveredResponseIsACompletion(t *testing.T) {
 		t.Fatalf("expected exactly 1 completion event, got %d", len(spy.completes))
 	}
 }
+
+// flushFailingWriter accepts every write and fails only on flush, which is the
+// case that matters: net/http buffers a small response, so Write succeeds and
+// the socket failure surfaces later. FlushError is the interface
+// http.NewResponseController prefers, and it is the only way to see that error.
+type flushFailingWriter struct {
+	hdr  http.Header
+	code int
+	body int
+}
+
+func (f *flushFailingWriter) Header() http.Header {
+	if f.hdr == nil {
+		f.hdr = make(http.Header)
+	}
+	return f.hdr
+}
+func (f *flushFailingWriter) Write(p []byte) (int, error) { f.body += len(p); return len(p), nil }
+func (f *flushFailingWriter) WriteHeader(code int)        { f.code = code }
+
+// Flush satisfies http.Flusher, which the streaming path requires before it
+// will start a stream at all. Without it this double exercised the
+// "streaming not supported" path and the terminator test passed vacuously.
+func (f *flushFailingWriter) Flush() {}
+
+// FlushError is what http.NewResponseController prefers, and it is the only
+// way the socket failure becomes visible.
+func (f *flushFailingWriter) FlushError() error { return io.ErrClosedPipe }
+
+// A buffered response whose bytes were accepted but never reached the socket is
+// not delivered. Encode returns nil in that case, so the flush error is the
+// only remaining signal.
+func TestChatCompletions_FailedFlushIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+	}))
+
+	w := &flushFailingWriter{}
+	h.ChatCompletions(w, req)
+
+	if w.body == 0 {
+		t.Fatal("the handler never wrote a body; this test's premise is wrong")
+	}
+	if len(spy.completes) != 0 {
+		t.Errorf("a response that was buffered but never flushed was attested as complete: %+v",
+			spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got != audit.ReasonResponseNotDelivered {
+		t.Errorf("reason = %q, want %q", got, audit.ReasonResponseNotDelivered)
+	}
+}
+
+// The same for the stream terminator: fmt.Fprintf can put [DONE] in net/http's
+// buffer and the socket failure only appear during the flush, whose error
+// http.Flusher discards.
+func TestStream_TerminatorThatFailedToFlushIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	adapter := &scriptedStreamAdapter{body: "data: [DONE]\n\n"}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	sh.HandleStream(&flushFailingWriter{}, req, "req-flush-fail", providerReq, adapter,
+		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if len(spy.completes) != 0 {
+		t.Errorf("a terminator that never left the gateway was attested as complete: %+v",
+			spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+}
+
+// A writer that cannot be flushed on demand tells us nothing, and "cannot
+// confirm" must not be recorded as "failed". Otherwise a wrapper that drops the
+// optional interface would turn every successful request into a sealed failure,
+// which is a worse error than the one the flush check exists to prevent.
+func TestChatCompletions_UnflushableWriterIsStillACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+	}))
+
+	// nonFlusher implements neither FlushError nor http.Flusher, so
+	// ResponseController reports ErrNotSupported.
+	h.ChatCompletions(&nonFlusher{}, req)
+
+	if len(spy.failures) != 0 {
+		t.Errorf("an unflushable writer produced a sealed failure: %+v", spy.failures)
+	}
+	if len(spy.completes) != 1 {
+		t.Fatalf("expected exactly 1 completion event, got %d", len(spy.completes))
+	}
+}

@@ -642,7 +642,12 @@ func (sh *StreamingHandler) processChunk(
 		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
 			return fmt.Errorf("writing end-of-stream marker: %w", err)
 		}
-		flusher.Flush()
+		// http.Flusher.Flush discards its error, so a marker that reached
+		// net/http's buffer and then failed on the socket looked delivered.
+		// The flag is set only once the flush has actually succeeded.
+		if err := flushToClient(w); err != nil {
+			return fmt.Errorf("flushing end-of-stream marker: %w", err)
+		}
 		metrics.terminatorSeen = true
 		return nil
 	}
@@ -667,7 +672,11 @@ func (sh *StreamingHandler) processChunk(
 		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
 			return fmt.Errorf("writing end-of-stream marker: %w", err)
 		}
-		flusher.Flush()
+		// Same as the OpenAI branch above: the flush error is what says the
+		// marker actually left the gateway.
+		if err := flushToClient(w); err != nil {
+			return fmt.Errorf("flushing end-of-stream marker: %w", err)
+		}
 		metrics.terminatorSeen = true
 		return nil
 	}

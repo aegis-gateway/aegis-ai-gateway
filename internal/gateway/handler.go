@@ -527,6 +527,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// delivery failure explicitly and this path has to agree with it.
 	w.Header().Set("Content-Type", "application/json")
 	deliveryErr := json.NewEncoder(w).Encode(aegisResp)
+	if deliveryErr == nil {
+		// Encode reporting no error only means net/http accepted the bytes into
+		// its buffer. A small response can sit there until the handler returns,
+		// so the socket write, and its failure, can happen after this point.
+		// Flushing here is the last moment the gateway can still tell whether
+		// the caller got the response it is about to attest.
+		deliveryErr = flushToClient(w)
+	}
 	if deliveryErr != nil {
 		slog.Warn("failed to deliver the response to the caller",
 			"request_id", reqID,
