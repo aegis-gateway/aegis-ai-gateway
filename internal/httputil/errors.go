@@ -92,3 +92,17 @@ func WriteContentBlockedError(w http.ResponseWriter, requestID, message string) 
 func WriteBudgetExceededError(w http.ResponseWriter, requestID, message string) {
 	WriteError(w, requestID, http.StatusPaymentRequired, "budget_error", "budget_exceeded", message)
 }
+
+// WriteModelNotAllowedError refuses a request whose model is outside the
+// presenting key's allowlist.
+//
+// 403 permission_error rather than the 503 server_error that a
+// classification-ceiling refusal produces. That refusal reports "no provider
+// available", which is retryable by definition, and this gateway's own retry
+// executor treats 503 that way. An allowlist denial is permanent and
+// deterministic: retrying it burns provider budget and buries the real cause.
+// It also discloses nothing new, because ListModels already tells this same
+// caller exactly which models its key may use.
+func WriteModelNotAllowedError(w http.ResponseWriter, requestID, message string) {
+	WriteError(w, requestID, http.StatusForbidden, "permission_error", "model_not_allowed", message)
+}

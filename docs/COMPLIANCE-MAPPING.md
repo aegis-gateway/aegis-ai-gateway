@@ -72,10 +72,36 @@ AEGIS.
 
 | Criterion | Subject | Which artifacts above are relevant |
 |---|---|---|
-| CC6.1 | Logical access controls | API key authentication, per-key model allowlists ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)) |
+| CC6.1 | Logical access controls | API key authentication, per-key model allowlists ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)), enforced on both the completions and model-listing paths. See "Model allowlist semantics" below |
 | CC7.2 | Monitoring for anomalies | Denial record, rate-limit and budget violations |
 | CC7.3 | Evaluation of security events | Denial record with reason and stage |
 | P4.2 | Retention and disposal of personal information | Purge, plus the absence of payload retention |
+
+### Model allowlist semantics
+
+`api_keys.allowed_models` is enforced in `internal/gateway/model_allowlist.go`, by a
+single predicate that both `ChatCompletions` and `ListModels` call. What a key is
+shown and what a key may use are therefore the same set by construction.
+
+Two properties an assessor should know, because neither is the obvious default:
+
+- **An empty allowlist permits every configured model.** The column defaults to
+  `'[]'`, so most keys carry no allowlist and are unrestricted. An empty list is
+  not a deny-all. A key that must be restricted has to name its models.
+- **Matching is exact against the alias in `configs/models.yaml`.** It is not
+  applied to the resolved provider model, and deprecated aliases are not expanded:
+  a key allowed `aegis-balanced` is refused `aegis-gpt4` even though that alias is
+  configured as a deprecated spelling of it.
+
+A refused request returns 403 `permission_error` / `model_not_allowed` and writes
+an `audit_events` row before any provider is selected. That row carries event type
+`auth_failure` with `reason = 'model_not_allowed'`; it is an authorisation denial
+recorded under the authentication event type, so a count of credential failures
+must filter on `reason` to exclude it.
+
+Enforcement was added on 2026-08-29. Before that the field was populated and read
+only by `ListModels`, so it restricted what a key could see and not what it could
+use.
 
 ### GDPR
 

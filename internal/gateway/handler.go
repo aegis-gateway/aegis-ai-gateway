@@ -42,6 +42,7 @@ import (
 type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
+	LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string)
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -177,6 +178,35 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.metrics.RecordFilterAction(fr.FilterName, "flag")
 			}
 		}
+	}
+
+	// Enforce the API key's model allowlist.
+	//
+	// AuthInfo.AllowedModels comes from the api_keys row and was read in
+	// exactly one place, ListModels, which decides what a key may SEE. Nothing
+	// checked it on the path that decides what a key may USE, so a key
+	// restricted to aegis-fast was served aegis-reasoning and billed for it.
+	// docs/COMPLIANCE-MAPPING.md cites this field as the CC6.1 logical access
+	// control, so the gap was between the claim and the code.
+	//
+	// Placed after the filter chain and before routing. Before routing because
+	// a refused key must not reach a provider or influence provider selection;
+	// after the filters for the reason the tool-capability refusal below gives
+	// at length, which is that a content block is the more security-relevant
+	// record and must not be preempted by a cheaper check.
+	if !modelAllowed(authInfo.AllowedModels, aegisReq.Model) {
+		slog.Warn("request refused: model not in the key's allowlist",
+			"request_id", reqID,
+			"model", aegisReq.Model,
+			"org_id", authInfo.OrganizationID,
+			"team_id", authInfo.TeamID,
+		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, aegisReq.Model, r.RemoteAddr)
+		}
+		httputil.WriteModelNotAllowedError(w, reqID,
+			"model "+aegisReq.Model+" is not permitted for this API key")
+		return
 	}
 
 	// Route to provider
@@ -499,18 +529,10 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	modelsCfg := h.modelsCfg()
 	var models []modelObject
 	for name, mapping := range modelsCfg.Models {
-		// Filter by allowed models if set
-		if len(authInfo.AllowedModels) > 0 {
-			allowed := false
-			for _, m := range authInfo.AllowedModels {
-				if m == name {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
+		// Same predicate ChatCompletions enforces, so what a key is shown and
+		// what it may use cannot diverge.
+		if !modelAllowed(authInfo.AllowedModels, name) {
+			continue
 		}
 
 		_ = mapping

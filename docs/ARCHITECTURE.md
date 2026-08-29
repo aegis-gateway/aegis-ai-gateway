@@ -123,6 +123,14 @@ Neither write blocks the response path. Failures are logged but do not affect th
 
 Created by the `keygen` CLI tool. Stores a SHA-256 hash of the key (never the plaintext), along with organization/team/user attribution, classification ceiling, optional model allowlist, rate limits, and lifecycle timestamps (created, expires, last used, revoked).
 
+`allowed_models` is a permission, enforced by `modelAllowed` in
+`internal/gateway/model_allowlist.go` on both `POST /v1/chat/completions` and
+`GET /v1/models`. An **empty list permits every model**, which is the stored
+default; a populated list is matched exactly against the alias in
+`configs/models.yaml`, not against the resolved provider model. A request for an
+alias outside the list is refused with 403 before routing, and the refusal is
+written to `audit_events`.
+
 ### `audit_logs`
 
 **Created by migration 002 but never written.** No component in the codebase

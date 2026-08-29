@@ -250,6 +250,35 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 	})
 }
 
+// LogModelDenied records a request refused because the presenting API key's
+// model allowlist does not include the requested alias.
+//
+// This reuses EventAuthFailure rather than declaring a type of its own. The
+// distinction it loses is real: authentication succeeded here and authorisation
+// failed, whereas every other EventAuthFailure row is a credential that did not
+// verify. Reason carries "model_not_allowed" so the two can be told apart in an
+// export, and Model carries the alias that was refused. A dedicated event type
+// would be the better long-term shape for CC6.1 evidence and is left as a
+// follow-up rather than introduced here.
+//
+// Model is a configured alias from models.yaml, never caller-supplied free
+// text: an unknown model is rejected by validation before this point.
+func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string) {
+	l.Log(Event{
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventAuthFailure,
+		OrganizationID: orgID,
+		TeamID:         teamID,
+		APIKeyID:       &keyID,
+		IPAddress:      ip,
+		StatusCode:     403,
+		ErrorMessage:   "Model not permitted for this API key",
+		Model:          strPtr(model),
+		Reason:         strPtr("model_not_allowed"),
+	})
+}
+
 // LogRedisFailure logs a Redis connectivity failure.
 // LogPricingDenied records a request refused (or flagged) because the routed
 // provider/model has no usable pricing entry. Without this, a pricing denial
