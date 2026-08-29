@@ -495,9 +495,17 @@ finished stream except by the absence of the protocol terminator (`[DONE]` for
 OpenAI-compatible providers, `message_stop` for Anthropic). The caller receives a partial
 answer that looks whole. That is recorded as a failure rather than a completion.
 
-**What `request_complete` actually claims.** The gateway wrote the full response and
-flushed it without error. That is the strongest statement an HTTP handler can make, and it
-is deliberately weaker than "the caller received it".
+**What `request_complete` actually claims.** The gateway wrote the full response without
+error, and flushed it where the response writer supports on-demand flushing. That is the
+strongest statement an HTTP handler can make, and it is deliberately weaker than "the
+caller received it".
+
+The flushing qualifier is not hypothetical hedging. Under net/http's own `ResponseWriter` a
+flush is always supported and always performed; it is absent only behind a wrapper that
+hides both `http.Flusher` and `Unwrap`, in which case the response is still written and
+net/http still flushes it when the handler returns. The gateway records a completion there
+rather than a failure, because nothing has gone wrong, but it has not confirmed a flush and
+the contract does not pretend otherwise.
 
 A successful flush proves the bytes were handed to the local kernel. It does not prove the
 peer received them: a client that disconnects after the kernel accepts the write but before
@@ -507,10 +515,13 @@ acknowledgement, which an OpenAI-compatible client does not send. **Do not read 
 `request_complete` row as proof the caller has the answer.** It is proof the gateway
 produced and sent one.
 
-Within that limit, both paths check what they can. On a stream, a terminator the gateway
-failed to write or flush does not establish completion, and neither does one processed on
-the same tick the caller went away. On a buffered response the event follows a successful
-encode and flush; a failure is recorded as `response_not_delivered`. The usage row is
+Within that limit, both paths check what they can. On a stream, **every** chunk write and
+flush is checked, not only the terminator: a failure part way through a response means it
+was not written in full, and is recorded as an interruption even if a later terminator
+succeeds. A terminator the gateway failed to write or flush does not establish completion
+either, and neither does one processed on the same tick the caller went away. On a buffered
+response the event follows a successful encode and flush; a failure is recorded as
+`response_not_delivered`. The usage row is
 written either way, because the provider did the work and the spend happened regardless.
 
 `status_code` on any of these is **the status the gateway sent**, not what the provider

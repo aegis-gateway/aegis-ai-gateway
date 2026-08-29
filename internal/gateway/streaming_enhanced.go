@@ -572,7 +572,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		case line := <-lineChan:
 			// Process chunk
-			if err := sh.processChunk(w, flusher, line, adapter, transformer, &metrics, toolCalls); err != nil {
+			if err := sh.processChunk(w, line, adapter, transformer, &metrics, toolCalls); err != nil {
 				slog.Error("error processing chunk", "error", err)
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
@@ -616,7 +616,6 @@ func (sh *StreamingHandler) streamWithMonitoring(
 // processChunk handles a single SSE chunk with token counting.
 func (sh *StreamingHandler) processChunk(
 	w http.ResponseWriter,
-	flusher http.Flusher,
 	line string,
 	adapter adapters.ProviderAdapter,
 	transformer adapters.StreamTransformer,
@@ -625,10 +624,16 @@ func (sh *StreamingHandler) processChunk(
 ) error {
 	// SSE format: lines starting with "data: "
 	if !strings.HasPrefix(line, "data: ") {
-		// Forward event lines or empty lines as-is for keep-alive
+		// Forward event lines or empty lines as-is for keep-alive. Checked for
+		// the same reason as content chunks: these bytes are part of the
+		// response, so a failure here means it was not written in full.
 		if strings.HasPrefix(line, "event: ") || line == "" {
-			_, _ = fmt.Fprintf(w, "%s\n", line)
-			flusher.Flush()
+			if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+				return fmt.Errorf("writing stream keep-alive line: %w", err)
+			}
+			if err := flushToClient(w); err != nil {
+				return fmt.Errorf("flushing stream keep-alive line: %w", err)
+			}
 		}
 		return nil
 	}
@@ -705,9 +710,19 @@ func (sh *StreamingHandler) processChunk(
 		toolCalls.Observe(transformed)
 	}
 
-	// Forward to client
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", transformed)
-	flusher.Flush()
+	// Forward to client.
+	//
+	// These errors used to be discarded, so a chunk that failed to reach the
+	// client midway through a response was invisible: if a later terminator
+	// wrote and flushed cleanly the stream was attested as complete, which
+	// contradicts the claim that the FULL response was written and flushed.
+	// Returning the error makes the loop record StreamChunkError instead.
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", transformed); err != nil {
+		return fmt.Errorf("writing stream chunk: %w", err)
+	}
+	if err := flushToClient(w); err != nil {
+		return fmt.Errorf("flushing stream chunk: %w", err)
+	}
 
 	return nil
 }

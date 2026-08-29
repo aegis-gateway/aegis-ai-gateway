@@ -47,9 +47,16 @@ import (
 // ErrNotSupported is deliberately NOT a delivery failure. It means this writer
 // cannot be flushed on demand, so nothing has been learned either way, and
 // treating "cannot confirm" as "failed" would attest a failure that may not
-// have happened. Every wrapper in this codebase supports flushing; a future one
-// that does not should degrade to the old best-effort behaviour rather than
-// start recording false failures.
+// have happened.
+//
+// It is also not proof of a flush, which is why the attested contract is
+// "written in full, and flushed where the writer supports on-demand flushing"
+// rather than a flat "flushed". Under net/http's own ResponseWriter a flush is
+// always supported, so this arises only behind a wrapper that hides both
+// Flusher and Unwrap; the response is still written and net/http still flushes
+// it when the handler returns. Adding a third, unconfirmed event state for a
+// case that cannot occur on the real server would buy nothing and would put a
+// value in the sealed record that no reader could act on.
 func flushToClient(w http.ResponseWriter) error {
 	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		return err

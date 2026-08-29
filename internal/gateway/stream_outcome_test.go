@@ -585,6 +585,14 @@ func TestStream_TerminatorThatFailedToFlushIsNotACompletion(t *testing.T) {
 // confirm" must not be recorded as "failed". Otherwise a wrapper that drops the
 // optional interface would turn every successful request into a sealed failure,
 // which is a worse error than the one the flush check exists to prevent.
+//
+// This is why the attested contract is "written in full, and flushed where the
+// writer supports on-demand flushing" rather than a flat "flushed": this case
+// records a completion without having confirmed a flush, and the contract has
+// to say so rather than the test quietly widening it. Under net/http's own
+// ResponseWriter a flush is always supported, so this arises only behind such a
+// wrapper, where the response is still written and still flushed when the
+// handler returns.
 func TestChatCompletions_UnflushableWriterIsStillACompletion(t *testing.T) {
 	spy := &outcomeSpy{}
 	h := newAllowlistTestHandler(spy)
@@ -604,5 +612,78 @@ func TestChatCompletions_UnflushableWriterIsStillACompletion(t *testing.T) {
 	}
 	if len(spy.completes) != 1 {
 		t.Fatalf("expected exactly 1 completion event, got %d", len(spy.completes))
+	}
+}
+
+// nthWriteFailingWriter fails one specific body write and accepts the rest,
+// which is what a connection dropping midway through a response looks like.
+type nthWriteFailingWriter struct {
+	hdr      http.Header
+	failOn   int
+	writes   int
+	code     int
+	accepted int
+}
+
+func (n *nthWriteFailingWriter) Header() http.Header {
+	if n.hdr == nil {
+		n.hdr = make(http.Header)
+	}
+	return n.hdr
+}
+func (n *nthWriteFailingWriter) Write(p []byte) (int, error) {
+	n.writes++
+	if n.writes == n.failOn {
+		return 0, io.ErrClosedPipe
+	}
+	n.accepted += len(p)
+	return len(p), nil
+}
+func (n *nthWriteFailingWriter) WriteHeader(code int) { n.code = code }
+func (n *nthWriteFailingWriter) Flush()               {}
+
+// A chunk that failed to reach the client means the response was not written in
+// full, even if the terminator afterwards writes and flushes cleanly.
+//
+// processChunk used to discard write and flush errors for every ordinary chunk,
+// so only the terminator was checked. A stream that lost its middle and then
+// sent [DONE] was sealed as request_complete, contradicting the contract that
+// the FULL response was written.
+func TestStream_FailedChunkIsNotACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	adapter := &scriptedStreamAdapter{
+		body: "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n" +
+			"data: [DONE]\n\n",
+	}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	// Write 1 is the streaming header; fail the first content chunk after it.
+	w := &nthWriteFailingWriter{failOn: 2}
+	sh.HandleStream(w, req, "req-chunk-fail", providerReq, adapter,
+		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if w.writes < 2 {
+		t.Fatalf("the handler made %d writes; this test's premise needs at least 2", w.writes)
+	}
+	if len(spy.completes) != 0 {
+		t.Errorf("a stream that lost a chunk was attested as complete: %+v", spy.completes)
+	}
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
 	}
 }
