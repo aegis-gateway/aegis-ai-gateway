@@ -396,7 +396,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		slog.Error("provider request failed", "error", err, "provider", adapter.Name())
+		slog.Error("provider request failed",
+			"request_id", reqID,
+			"error", err,
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+		)
 		if h.healthTracker != nil {
 			h.healthTracker.RecordFailure(adapter.Name())
 		}
@@ -406,7 +411,19 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	aegisResp, err := adapter.TransformResponse(r.Context(), providerResp)
 	if err != nil {
-		slog.Error("failed to transform response", "error", err, "provider", adapter.Name())
+		// On a non-2xx the adapters put the provider's response body in this
+		// error. It reaches the log already bounded and redacted, by
+		// adapters.RedactProviderError at the point the body is read: a
+		// provider error body can quote the request back, and it must not be
+		// repeated whole. providerKey rather than adapter.Name() so the line
+		// names the configured provider rather than the adapter type it shares
+		// with others.
+		slog.Error("failed to transform response",
+			"request_id", reqID,
+			"error", err,
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+		)
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
 	}

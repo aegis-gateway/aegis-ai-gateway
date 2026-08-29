@@ -194,7 +194,15 @@ case <-clientDisconnected:
 - Metrics recorded for troubleshooting
 
 **Provider Errors**:
-- 5xx responses logged
+- Non-200 responses logged with the status, the request ID, and the configured
+  provider key
+- The response body is **never** logged verbatim. It is read under a bound,
+  scanned for secrets, stripped of control characters, and truncated to
+  `adapters.MaxProviderErrorExcerpt` bytes before it reaches the log record, as
+  `body_excerpt`. A provider that rejects a request commonly quotes the request
+  back, and the body is text the gateway does not control.
+  See `adapters.RedactProviderError` and
+  `TestStreamingProviderErrorIsNotLoggedVerbatim`.
 - Circuit breaker updated
 - Error metrics incremented
 

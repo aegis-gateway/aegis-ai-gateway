@@ -134,7 +134,7 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("anthropic returned status %d: %s", resp.StatusCode, RedactProviderError(body))
 	}
 
 	var antResp anthropicResponseBody

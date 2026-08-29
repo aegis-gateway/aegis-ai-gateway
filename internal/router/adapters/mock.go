@@ -130,7 +130,7 @@ func (a *MockAdapter) TransformResponse(ctx context.Context, resp *http.Response
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mock provider returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("mock provider returned status %d: %s", resp.StatusCode, RedactProviderError(body))
 	}
 
 	var oaiResp openAIResponseBody

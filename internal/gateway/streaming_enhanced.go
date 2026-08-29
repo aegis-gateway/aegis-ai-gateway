@@ -34,6 +34,14 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
+// maxProviderErrorRead bounds how much of a failed provider response is read
+// before it is redacted and excerpted. It is larger than
+// adapters.MaxProviderErrorExcerpt so that a secret straddling the excerpt
+// boundary is still inside the scanned text and gets replaced rather than
+// clipped, and small enough that an oversized error body is not a way to spend
+// the gateway's memory.
+const maxProviderErrorRead = 8 << 10
+
 // StreamingConfig holds configuration for streaming behavior.
 type StreamingConfig struct {
 	PerChunkTimeout time.Duration // Timeout for each individual chunk
@@ -131,12 +139,24 @@ func (sh *StreamingHandler) HandleStream(
 	}
 
 	if providerResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(providerResp.Body)
+		// Bounded read. The body is only used to build a redacted excerpt, so
+		// reading an unbounded one costs memory for nothing, and a
+		// misconfigured proxy in front of a provider can return a very large
+		// one. The extra byte distinguishes "exactly at the cap" from "longer
+		// than the cap" for the truncation notice.
+		body, _ := io.ReadAll(io.LimitReader(providerResp.Body, maxProviderErrorRead+1))
 		_ = providerResp.Body.Close()
+		// The provider's error body is never logged verbatim. It is text the
+		// gateway does not control, it can quote the request back, and it
+		// arrives at a JSON log handler where an embedded newline forges a
+		// record. What goes in the line is the status, the identifiers needed
+		// to correlate it, and a bounded redacted excerpt.
 		slog.Error("streaming provider returned error",
+			"request_id", reqID,
 			"status", providerResp.StatusCode,
-			"provider", adapter.Name(),
-			"body", string(body),
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+			"body_excerpt", adapters.RedactProviderError(body),
 		)
 
 		if sh.handler.metrics != nil {

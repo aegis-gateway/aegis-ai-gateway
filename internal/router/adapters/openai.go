@@ -110,7 +110,7 @@ func (a *OpenAIAdapter) TransformResponse(ctx context.Context, resp *http.Respon
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openai returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai returned status %d: %s", resp.StatusCode, RedactProviderError(body))
 	}
 
 	var oaiResp openAIResponseBody
