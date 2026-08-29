@@ -263,6 +263,63 @@ misclassified.
 
 ---
 
+## Review rounds after submission
+
+The PR went through 13 review rounds and 24 findings from the automated
+reviewers before coming back clean. Almost all of them landed on Phase 5, and
+almost all were one root cause: **the attestation claiming an outcome the caller
+did not experience.** The code changes were mostly small; the corrections were
+mostly to claims.
+
+The sequence, briefly, because the shape matters more than the list:
+
+1. A stream that completed was attested as a provider failure, because `[DONE]`
+   is a separate return from the scanner-finished case and carried no outcome.
+   That also exposed that the terminator check tested the raw line, so it only
+   ever matched OpenAI and **every Anthropic stream had been ending at EOF**.
+2. Client disconnect and total timeout were fed from the same `ctx.Done()` and
+   chosen between at random, so either could be sealed as the other.
+3. Provider-error rows recorded the upstream status rather than the one the
+   gateway sent.
+4. EOF without a terminator was treated as completion, so a truncated response
+   was sealed as complete. Then: a terminator whose write failed, then one whose
+   *flush* failed, then ordinary chunks whose writes failed, each in turn.
+5. `request_complete` claimed the caller **received** the response. It cannot:
+   a successful flush proves only that the bytes reached the local kernel, and
+   remote receipt would need an application-level acknowledgement the protocol
+   does not carry. The claim is now "written in full, and flushed where the
+   writer supports on-demand flushing", corrected in the code, `known-limitations.md`,
+   `ARCHITECTURE.md` and `COMPLIANCE-MAPPING.md`.
+6. An over-long caller-supplied `X-Request-ID` overflowed `VARCHAR(50)` and the
+   **permitted request left no audit row at all**, returning 200. Bounded at the
+   middleware and in the clip list.
+7. Audit writes were not drained at shutdown, so a routine rollout dropped the
+   tail of the record.
+8. **An unconfigured model name on an allowlist denial was sealed verbatim**, so
+   any caller holding a key with a non-empty allowlist could write up to 128
+   characters of their own text into the immutable, exported chain. This was
+   Phase 1 code, and the comment above it asserted the opposite. It is the most
+   serious defect found on the PR.
+
+Two corrections to statements made in this report or in review:
+
+- I pushed back on a claim that failed audit inserts burn sequence ids, having
+  measured that a `VARCHAR` rejection does not. That measurement was right and
+  the generalisation was wrong: a failure **after** the id is allocated does
+  consume it, and the resulting gap **stalls the sealer**, which refuses to seal
+  past one. That is a larger consequence than the single lost row, and §2.14 now
+  says so.
+- A `TestConcurrentRequests` flake, roughly one run in eight, turned out to be an
+  unsynchronised append in the mock provider from the integration-test repair in
+  [#63](https://github.com/aegis-gateway/aegis-ai-gateway/pull/63), already on
+  `main`. Fixed here.
+
+**What this says about the work order.** Phases 1 to 4 drew no findings. Phase 5
+reads like a call-site change and is really a question about what an HTTP handler
+can honestly know about a response it has sent, which took 13 rounds to pin down.
+Anyone estimating similar work should price the attestation semantics, not the
+plumbing.
+
 ## What a human still needs to decide
 
 **1. Whether the allow event should carry tokens, latency, resolved model and
