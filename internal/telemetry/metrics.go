@@ -408,6 +408,17 @@ type StreamingLabels struct {
 	TimeToFirstTokenMs float64
 	TokensPerSecond    float64
 	StreamDurationMs   float64
+
+	// OmitTimeToFirstToken suppresses the time-to-first-token observation for a
+	// stream that never delivered a chunk.
+	//
+	// There is no such thing as a first-token latency for a stream that failed
+	// at the header, and a histogram has no way to express "not applicable":
+	// any value observed lands in _sum and skews every average computed from
+	// it. Skipping the observation records the absence honestly. The other
+	// streaming metrics are still recorded, because a failed stream's chunk
+	// count and duration are real measurements.
+	OmitTimeToFirstToken bool
 }
 
 // RecordStreamingMetrics records metrics for a completed streaming request.
@@ -416,9 +427,11 @@ func (m *Metrics) RecordStreamingMetrics(labels StreamingLabels) {
 		labels.Provider, labels.Model,
 	).Add(float64(labels.ChunkCount))
 
-	m.StreamingTimeToFirstToken.WithLabelValues(
-		labels.Provider, labels.Model,
-	).Observe(labels.TimeToFirstTokenMs)
+	if !labels.OmitTimeToFirstToken {
+		m.StreamingTimeToFirstToken.WithLabelValues(
+			labels.Provider, labels.Model,
+		).Observe(labels.TimeToFirstTokenMs)
+	}
 
 	m.StreamingTokensPerSecond.WithLabelValues(
 		labels.Provider, labels.Model,

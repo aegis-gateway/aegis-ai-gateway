@@ -208,6 +208,7 @@ func (h *Handler) handleStreamingRequest(
 		routeResult.Adapter,
 		routeResult.ProviderKey,
 		routeResult.OriginalModel,
+		routeResult.ProviderModel,
 		authInfo,
 		parsedReq.AegisRequest,
 	)

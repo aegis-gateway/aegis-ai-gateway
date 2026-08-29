@@ -94,7 +94,7 @@ func TestStreamingProviderError_BodyIsTruncatedInTheLogRecord(t *testing.T) {
 		t.Fatalf("building the provider request: %v", err)
 	}
 
-	sh.HandleStream(w, req, "req-trunc-test", providerReq, adapter, "azure_openai", "aegis-fast",
+	sh.HandleStream(w, req, "req-trunc-test", providerReq, adapter, "azure_openai", "aegis-fast", "gpt-test",
 		&auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"},
 		&types.AegisRequest{Model: "aegis-fast"})
 

@@ -11,9 +11,38 @@
 -- constraining makes the anomaly impossible rather than leaving the code to
 -- refuse it at every read.
 --
--- Backfill first, then constrain: adding NOT NULL to a column holding NULLs
--- fails, and this must not break a deployment that has one.
-UPDATE api_keys SET allowed_models = '[]'::jsonb WHERE allowed_models IS NULL;
+-- A NULL row is REVOKED, not backfilled to '[]'.
+--
+-- '[]' means unrestricted. Quietly writing it into a row whose restrictions are
+-- unknown would grant every model to exactly the keys this migration exists to
+-- make safe, and it would do so on the deployments that actually have the
+-- anomaly. A migration must not make that decision on an operator's behalf.
+--
+-- Revoking fails closed without blocking the upgrade. The key stops working,
+-- which is the correct outcome for a credential whose restrictions cannot be
+-- determined, and revoked_reason says why so an operator can set an explicit
+-- allowlist and reissue. allowed_models is set to '[]' on the same rows only so
+-- the NOT NULL below can be applied; the key is already revoked by then, so
+-- that value grants nothing.
+--
+-- keygen has always written this column, so on a deployment whose keys were all
+-- issued normally this affects no rows at all.
+DO $$
+DECLARE
+    affected INTEGER;
+BEGIN
+    UPDATE api_keys
+       SET status         = 'revoked',
+           revoked_at     = NOW(),
+           revoked_reason = 'allowed_models was NULL at migration 015; restrictions unknown, revoked to fail closed',
+           allowed_models = '[]'::jsonb
+     WHERE allowed_models IS NULL;
+
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    IF affected > 0 THEN
+        RAISE WARNING 'migration 015 revoked % API key(s) whose allowed_models was NULL. Their restrictions could not be determined, so they fail closed. Set an explicit allowed_models and reissue.', affected;
+    END IF;
+END $$;
 
 ALTER TABLE api_keys ALTER COLUMN allowed_models SET NOT NULL;
 

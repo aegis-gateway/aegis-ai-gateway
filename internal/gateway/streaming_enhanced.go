@@ -162,6 +162,7 @@ func (sh *StreamingHandler) HandleStream(
 	adapter adapters.ProviderAdapter,
 	providerKey string,
 	originalModel string,
+	providerModel string,
 	authInfo *auth.AuthInfo,
 	aegisReq *types.AegisRequest,
 ) {
@@ -242,7 +243,7 @@ func (sh *StreamingHandler) HandleStream(
 	)
 
 	// Execute streaming with full monitoring
-	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, providerKey, authInfo)
+	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, providerKey, providerModel, authInfo)
 
 	totalDuration := time.Since(receivedAt)
 
@@ -281,7 +282,7 @@ func (sh *StreamingHandler) HandleStream(
 		"total_tokens", metrics.TotalTokens,
 		"estimated_cost_usd", metrics.EstimatedCostUSD,
 		"duration_ms", totalDuration.Milliseconds(),
-		"time_to_first_token_ms", metrics.FirstChunkTime.Sub(metrics.StartTime).Milliseconds(),
+		"time_to_first_token_ms", firstTokenMsForLog(metrics),
 		// The same pair the non-streaming path logs, so the two are comparable.
 		// tools_returned is reconstructed from the stream's index-keyed deltas,
 		// which is the only place a streamed response records it.
@@ -308,14 +309,21 @@ func (sh *StreamingHandler) HandleStream(
 		})
 
 		// Record streaming-specific metrics
-		timeToFirstToken := metrics.FirstChunkTime.Sub(metrics.StartTime)
+		// Only observed when a first chunk actually arrived; see
+		// timeToFirstToken. The other streaming metrics are still recorded,
+		// because a failed stream's chunk count and duration are real.
+		ttft, sawFirstChunk := timeToFirstToken(metrics)
+		if !sawFirstChunk {
+			ttft = -1
+		}
 		sh.handler.metrics.RecordStreamingMetrics(telemetry.StreamingLabels{
-			Provider:           metrics.Provider,
-			Model:              originalModel,
-			ChunkCount:         metrics.ChunkCount,
-			TimeToFirstTokenMs: float64(timeToFirstToken.Milliseconds()),
-			TokensPerSecond:    sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
-			StreamDurationMs:   float64(totalDuration.Milliseconds()),
+			Provider:             metrics.Provider,
+			Model:                originalModel,
+			ChunkCount:           metrics.ChunkCount,
+			TimeToFirstTokenMs:   float64(ttft.Milliseconds()),
+			OmitTimeToFirstToken: !sawFirstChunk,
+			TokensPerSecond:      sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
+			StreamDurationMs:     float64(totalDuration.Milliseconds()),
 		})
 	}
 
@@ -409,6 +417,33 @@ func outcomeForContext(err error) StreamOutcome {
 	return StreamClientDisconnected
 }
 
+// firstTokenMsForLog renders the first-token latency for the completion log
+// line, using -1 to mean "no chunk ever arrived" rather than printing a
+// nonsensical negative age.
+func firstTokenMsForLog(m StreamMetrics) int64 {
+	d, ok := timeToFirstToken(m)
+	if !ok {
+		return -1
+	}
+	return d.Milliseconds()
+}
+
+// timeToFirstToken reports how long the first content chunk took, and whether
+// there was one.
+//
+// FirstChunkTime is the zero time until a chunk arrives, so a stream that failed
+// before then yields FirstChunkTime.Sub(StartTime) as a multi-billion-year
+// negative duration. Logging that is merely wrong; observing it on the
+// aegis_streaming_time_to_first_token_ms histogram corrupts the _sum that every
+// average over that metric is computed from, and it does so for precisely the
+// failures an operator would be looking at.
+func timeToFirstToken(m StreamMetrics) (time.Duration, bool) {
+	if m.FirstChunkTime.IsZero() {
+		return 0, false
+	}
+	return m.FirstChunkTime.Sub(m.StartTime), true
+}
+
 // clientStatusFor reports the HTTP status the gateway sent.
 //
 // A stream sends its 200 header before the first chunk, so any ending after
@@ -433,6 +468,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	providerResp *http.Response,
 	adapter adapters.ProviderAdapter,
 	providerKey string,
+	providerModel string,
 	authInfo *auth.AuthInfo,
 ) (result StreamMetrics) {
 	defer func() { _ = providerResp.Body.Close() }()
@@ -447,6 +483,11 @@ func (sh *StreamingHandler) streamWithMonitoring(
 		StartTime: time.Now(),
 		// The configured provider name, not adapter.Name(). See HandleStream.
 		Provider: providerKey,
+		// The routed model, known before the request was sent. A stream that
+		// carries usage will overwrite this with the model the provider reports
+		// serving; an early return keeps it, so the usage row says which
+		// provider request failed instead of recording an empty model_served.
+		Model: providerModel,
 	}
 
 	flusher, ok := w.(http.Flusher)

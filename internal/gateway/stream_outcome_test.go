@@ -104,7 +104,7 @@ func runStream(t *testing.T, adapter *scriptedStreamAdapter) *outcomeSpy {
 	}
 
 	sh.HandleStream(httptest.NewRecorder(), req, "req-outcome-test", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 	return spy
 }
 
@@ -268,7 +268,7 @@ func TestStream_DisconnectAndTimeoutAreDistinguished(t *testing.T) {
 			}
 
 			sh.HandleStream(httptest.NewRecorder(), req, "req-cause-test", providerReq, adapter,
-				"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+				"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 			if len(spy.completes) != 0 {
 				t.Errorf("an unfinished stream was attested as complete: %+v", spy.completes)
@@ -305,7 +305,7 @@ func TestStream_ProviderErrorRecordsTheStatusTheCallerReceived(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	sh.HandleStream(w, req, "req-status-test", providerReq, adapter, "anthropic", "aegis-fast",
+	sh.HandleStream(w, req, "req-status-test", providerReq, adapter, "anthropic", "aegis-fast", "claude-test",
 		info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if len(spy.failures) != 1 {
@@ -366,7 +366,7 @@ func TestStream_UndeliveredTerminatorIsNotACompletion(t *testing.T) {
 	}
 
 	sh.HandleStream(&failingWriter{}, req, "req-undelivered", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if len(spy.completes) != 0 {
 		t.Errorf("a stream whose terminator never reached the client was attested as complete: %+v",
@@ -397,7 +397,7 @@ func TestStream_NotStartedRecordsTheErrorStatus(t *testing.T) {
 	// nonFlusher deliberately does not implement http.Flusher, which is what a
 	// middleware wrapper that drops the optional interface looks like.
 	sh.HandleStream(&nonFlusher{}, req, "req-not-started", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if len(spy.completes) != 0 {
 		t.Errorf("a request that never streamed was attested as complete: %+v", spy.completes)
@@ -571,7 +571,7 @@ func TestStream_TerminatorThatFailedToFlushIsNotACompletion(t *testing.T) {
 	}
 
 	sh.HandleStream(&flushFailingWriter{}, req, "req-flush-fail", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if len(spy.completes) != 0 {
 		t.Errorf("a terminator that never left the gateway was attested as complete: %+v",
@@ -676,7 +676,7 @@ func TestStream_FailedChunkIsNotACompletion(t *testing.T) {
 	// Write 1 is the streaming header; fail the first content chunk after it.
 	w := &nthWriteFailingWriter{failOn: 2}
 	sh.HandleStream(w, req, "req-chunk-fail", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if w.writes < 2 {
 		t.Fatalf("the handler made %d writes; this test's premise needs at least 2", w.writes)
@@ -817,7 +817,7 @@ func TestStream_FailedHeaderFlushIsNotACompletion(t *testing.T) {
 
 	w := &headerFlushFailingWriter{}
 	sh.HandleStream(w, req, "req-header-flush", providerReq, adapter,
-		"anthropic", "aegis-fast", info, &types.AegisRequest{Model: "aegis-fast"})
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
 
 	if w.flushes == 0 {
 		t.Fatal("no flush was attempted; this test's premise is wrong")
@@ -872,7 +872,7 @@ func TestStreamWithMonitoring_EarlyReturnsKeepTheProvider(t *testing.T) {
 			}
 
 			got := sh.streamWithMonitoring(context.Background(), tt.writer, "req-attr",
-				resp, &scriptedStreamAdapter{}, "anthropic",
+				resp, &scriptedStreamAdapter{}, "anthropic", "claude-test",
 				&auth.AuthInfo{OrganizationID: "org-test"})
 
 			if got.Outcome != tt.want {
@@ -883,5 +883,53 @@ func TestStreamWithMonitoring_EarlyReturnsKeepTheProvider(t *testing.T) {
 					"this value and would record an empty provider", got.Provider)
 			}
 		})
+	}
+}
+
+// A stream that never delivered a chunk has no first-token latency, and a
+// histogram cannot express "not applicable": any value observed lands in _sum
+// and skews every average computed from it. FirstChunkTime is the zero time on
+// these paths, so the naive subtraction is a multi-billion-year negative.
+func TestTimeToFirstToken_AbsentWhenNoChunkArrived(t *testing.T) {
+	start := time.Now()
+
+	if _, ok := timeToFirstToken(StreamMetrics{StartTime: start}); ok {
+		t.Error("reported a first-token latency for a stream that delivered no chunk")
+	}
+	if got := firstTokenMsForLog(StreamMetrics{StartTime: start}); got != -1 {
+		t.Errorf("log value = %d, want -1; a negative age is worse than an explicit absence", got)
+	}
+
+	withChunk := StreamMetrics{StartTime: start, FirstChunkTime: start.Add(150 * time.Millisecond)}
+	d, ok := timeToFirstToken(withChunk)
+	if !ok {
+		t.Fatal("a stream that delivered a chunk must report its latency")
+	}
+	if d != 150*time.Millisecond {
+		t.Errorf("latency = %v, want 150ms", d)
+	}
+	if got := firstTokenMsForLog(withChunk); got != 150 {
+		t.Errorf("log value = %d, want 150", got)
+	}
+}
+
+// The early returns must carry the routed model as well as the provider, or the
+// usage row cannot say which provider request failed.
+func TestStreamWithMonitoring_EarlyReturnsKeepTheModel(t *testing.T) {
+	h := newAllowlistTestHandler(&outcomeSpy{})
+	sh := NewStreamingHandler(h, StreamingConfig{TotalTimeout: 5 * time.Second})
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+	}
+
+	got := sh.streamWithMonitoring(context.Background(), &nonFlusher{}, "req-model",
+		resp, &scriptedStreamAdapter{}, "anthropic", "claude-haiku-4-5",
+		&auth.AuthInfo{OrganizationID: "org-test"})
+
+	if got.Model != "claude-haiku-4-5" {
+		t.Errorf("model = %q, want the routed model; usage_records.model_served would "+
+			"otherwise be empty for the request being investigated", got.Model)
 	}
 }
