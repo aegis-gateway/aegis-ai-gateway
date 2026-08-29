@@ -580,10 +580,20 @@ non-zero write-failure counter as that situation rather than as a sealer outage.
 **Shutdown.** Audit writes are asynchronous so they never add latency to a request, which
 means at SIGTERM there can be accepted events that are not yet persisted. `srv.Shutdown`
 waits for handlers and knows nothing about those goroutines, so the gateway drains them
-explicitly before closing the database pool, bounded by the same graceful-shutdown
-deadline. If that deadline expires with writes outstanding the gateway logs it as an
-incomplete record rather than exiting quietly. Before this, a routine rollout could drop
-the tail of the decision record while every affected caller had received a 200.
+explicitly before closing the database pool and before any exit. The drain has its own
+deadline, sized from the single-insert timeout rather than borrowed from the shutdown
+budget, which a long-running stream can consume entirely. Before this, a routine rollout
+could drop the tail of the decision record while every affected caller had received a 200.
+
+**A forced shutdown still loses events, and this cannot be fixed by draining.** If the
+graceful deadline expires with a handler still active, for example one blocked awaiting its
+provider, that handler has not yet called the audit logger at all: it counts as zero
+in-flight, the drain legitimately reports nothing outstanding, and the process then
+terminates the handler before it can produce its event. Waiting instead would defeat the
+deadline the operator configured, since a provider call can run for minutes. The gateway
+therefore logs explicitly that the record is incomplete for whatever was in flight at exit,
+rather than letting a successful drain imply otherwise. **Treat a `shutdown deadline
+expired with handlers still active` line as a known gap in that window.**
 
 **Volume.** `audit_events` now receives one row per request rather than one row per
 refusal. Measured on 2026-08-29: 50,000 events occupy 29 MB including indexes, about

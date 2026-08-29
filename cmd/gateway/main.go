@@ -436,7 +436,22 @@ func main() {
 	// events are most likely to be outstanding, so exiting on it first would
 	// abandon the writes this drain exists to save.
 	if shutdownErr != nil {
-		logger.Error("graceful shutdown failed", "error", shutdownErr)
+		// Drain reporting success here means only that nothing already
+		// REGISTERED was outstanding. It says nothing about a handler still
+		// blocked on its provider, which has not called into the logger at all
+		// and therefore counts as zero in-flight. The process is about to
+		// terminate that handler, and an event it never produced cannot be
+		// persisted by anything downstream.
+		//
+		// So this is a real and unavoidable hole rather than something the
+		// drain can close: past the graceful deadline the operator has asked
+		// the process to stop, and waiting for a provider that may take another
+		// two minutes would defeat the deadline they configured. What the
+		// gateway can do is refuse to imply the record is complete.
+		logger.Error("shutdown deadline expired with handlers still active; "+
+			"any audit events they had not yet registered are lost, so the "+
+			"decision record is incomplete for the requests in flight at exit",
+			"error", shutdownErr)
 		os.Exit(1)
 	}
 
