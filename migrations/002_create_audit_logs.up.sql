@@ -1,3 +1,21 @@
+-- DEPRECATED, AND NEVER WRITTEN.
+--
+-- No component inserts into audit_logs. A repository-wide search for the table
+-- name finds this migration, internal/purge (which deletes from it),
+-- internal/purge/schema_guard_test.go, and the audit canary's sweep. Nothing
+-- writes it, and nothing ever has. The decision record lives in audit_events.
+--
+-- GET /aegis/v1/audit/logs served this table and now returns 410 Gone; see
+-- internal/gateway/audit_handler.go. The table is left in place deliberately:
+-- purge targets it by name, the schema guard asserts a time column exists on
+-- it, and the no-payload canary sweeps it. Dropping it is a separate change
+-- with its own risk, tracked in docs/evidence/known-limitations.md.
+--
+-- This header is a comment only. golang-migrate selects migrations by version
+-- and does not checksum their contents, and migration 002 has already applied
+-- everywhere it is going to, so adding prose here changes nothing executable.
+-- Do not add DDL to this file: a schema change belongs in a new migration.
+
 CREATE TABLE audit_logs (
     id              BIGSERIAL PRIMARY KEY,
     request_id      VARCHAR(50) NOT NULL UNIQUE,

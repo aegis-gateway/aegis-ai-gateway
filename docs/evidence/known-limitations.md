@@ -365,3 +365,37 @@ and requires `hash_schema_version=3`, and the verifier deliberately computes one
 set. Spending that on additive metadata is a bad trade. The decision, the three
 rejected alternatives, and the specific thing to watch for are recorded in
 [ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md), and the bump itself is tracked on [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38).
+
+### 2.11 `audit_logs` is withdrawn, and the table removal is still pending
+
+`GET /aegis/v1/audit/logs` now returns **410 Gone** and points the caller at
+`/aegis/v1/audit/events` (`internal/gateway/audit_handler.go`,
+`TestAuditHandler_LogsIsGone`).
+
+It previously ran the same parameter parsing and organization scoping as the events
+endpoint, then emitted a 21-column CSV header over zero rows, because **nothing has
+ever written `audit_logs`**. A repository-wide search for the table name finds the
+migration that creates it, `internal/purge`, `internal/purge/schema_guard_test.go`, and
+the no-payload canary's sweep. There is no insert anywhere. An empty `200` from an audit
+API is indistinguishable from a deployment where nothing happened, which is the worst
+answer such an API can give, so it now refuses rather than reports.
+
+**What is still outstanding.** The table itself is still there, and so is
+`audit.Reader.QueryLogs`, which no route now reaches. Both are deliberate for now:
+
+- `internal/purge` targets `audit_logs` by name and offers `--table audit_logs`.
+- `internal/purge/schema_guard_test.go` asserts a purgeable time column exists on it.
+- `TestNoPayload_CanaryEndToEnd` sweeps it for the canary string, and
+  `TestNoPayload_AuditReadAPIStructs` reflects over `audit.LogRow`. Both would lose a
+  guard if the type went away with nothing replacing it.
+
+Removing the table is therefore a change with its own blast radius across the purge CLI,
+two guards, and migration history, and it is not folded into the endpoint withdrawal.
+Until it happens, a reader of the schema will find a table that looks like a per-request
+record and is empty in every deployment. Migration
+`002_create_audit_logs.up.sql` carries a header saying so.
+
+**This does not widen the retention surface.** An unwritten table holds nothing, and the
+canary still sweeps it, so a future write that put payload there would still be caught.
+Section 2.3 above describes what the column bounds do and do not establish, and that is
+unchanged.

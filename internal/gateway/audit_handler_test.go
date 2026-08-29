@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
@@ -139,13 +140,37 @@ func TestAuditHandler_AcceptsValidParameters(t *testing.T) {
 	}
 }
 
-func TestAuditHandler_LogsSharesParameterHandling(t *testing.T) {
-	h := NewAuditHandler(nil)
-	w := httptest.NewRecorder()
-	h.Logs(w, newAuditRequest(t, "/aegis/v1/audit/logs?format=xml", orgAuth()))
+// TestAuditHandler_LogsIsGone pins the withdrawal of GET /aegis/v1/audit/logs.
+//
+// The endpoint used to parse parameters, scope by organization, and then emit a
+// 21-column CSV header over zero rows, because nothing has ever written
+// audit_logs. It now refuses. The status must be 410 and not 404, because the
+// route existed and was deliberately withdrawn, and not 200, because an empty
+// list from an audit API is indistinguishable from a deployment where nothing
+// happened.
+func TestAuditHandler_LogsIsGone(t *testing.T) {
+	for _, target := range []string{
+		"/aegis/v1/audit/logs",
+		"/aegis/v1/audit/logs?format=csv",
+		// Parameters that the endpoint used to reject with 400 are now moot:
+		// the resource is gone regardless of how it is asked for.
+		"/aegis/v1/audit/logs?format=xml",
+		"/aegis/v1/audit/logs?limit=-1",
+	} {
+		t.Run(target, func(t *testing.T) {
+			h := NewAuditHandler(nil)
+			w := httptest.NewRecorder()
+			h.Logs(w, newAuditRequest(t, target, orgAuth()))
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected /logs to validate format too, got %d", w.Code)
+			if w.Code != http.StatusGone {
+				t.Fatalf("expected HTTP %d, got %d: %s", http.StatusGone, w.Code, w.Body.String())
+			}
+			// The refusal has to name the replacement, or a caller integrating
+			// against the old endpoint has no way to find the decision record.
+			if !strings.Contains(w.Body.String(), "/aegis/v1/audit/events") {
+				t.Errorf("the 410 body does not point at the events endpoint: %s", w.Body.String())
+			}
+		})
 	}
 }
 
@@ -160,23 +185,16 @@ func TestAuditHandler_LogsSharesParameterHandling(t *testing.T) {
 // cmd/keygen takes -org as a free string, so that key is one typo away from
 // existing.
 func TestAuditHandler_RefusesSentinelOrg(t *testing.T) {
-	for _, path := range []string{"/aegis/v1/audit/events", "/aegis/v1/audit/logs"} {
-		t.Run(path, func(t *testing.T) {
-			h := NewAuditHandler(nil)
-			w := httptest.NewRecorder()
-			req := newAuditRequest(t, path,
-				&auth.AuthInfo{KeyID: "key_1", OrganizationID: audit.UnattributedOrg})
+	// Only /events. /logs no longer scopes anything: it returns 410 before it
+	// looks at the caller, so there is no scoping decision left there to get
+	// wrong. TestAuditHandler_LogsIsGone covers it.
+	h := NewAuditHandler(nil)
+	w := httptest.NewRecorder()
+	h.Events(w, newAuditRequest(t, "/aegis/v1/audit/events",
+		&auth.AuthInfo{KeyID: "key_1", OrganizationID: audit.UnattributedOrg}))
 
-			if path == "/aegis/v1/audit/events" {
-				h.Events(w, req)
-			} else {
-				h.Logs(w, req)
-			}
-
-			if w.Code != http.StatusUnauthorized {
-				t.Errorf("a key scoped to the unattributed sentinel got %d, want 401; "+
-					"it would otherwise read every tenant's authentication failures", w.Code)
-			}
-		})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("a key scoped to the unattributed sentinel got %d, want 401; "+
+			"it would otherwise read every tenant's authentication failures", w.Code)
 	}
 }

@@ -102,53 +102,32 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, auditListResponse{Object: "list", Data: rows, NextBefore: next})
 }
 
-// Logs serves GET /aegis/v1/audit/logs.
+// Logs serves GET /aegis/v1/audit/logs, which is gone.
+//
+// The endpoint returns 410 rather than an empty list because nothing has ever
+// written audit_logs. No component inserts into that table; a repository-wide
+// search finds it only in the migration that creates it, the purge code, and
+// the schema guard. The handler previously ran the same parameter parsing and
+// org scoping as Events, then emitted a 21-column CSV header over zero rows,
+// so a caller integrating against it saw a working endpoint reporting that
+// nothing had happened. An empty 200 is indistinguishable from a quiet
+// deployment, which is the worst answer an audit API can give.
+//
+// 410 rather than 404: the route existed, it is deliberately withdrawn, and a
+// caller should stop asking rather than retry. The decision record lives in
+// audit_events and is served by Events.
+//
+// This is a route-level statement about the resource, so it is returned before
+// authentication and scoping are considered. Nothing tenant specific is
+// disclosed by it, and the route is behind auth.Middleware in any case
+// (cmd/gateway/main.go), so an unauthenticated caller never reaches here.
 func (h *AuditHandler) Logs(w http.ResponseWriter, r *http.Request) {
 	reqID := w.Header().Get("X-Request-ID")
-	authInfo, filter, format, ok := h.parse(w, r, reqID)
-	if !ok {
-		return
-	}
-
-	rows, err := h.reader.QueryLogs(r.Context(), authInfo.OrganizationID, filter)
-	if err != nil {
-		httputil.WriteInternalError(w, reqID, "Failed to read audit logs")
-		return
-	}
-
-	if format == "csv" {
-		writeCSV(w, reqID, "audit_logs",
-			[]string{"id", "request_id", "timestamp", "duration_ms", "gateway_overhead_ms",
-				"status_code", "organization_id", "team_id", "user_id", "model_requested",
-				"model_served", "provider", "endpoint", "stream", "classification",
-				"prompt_tokens", "completion_tokens", "total_tokens",
-				"estimated_cost_cents", "routing_attempts", "failovers"},
-			func(yield func([]string) error) error {
-				for _, l := range rows {
-					if err := yield([]string{
-						strconv.FormatInt(l.ID, 10), l.RequestID,
-						l.Timestamp.UTC().Format(time.RFC3339Nano),
-						strconv.Itoa(l.DurationMs), strconv.Itoa(l.GatewayOverheadMs),
-						strconv.Itoa(l.StatusCode), l.OrganizationID, l.TeamID, deref(l.UserID),
-						l.ModelRequested, l.ModelServed, l.Provider, l.Endpoint,
-						strconv.FormatBool(l.Stream), l.Classification,
-						strconv.Itoa(l.PromptTokens), strconv.Itoa(l.CompletionTokens),
-						strconv.Itoa(l.TotalTokens), strconv.Itoa(l.EstimatedCostCents),
-						strconv.Itoa(l.RoutingAttempts), strconv.Itoa(l.Failovers),
-					}); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-		return
-	}
-
-	var next *int64
-	if len(rows) == filter.Limit {
-		next = &rows[len(rows)-1].ID
-	}
-	writeJSON(w, auditListResponse{Object: "list", Data: rows, NextBefore: next})
+	httputil.WriteError(w, reqID, http.StatusGone,
+		"invalid_request_error", "endpoint_gone",
+		"GET /aegis/v1/audit/logs is no longer served: the audit_logs table has never been "+
+			"written, so this endpoint only ever returned an empty list. The decision record "+
+			"is at GET /aegis/v1/audit/events")
 }
 
 // parse pulls auth, filter and format off the request, writing the error
