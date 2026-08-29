@@ -88,9 +88,15 @@ type anthropicStreamTransformer struct {
 	// zero tokens and therefore zero cost. That is not a reporting nicety: the
 	// daily spend budget is computed from these records, so a streamed request
 	// costing real money moved no budget at all.
-	inputTokens  int
-	cachedTokens int
-	outputTokens int
+	// Each component of the prompt total is tracked separately, because
+	// Anthropic's usage arrives across several events and any given event may
+	// carry only some of the fields. Reconstructing the total from whichever
+	// fields the *current* event happens to hold, and overwriting with that,
+	// loses the components the event omitted.
+	uncachedInputTokens int
+	cachedTokens        int
+	cacheCreationTokens int
+	outputTokens        int
 
 	// model is the model the provider actually served, taken from
 	// message_start. The gateway reads it off a relayed chunk and uses it to
@@ -203,11 +209,11 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 			Model:   t.model,
 			Choices: []openAIStreamChoice{{Index: 0, Delta: openAIDelta{}, FinishReason: &finish}},
 		}
-		if t.inputTokens > 0 || t.outputTokens > 0 {
+		if t.promptTokens() > 0 || t.outputTokens > 0 {
 			chunk.Usage = &openAIUsage{
-				PromptTokens:     t.inputTokens,
+				PromptTokens:     t.promptTokens(),
 				CompletionTokens: t.outputTokens,
-				TotalTokens:      t.inputTokens + t.outputTokens,
+				TotalTokens:      t.promptTokens() + t.outputTokens,
 			}
 			if t.cachedTokens > 0 {
 				chunk.Usage.PromptTokensDetails = &openAIPromptTokensDetails{CachedTokens: t.cachedTokens}
@@ -248,16 +254,37 @@ type openAIPromptTokensDetails struct {
 // normalising to the canonical convention where the prompt count INCLUDES the
 // cached portion. Anthropic's input_tokens excludes it. See
 // anthropicUsageToCanonical.
+// absorbUsage folds one usage object into the running totals.
+//
+// message_start carries the full prompt breakdown; message_delta carries the
+// output count and, per Anthropic's schema, may repeat input_tokens while
+// omitting the cache fields entirely. Rebuilding the prompt total from the
+// current event and overwriting therefore replaced a correct total such as
+// 1005 with the uncached 5 — and since cachedTokens survived, the calculator
+// then computed uncached = 5 - 1000, clamped it to zero, and billed none of
+// the uncached input.
+//
+// Updating each component independently means an event that omits a field
+// leaves that component alone rather than erasing it.
 func (t *anthropicStreamTransformer) absorbUsage(u anthropicUsage) {
-	if total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens; total > 0 {
-		t.inputTokens = total
+	if u.InputTokens > 0 {
+		t.uncachedInputTokens = u.InputTokens
 	}
 	if u.CacheReadInputTokens > 0 {
 		t.cachedTokens = u.CacheReadInputTokens
 	}
+	if u.CacheCreationInputTokens > 0 {
+		t.cacheCreationTokens = u.CacheCreationInputTokens
+	}
 	if u.OutputTokens > 0 {
 		t.outputTokens = u.OutputTokens
 	}
+}
+
+// promptTokens is the total prompt size: uncached input plus everything that
+// came from or went into the cache.
+func (t *anthropicStreamTransformer) promptTokens() int {
+	return t.uncachedInputTokens + t.cachedTokens + t.cacheCreationTokens
 }
 
 // openAIToolCallDelta is a tool call fragment in OpenAI streaming shape. Index

@@ -90,6 +90,21 @@ func (c *Calculator) Calculate(details RequestDetails) (float64, bool) {
 		outputRate = entry.LongContext.Output
 	}
 
+	// A pricing entry may legitimately omit cached_input — not every provider
+	// prices cache reads separately, and IsUsablePriceEntry does not require it
+	// because demanding it would reject valid configurations.
+	//
+	// But once cached tokens are separated out of the prompt total, an absent
+	// rate is zero, and a fully cached request would record no input cost at
+	// all: a spend-accounting bypass that appears precisely when caching is
+	// working best. Charging the ordinary input rate instead is the
+	// conservative reading — it is what the previous whole-prompt calculation
+	// did, and over-charging a cache read is a smaller error than billing none
+	// of the input.
+	if cachedInputRate <= 0 {
+		cachedInputRate = inputRate
+	}
+
 	// Uncached prompt tokens = total prompt minus cached tokens.
 	uncachedPrompt := details.PromptTokens - details.CachedTokens
 	if uncachedPrompt < 0 {

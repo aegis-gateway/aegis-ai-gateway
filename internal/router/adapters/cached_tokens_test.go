@@ -178,3 +178,46 @@ func TestCachedTokensChangeTheCost(t *testing.T) {
 	t.Logf("a fully cached million-token prompt: %v uncached vs %v cached, a %.0fx difference",
 		full, cached, full/cached)
 }
+
+// TestAbsorbUsage_LaterEventOmittingCacheFields reproduces Anthropic's real
+// event sequence: message_start carries the full prompt breakdown, and a later
+// message_delta repeats input_tokens while omitting the cache fields.
+//
+// Rebuilding the total from the current event and overwriting replaced a
+// correct 1005 with the uncached 5. Because cachedTokens survived, the cost
+// calculator then computed uncached = 5 - 1000, clamped it to zero, and billed
+// none of the uncached input.
+func TestAbsorbUsage_LaterEventOmittingCacheFields(t *testing.T) {
+	tr := &anthropicStreamTransformer{}
+
+	// message_start: 5 uncached, 1000 read from cache.
+	tr.absorbUsage(anthropicUsage{InputTokens: 5, CacheReadInputTokens: 1000})
+	if got := tr.promptTokens(); got != 1005 {
+		t.Fatalf("after message_start prompt tokens = %d, want 1005", got)
+	}
+
+	// message_delta: repeats input_tokens, omits the cache fields.
+	tr.absorbUsage(anthropicUsage{InputTokens: 5, OutputTokens: 42})
+
+	if got := tr.promptTokens(); got != 1005 {
+		t.Errorf("prompt tokens = %d, want 1005 — the later event erased the cached "+
+			"subset, so the uncached input would be clamped to zero and billed as free", got)
+	}
+	if tr.cachedTokens != 1000 {
+		t.Errorf("cached tokens = %d, want 1000", tr.cachedTokens)
+	}
+	if tr.outputTokens != 42 {
+		t.Errorf("output tokens = %d, want 42", tr.outputTokens)
+	}
+}
+
+// TestAbsorbUsage_CacheCreationCounted asserts cache-creation tokens are part of
+// the prompt total. They are input the provider charged for; omitting them
+// under-reports the prompt and under-bills the request.
+func TestAbsorbUsage_CacheCreationCounted(t *testing.T) {
+	tr := &anthropicStreamTransformer{}
+	tr.absorbUsage(anthropicUsage{InputTokens: 10, CacheCreationInputTokens: 500})
+	if got := tr.promptTokens(); got != 510 {
+		t.Errorf("prompt tokens = %d, want 510", got)
+	}
+}
