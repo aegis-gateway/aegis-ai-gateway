@@ -339,4 +339,4 @@ It is deferred anyway, because adding a field to `audit_events` changes every le
 and requires `hash_schema_version=3`, and the verifier deliberately computes one field
 set. Spending that on additive metadata is a bad trade. The decision, the three
 rejected alternatives, and the specific thing to watch for are recorded in
-[docs/design/audit-tool-names.md](../design/audit-tool-names.md).
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md), and the bump itself is tracked on [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38).

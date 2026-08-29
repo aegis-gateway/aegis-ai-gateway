@@ -47,3 +47,4 @@ What this costs, and what it forecloses.
 | [0008](0008-seal-status-is-gateway-declared.md) | Sealing status is three states, judged against a gateway-declared window | Accepted |
 | [0009](0009-indexless-tool-call-deltas-are-dropped.md) | An indexless streaming tool call delta is dropped, not merged | Accepted |
 | [0010](0010-nested-request-fields-are-allowlisted.md) | Unknown fields are refused at every level of the request | Accepted |
+| [0011](0011-tool-names-wait-for-a-hash-schema-bump.md) | Tool names wait for a hash schema bump rather than causing one | Accepted |
