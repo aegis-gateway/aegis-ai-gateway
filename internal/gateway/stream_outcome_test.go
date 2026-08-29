@@ -829,10 +829,14 @@ func TestStream_FailedHeaderFlushIsNotACompletion(t *testing.T) {
 	if len(spy.failures) != 1 {
 		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
 	}
-	if got := spy.failures[0].Reason; got != audit.ReasonStreamNotStarted {
-		t.Errorf("reason = %q, want %q", got, audit.ReasonStreamNotStarted)
+	if got := spy.failures[0].Reason; got != audit.ReasonResponseNotDelivered {
+		t.Errorf("reason = %q, want %q", got, audit.ReasonResponseNotDelivered)
 	}
-	if got := spy.failures[0].Req.StatusCode; got != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500: no stream started", got)
+	// 200, not 500. WriteHeader has already committed the status line by the
+	// time the flush is attempted, and no error status can follow it, so
+	// recording 500 would put a status the caller never received into the
+	// sealed record. The first version of this fix did exactly that.
+	if got := spy.failures[0].Req.StatusCode; got != http.StatusOK {
+		t.Errorf("status = %d, want 200: WriteHeader already committed it", got)
 	}
 }

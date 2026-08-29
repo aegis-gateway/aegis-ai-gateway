@@ -115,6 +115,15 @@ const (
 	// StreamNotStarted means streaming was refused before any header went out,
 	// so the gateway sent an error status rather than a stream.
 	StreamNotStarted StreamOutcome = "not_started"
+	// StreamHeaderUndelivered means the 200 header was written and its flush
+	// failed, so nothing of the stream reached the caller.
+	//
+	// Distinct from StreamNotStarted because the status line differs, and the
+	// record has to state what the gateway sent. WriteHeader has already
+	// committed 200 by this point and no error status can follow it, so
+	// recording 500 here would put a status the caller never received into the
+	// sealed record: the same mismatch this PR corrected on every other path.
+	StreamHeaderUndelivered StreamOutcome = "header_undelivered"
 	// StreamTruncated means the provider closed the stream cleanly without
 	// sending its end-of-stream marker, so the client received a partial
 	// response that looked like a whole one.
@@ -342,6 +351,11 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.auditLogger.LogRequestComplete(rec)
 		case StreamNotStarted:
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamNotStarted)
+		case StreamHeaderUndelivered:
+			// The header went out and the flush did not, so nothing of the
+			// stream reached the caller. response_not_delivered is exactly
+			// that, and clientStatusFor leaves the status at the committed 200.
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
 		case StreamTruncated:
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
 		case StreamClientDisconnected:
@@ -398,10 +412,12 @@ func outcomeForContext(err error) StreamOutcome {
 // clientStatusFor reports the HTTP status the gateway sent.
 //
 // A stream sends its 200 header before the first chunk, so any ending after
-// that point was still a 200 on the wire however badly it went. The exception
-// is a stream that never started, where an error status went out and nothing
-// else. Both the audit event and the usage row have to agree with the status
-// line the gateway wrote, or the record contradicts the response.
+// that point was still a 200 on the wire however badly it went, including a
+// header whose flush failed: WriteHeader has already committed the status and
+// no error can follow it. The single exception is a stream that never started,
+// where an error status went out and nothing else. Both the audit event and the
+// usage row have to agree with the status line the gateway wrote, or the record
+// contradicts the response.
 func clientStatusFor(outcome StreamOutcome) int {
 	if outcome == StreamNotStarted {
 		return http.StatusInternalServerError
@@ -447,7 +463,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			"error", err,
 			"provider", providerKey,
 		)
-		return StreamMetrics{Outcome: StreamNotStarted}
+		return StreamMetrics{Outcome: StreamHeaderUndelivered}
 	}
 
 	metrics := StreamMetrics{
