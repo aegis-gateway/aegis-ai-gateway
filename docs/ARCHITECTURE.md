@@ -81,6 +81,15 @@ Before routing, `ChatCompletions` checks the requested alias against the calling
 allowlist permits every configured alias; a non-empty one permits exactly the aliases it
 names, matched literally, so a deprecated alias is not implied by the alias it names.
 
+The check applies **only to an alias that is a key of `configs/models.yaml`**. That is
+load-bearing rather than defensive: the refusal writes the alias to `audit_events.model`,
+which the leaf hash covers and the sealer seals, and `DecodeChatCompletion` accepts any
+string as a model. Enforcing on an unconfigured alias would let a caller holding a
+restricted key put caller-controlled text into the attested record. An unconfigured alias
+falls through to `ResolveRoute`, which refuses it as an unknown model and writes no audit
+row, exactly as it does for every key.
+`TestChatCompletions_UnconfiguredAliasIsNotAttested` pins this.
+
 A key that is refused gets HTTP 503 in the same envelope as the classification-ceiling
 refusal in step 6, and an `auth_failure` event is written to `audit_events` carrying the
 authenticated organization, the requested alias, and a fixed reason string. The two
@@ -189,11 +198,11 @@ columns, all of them identifiers, enumerated values or status codes:
 | `organization_id`, `team_id`, `user_id`, `api_key_id` | The authenticated identity |
 | `ip_address` | The caller's remote address |
 | `endpoint`, `method` | `/v1/chat/completions`, `POST` |
-| `status_code` | What the caller was sent. 499 for a client that disconnected mid-stream |
+| `status_code` | What the caller was sent. On a stream this is `StreamOutcome.HTTPStatus()`, the same value the Prometheus counter and the usage record take, so the three cannot disagree: 200 completed, 499 client disconnected, 504 stalled, 502 read error, 500 no flusher |
 | `provider` | The **configured provider key** from the resolved route, not the adapter type |
 | `model` | The **concrete model** that provider served, from `configs/models.yaml`, not the provider's echo of it |
 | `operation` | `chat_completion` or `chat_completion_stream` |
-| `reason` | On `provider_failure` only: one of six enumerated stage constants, never provider or caller text |
+| `reason` | On `provider_failure` only: one of six enumerated stage constants, never provider or caller text. A non-success status from the provider is `provider_http_error` on both the buffered and streamed paths; `provider_response_invalid` is reserved for a success that could not be read or decoded |
 
 **What it does not carry, and why.** The requested model alias, the
 classification tier, the request latency, and the prompt and completion token

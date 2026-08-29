@@ -222,7 +222,22 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// and moving this check above them would replace that attested event with
 	// this one rather than adding to it. The narrower governance record wins,
 	// which is the same ordering rule the tool-capability refusal below states.
-	if !authInfo.ModelAllowed(aegisReq.Model) {
+	//
+	// The membership check comes first and is load-bearing, not defensive.
+	// DecodeChatCompletion accepts any string as a model, and this refusal
+	// writes that string to audit_events.model, which the leaf hash covers and
+	// the sealer seals. Enforcing on an unconfigured alias would therefore let
+	// a caller holding a restricted key put up to 128 characters of arbitrary
+	// text into the attested record, permanently, which is the exact violation
+	// this pull request exists to close. An alias that is a key of
+	// modelsCfg.Models is operator-configured by construction.
+	//
+	// An unconfigured alias falls through to ResolveRoute, which refuses it as
+	// an unknown model and writes no audit row. That is what happens today for
+	// every key, and it is unchanged.
+	modelsCfg := h.modelsCfg()
+	_, aliasConfigured := modelsCfg.Models[aegisReq.Model]
+	if aliasConfigured && !authInfo.ModelAllowed(aegisReq.Model) {
 		slog.Warn("request refused: model not in the key's allowlist",
 			"request_id", reqID,
 			"model", aegisReq.Model,
@@ -245,7 +260,6 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Route to provider
-	modelsCfg := h.modelsCfg()
 	route, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
@@ -461,10 +475,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"adapter", adapter.Name(),
 		)
 		if h.auditLogger != nil {
+			// TransformResponse returns an error for two unrelated things: a
+			// non-success status from the provider, and a success it could not
+			// read or decode. They are different failures and the streaming
+			// path already seals them apart, so attesting both as
+			// provider_response_invalid would make the recorded stage for one
+			// provider rejection depend on whether the caller asked to stream.
+			stage := audit.FailureProviderResponseInvalid
+			if providerResp.StatusCode < 200 || providerResp.StatusCode > 299 {
+				stage = audit.FailureProviderHTTPError
+			}
 			h.auditLogger.LogProviderFailure(
 				completionEvent(reqID, authInfo, providerKey, providerModel, false,
 					http.StatusInternalServerError, r.RemoteAddr),
-				audit.FailureProviderResponseInvalid)
+				stage)
 		}
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return

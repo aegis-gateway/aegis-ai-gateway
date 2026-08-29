@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
@@ -280,5 +281,78 @@ func TestModelAllowlist_ListAndCompletionAgree(t *testing.T) {
 					allowed, alias, advertised[alias], served)
 			}
 		}
+	}
+}
+
+// TestChatCompletions_UnconfiguredAliasIsNotAttested is the regression test for
+// a payload channel found in review on PR #67.
+//
+// DecodeChatCompletion accepts any string as a model, and the allowlist check
+// deliberately runs before ResolveRoute, so nothing upstream had rejected the
+// value before it was written to audit_events.model. That column is covered by
+// the leaf hash and sealed into the Merkle chain, so a caller holding a
+// restricted key could put arbitrary text into the attested record permanently.
+//
+// The fix is that the allowlist is enforced only on an alias that is a key of
+// modelsCfg.Models. An unconfigured alias falls through to ResolveRoute and is
+// refused as an unknown model, writing no audit row, which is what happens for
+// every key today.
+func TestChatCompletions_UnconfiguredAliasIsNotAttested(t *testing.T) {
+	t.Parallel()
+
+	// Charset-legal, because the validator restricts a model name to
+	// [a-zA-Z0-9._:-] and 256 characters before this code runs. That bounds the
+	// exposure and does not remove it: audit_events.model is VARCHAR(128) and
+	// is clipped to it, so the channel was 128 characters of that alphabet into
+	// a column the leaf hash covers. A canary containing spaces would be
+	// refused at validation and would prove nothing about this path.
+	const canary = "CANARY_MODEL_PAYLOAD_9e1f4c.and-a-good-deal-of-caller-text:not-a-model-name"
+
+	for _, tc := range []struct {
+		name    string
+		allowed []string
+	}{
+		{"restricted key", []string{"aegis-fast"}},
+		{"unrestricted key", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			spy := &allowlistAudit{}
+			w := postAs(t, newAllowlistHandler(spy), authWith(tc.allowed), canary)
+
+			// Refused either way: an unconfigured alias has no route.
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("got HTTP %d for an unconfigured alias, want 503: %s", w.Code, w.Body.String())
+			}
+
+			// Nothing caller-controlled may have been attested. Checking every
+			// audit call rather than only the denial list, so a future event
+			// added on this path is covered too.
+			for _, d := range spy.denied {
+				if strings.Contains(d.Model, "CANARY_MODEL_PAYLOAD") {
+					t.Errorf("caller-controlled text reached the sealed model column: %q", d.Model)
+				}
+			}
+			for _, ev := range spy.completed {
+				if strings.Contains(ev.Model, "CANARY_MODEL_PAYLOAD") {
+					t.Errorf("caller-controlled text reached a completion event: %q", ev.Model)
+				}
+			}
+			for _, f := range spy.failed {
+				if strings.Contains(f.Event.Model, "CANARY_MODEL_PAYLOAD") {
+					t.Errorf("caller-controlled text reached a failure event: %q", f.Event.Model)
+				}
+			}
+
+			// An unconfigured alias is refused by routing, not by the
+			// allowlist, so it writes no denial row at all. Asserting the count
+			// keeps the test honest: without it, a fix that recorded the
+			// denial with an empty model would also pass the checks above,
+			// and that is a different design than the one in the handler.
+			if len(spy.denied) != 0 {
+				t.Errorf("an unconfigured alias wrote %d model-denied event(s); it should be "+
+					"refused by ResolveRoute as an unknown model, writing none", len(spy.denied))
+			}
+		})
 	}
 }

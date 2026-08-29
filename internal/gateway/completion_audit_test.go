@@ -21,12 +21,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // TestNonStreamingAllowIsAttested is the regression test for the completeness
@@ -94,8 +96,16 @@ func (f *failingAdapter) SendRequest(*http.Request) (*http.Response, error) {
 	}
 	return f.response, nil
 }
-func (f *failingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
-	return nil, errors.New("provider returned status 400: [redacted excerpt]")
+
+// TransformResponse mirrors the real adapters: they return an error both for a
+// non-success status and for a success they cannot decode, which is exactly why
+// the handler has to inspect the status itself rather than trust the error.
+func (f *failingAdapter) TransformResponse(_ context.Context, resp *http.Response) (*types.AegisResponse, error) {
+	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		return nil, errors.New("provider returned status " +
+			strconv.Itoa(resp.StatusCode) + ": [redacted excerpt]")
+	}
+	return nil, errors.New("unmarshal provider response: invalid character 'o'")
 }
 func (f *failingAdapter) TransformStreamChunk(c []byte) ([]byte, error) { return c, nil }
 
@@ -119,10 +129,27 @@ func TestNonStreamingProviderFailureIsAttested(t *testing.T) {
 			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
-			name: "response could not be translated",
+			// A provider that rejected the request. TransformResponse returns
+			// an error for this and for a success it cannot decode, and the
+			// two used to be sealed identically. The streaming path always
+			// distinguished them, so the recorded stage for one provider
+			// rejection depended on whether the caller asked to stream.
+			name: "provider returned a non-success status",
 			adapter: &failingAdapter{response: &http.Response{
-				StatusCode: http.StatusBadRequest,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{}}`))),
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"rate_limited"}}`))),
+				Header:     make(http.Header),
+			}},
+			wantStage:  audit.FailureProviderHTTPError,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			// A 200 the adapter could not read or decode. This is the case
+			// provider_response_invalid names.
+			name: "successful response could not be translated",
+			adapter: &failingAdapter{response: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`not json at all`))),
 				Header:     make(http.Header),
 			}},
 			wantStage:  audit.FailureProviderResponseInvalid,
@@ -306,4 +333,103 @@ type blockingReader struct{}
 
 func (blockingReader) Read([]byte) (int, error) {
 	select {}
+}
+
+// TestStreamStatusIsConsistentAcrossSinks is the regression test for a
+// contradiction found in review on PR #67.
+//
+// StreamMetrics.Outcome drove the audit event, but the Prometheus counter and
+// the usage record that follow both hardcoded 200. A stream that timed out was
+// therefore sealed as a 504 and billed as a success under one request id, so
+// joining audit_events to usage_records, which known-limitations 2.13
+// explicitly tells a reader to do, returned two different answers.
+//
+// The three sinks now share StreamOutcome.HTTPStatus. This test pins the
+// mapping itself, because that is the thing all three read.
+func TestStreamStatusIsConsistentAcrossSinks(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		outcome    StreamOutcome
+		wantStatus int
+		wantOK     bool
+	}{
+		{StreamOutcomeCompleted, http.StatusOK, true},
+		{StreamOutcomeClientDisconnected, statusClientClosedRequest, true},
+		{StreamOutcomeTimeout, http.StatusGatewayTimeout, false},
+		{StreamOutcomeReadError, http.StatusBadGateway, false},
+		{StreamOutcomeNotSupported, http.StatusInternalServerError, false},
+		// An unset outcome is a bug in a return path. The safe reading of an
+		// unknown ending is not "it succeeded".
+		{StreamOutcomeUnset, http.StatusInternalServerError, false},
+	}
+
+	for _, tc := range cases {
+		if got := tc.outcome.HTTPStatus(); got != tc.wantStatus {
+			t.Errorf("outcome %q maps to status %d, want %d", tc.outcome, got, tc.wantStatus)
+		}
+		if got := tc.outcome.Succeeded(); got != tc.wantOK {
+			t.Errorf("outcome %q reports success=%v, want %v", tc.outcome, got, tc.wantOK)
+		}
+		// No failed outcome may be recorded as a success anywhere.
+		if !tc.wantOK && tc.outcome.HTTPStatus() == http.StatusOK {
+			t.Errorf("outcome %q is not a success but maps to 200", tc.outcome)
+		}
+	}
+}
+
+// TestStreamFailureIsNotRecordedAsSuccess drives the real path and asserts the
+// audit event and the Prometheus request counter agree on the outcome, rather
+// than trusting the mapping in isolation.
+//
+// usage_records is the third sink and takes the same streamStatus variable in
+// the same function, but storage.UsageRecorder is a concrete type with no
+// interface seam, and introducing one for this assertion is a wider change than
+// the fix warrants. The mapping test above covers the contract all three read.
+func TestStreamFailureIsNotRecordedAsSuccess(t *testing.T) {
+	// Not parallel: it reads a process-wide Prometheus counter.
+	m := getTestMetrics()
+	labels := []string{"org-stall", "team-stall", "aegis-fast", "test-provider",
+		strconv.Itoa(http.StatusGatewayTimeout), ""}
+	before := testutil.ToFloat64(m.RequestTotal.WithLabelValues(labels...))
+	okLabels := []string{"org-stall", "team-stall", "aegis-fast", "test-provider", "200", ""}
+	okBefore := testutil.ToFloat64(m.RequestTotal.WithLabelValues(okLabels...))
+
+	spy := &allowlistAudit{}
+	handler := &Handler{metrics: m, auditLogger: spy}
+	sh := NewStreamingHandler(handler, StreamingConfig{
+		PerChunkTimeout: 100 * time.Millisecond,
+		TotalTimeout:    5 * time.Second,
+		BufferSize:      64 * 1024,
+		MaxBufferSize:   1024 * 1024,
+	})
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	providerReq, _ := http.NewRequest("POST", "http://mock-provider.com", nil)
+
+	sh.HandleStream(w, req, "req-stall", providerReq,
+		&mockStreamAdapter{name: "openai", response: &http.Response{
+			StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(blockingReader{}),
+		}},
+		"test-provider", "aegis-fast",
+		&auth.AuthInfo{OrganizationID: "org-stall", TeamID: "team-stall", KeyID: "key"},
+		&types.AegisRequest{Model: "test-model", Stream: true})
+
+	if len(spy.failed) != 1 {
+		t.Fatalf("a stalled stream wrote %d failure event(s), want 1", len(spy.failed))
+	}
+	audited := spy.failed[0].Event.StatusCode
+	if audited != http.StatusGatewayTimeout {
+		t.Errorf("audit event records status %d, want 504", audited)
+	}
+
+	if got := testutil.ToFloat64(m.RequestTotal.WithLabelValues(labels...)); got != before+1 {
+		t.Errorf("the request counter did not record a 504 for a stalled stream (%v -> %v)",
+			before, got)
+	}
+	if got := testutil.ToFloat64(m.RequestTotal.WithLabelValues(okLabels...)); got != okBefore {
+		t.Errorf("a stalled stream was counted as a 200; the audit trail sealed it as %d, "+
+			"so the two sinks disagree about the same request", audited)
+	}
 }

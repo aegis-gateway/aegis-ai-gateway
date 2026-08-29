@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,45 @@ const (
 	// StreamOutcomeNotSupported is a ResponseWriter that cannot flush.
 	StreamOutcomeNotSupported StreamOutcome = "not_supported"
 )
+
+// HTTPStatus is the status a stream ending this way is recorded under.
+//
+// One mapping, because three sinks record the outcome of the same request: the
+// audit event, the Prometheus request counter, and the usage record. They were
+// allowed to disagree once, and the result was a stream sealed as a 504 timeout
+// and billed as a 200 success under one request id, which is exactly the
+// contradiction a reader joining audit_events to usage_records would hit.
+//
+// 200 for a completion. 499 for a client that hung up, which is not an error on
+// anyone's part but is not a delivered response either. 504 for a stall, 502
+// for a read failure, 500 for a writer that cannot flush.
+func (o StreamOutcome) HTTPStatus() int {
+	switch o {
+	case StreamOutcomeCompleted:
+		return http.StatusOK
+	case StreamOutcomeClientDisconnected:
+		return statusClientClosedRequest
+	case StreamOutcomeTimeout:
+		return http.StatusGatewayTimeout
+	case StreamOutcomeReadError:
+		return http.StatusBadGateway
+	case StreamOutcomeNotSupported:
+		return http.StatusInternalServerError
+	default:
+		// StreamOutcomeUnset. A path that recorded no outcome is a bug, and
+		// the safe reading of an unknown ending is not "it succeeded".
+		return http.StatusInternalServerError
+	}
+}
+
+// Succeeded reports whether the stream delivered what it was asked for.
+//
+// A client disconnect counts: the gateway did its work and the provider was
+// engaged and will bill for it. What the caller did with the bytes afterwards
+// is not a gateway failure.
+func (o StreamOutcome) Succeeded() bool {
+	return o == StreamOutcomeCompleted || o == StreamOutcomeClientDisconnected
+}
 
 type StreamMetrics struct {
 	// Outcome is how the stream ended. Always set by streamWithMonitoring
@@ -258,6 +298,10 @@ func (sh *StreamingHandler) HandleStream(
 		}
 	}
 
+	// The one status this stream is recorded under, everywhere. Resolved before
+	// the three sinks below so none of them can carry a different answer.
+	streamStatus := metrics.Outcome.HTTPStatus()
+
 	// Exactly one audit event for the stream, chosen by how it ended.
 	//
 	// This is the only emit on the post-stream path, and every return above it
@@ -274,28 +318,19 @@ func (sh *StreamingHandler) HandleStream(
 		// it with providerModel before dispatch. Config-derived, so no
 		// provider-supplied text enters the sealed record.
 		ev := completionEvent(reqID, authInfo, providerKey, aegisReq.Model, true,
-			http.StatusOK, r.RemoteAddr)
+			streamStatus, r.RemoteAddr)
 		switch metrics.Outcome {
-		case StreamOutcomeCompleted:
-			sh.handler.auditLogger.LogRequestComplete(ev)
-		case StreamOutcomeClientDisconnected:
-			ev.StatusCode = statusClientClosedRequest
+		case StreamOutcomeCompleted, StreamOutcomeClientDisconnected:
 			sh.handler.auditLogger.LogRequestComplete(ev)
 		case StreamOutcomeTimeout:
-			ev.StatusCode = http.StatusGatewayTimeout
 			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamTimeout)
 		case StreamOutcomeReadError:
-			ev.StatusCode = http.StatusBadGateway
 			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamRead)
 		case StreamOutcomeNotSupported:
-			ev.StatusCode = http.StatusInternalServerError
 			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamNotSupported)
 		default:
-			// StreamOutcomeUnset. A return path that set no outcome is a bug,
-			// and the safe reading of an unknown ending is not "it succeeded".
 			slog.Error("stream ended with no recorded outcome; recording a provider failure",
 				"request_id", reqID)
-			ev.StatusCode = http.StatusInternalServerError
 			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamRead)
 		}
 	}
@@ -329,7 +364,7 @@ func (sh *StreamingHandler) HandleStream(
 			Team:             authInfo.TeamID,
 			Model:            originalModel,
 			Provider:         metrics.Provider,
-			Status:           "200",
+			Status:           strconv.Itoa(streamStatus),
 			Classification:   string(authInfo.MaxClassification),
 			DurationMs:       float64(totalDuration.Milliseconds()),
 			OverheadMs:       float64(totalDuration.Milliseconds()),
@@ -367,7 +402,7 @@ func (sh *StreamingHandler) HandleStream(
 			TotalTokens:      metrics.TotalTokens,
 			EstimatedCostUSD: metrics.EstimatedCostUSD,
 			DurationMs:       totalDuration.Milliseconds(),
-			StatusCode:       http.StatusOK,
+			StatusCode:       streamStatus,
 			Project:          aegisReq.Project,
 			Stream:           true,
 		})

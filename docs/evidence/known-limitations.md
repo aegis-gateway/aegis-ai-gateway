@@ -506,6 +506,13 @@ matches, and it can be altered without any hash disagreeing. So:
 An answer assembled from both tables must say which half came from where. Do not describe
 the join as though the whole of it were sealed.
 
+The two tables do at least agree about the outcome. A streamed request records one status,
+`StreamOutcome.HTTPStatus()`, into the audit event, the Prometheus counter and the usage
+record alike, so a stream that stalled is a 504 in all three rather than a sealed 504 and a
+billed 200. That was wrong in an earlier draft of this change and was caught in review on
+PR #67; `TestStreamStatusIsConsistentAcrossSinks` and
+`TestStreamFailureIsNotRecordedAsSuccess` pin it.
+
 **Two further consequences of attesting allows**, both operational rather than
 evidentiary:
 

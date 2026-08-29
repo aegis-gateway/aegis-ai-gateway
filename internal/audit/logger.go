@@ -241,11 +241,21 @@ func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string)
 // ModelNotAllowedReason is the fixed reason string recorded when a key is
 // refused a model alias its allowlist does not carry.
 //
-// A constant, and free of caller-supplied text. The alias itself is recorded in
-// the model column, where it is an operator-configured identifier drawn from
-// configs/models.yaml rather than an arbitrary string: DecodeChatCompletion
-// accepts any model value, but a request whose alias is not a configured key
-// never reaches this call site because it is refused as an unknown model first.
+// A constant, and free of caller-supplied text.
+//
+// The alias in the model column is operator-configured, but that is a property
+// the CALLER of this method has to establish, not one this method can check.
+// DecodeChatCompletion accepts any string as a model, so the guarantee rests
+// entirely on ChatCompletions confirming the alias is a key of
+// modelsCfg.Models before enforcing the allowlist on it.
+//
+// An earlier version of this comment claimed an unconfigured alias could never
+// reach here because routing refuses it first. That was false: the allowlist
+// check runs before ResolveRoute, by design, so nothing upstream had rejected
+// the value. A restricted key could put 128 characters of arbitrary text into
+// audit_events.model, which the leaf hash covers and the sealer seals. Caught
+// in review on PR #67. The check now exists in the handler and
+// TestChatCompletions_UnconfiguredAliasIsNotAttested pins it.
 const ModelNotAllowedReason = "model alias not in the key's allowed_models"
 
 // LogModelDenied records a request refused because the API key's allowed_models
