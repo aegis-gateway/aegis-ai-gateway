@@ -839,4 +839,49 @@ func TestStream_FailedHeaderFlushIsNotACompletion(t *testing.T) {
 	if got := spy.failures[0].Req.StatusCode; got != http.StatusOK {
 		t.Errorf("status = %d, want 200: WriteHeader already committed it", got)
 	}
+	// The audit event takes providerKey directly, so it was never the surface
+	// this could damage. The usage row reads metrics.Provider, which is what
+	// TestStreamWithMonitoring_EarlyReturnsKeepTheProvider covers.
+}
+
+// The usage row is built from the StreamMetrics that streamWithMonitoring
+// returns, so an early return that yields a zero value persists provider = ”
+// even though providerKey was known before the request was sent. That loses the
+// attribution for precisely the requests an operator would investigate.
+//
+// Asserted on the returned metrics rather than through the handler, because the
+// usage recorder is a concrete type with no seam to observe. The audit event is
+// not affected: it takes providerKey directly.
+func TestStreamWithMonitoring_EarlyReturnsKeepTheProvider(t *testing.T) {
+	tests := map[string]struct {
+		writer http.ResponseWriter
+		want   StreamOutcome
+	}{
+		"writer cannot flush": {&nonFlusher{}, StreamNotStarted},
+		"header flush fails":  {&flushFailingWriter{}, StreamHeaderUndelivered},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newAllowlistTestHandler(&outcomeSpy{})
+			sh := NewStreamingHandler(h, StreamingConfig{TotalTimeout: 5 * time.Second})
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+				Header:     make(http.Header),
+			}
+
+			got := sh.streamWithMonitoring(context.Background(), tt.writer, "req-attr",
+				resp, &scriptedStreamAdapter{}, "anthropic",
+				&auth.AuthInfo{OrganizationID: "org-test"})
+
+			if got.Outcome != tt.want {
+				t.Errorf("outcome = %q, want %q", got.Outcome, tt.want)
+			}
+			if got.Provider != "anthropic" {
+				t.Errorf("provider = %q, want anthropic; the usage row is built from "+
+					"this value and would record an empty provider", got.Provider)
+			}
+		})
+	}
 }

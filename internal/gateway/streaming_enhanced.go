@@ -437,13 +437,26 @@ func (sh *StreamingHandler) streamWithMonitoring(
 ) (result StreamMetrics) {
 	defer func() { _ = providerResp.Body.Close() }()
 
+	// Initialised before the first return, so every outcome carries the
+	// provider. The early returns below used to yield a zero StreamMetrics, and
+	// HandleStream records a usage row from whatever comes back: a stream that
+	// failed at the header therefore persisted provider = '' even though
+	// providerKey was known all along, losing the attribution for exactly the
+	// requests an operator would be investigating.
+	metrics := StreamMetrics{
+		StartTime: time.Now(),
+		// The configured provider name, not adapter.Name(). See HandleStream.
+		Provider: providerKey,
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// No stream is sent and the caller receives 500. Say so in the result:
 		// the zero value would leave the outcome unset, and the attested event
 		// and the usage row would both record the 200 that was never written.
 		httputil.WriteInternalError(w, reqID, "Streaming not supported")
-		return StreamMetrics{Outcome: StreamNotStarted}
+		metrics.Outcome = StreamNotStarted
+		return metrics
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -463,13 +476,8 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			"error", err,
 			"provider", providerKey,
 		)
-		return StreamMetrics{Outcome: StreamHeaderUndelivered}
-	}
-
-	metrics := StreamMetrics{
-		StartTime: time.Now(),
-		// The configured provider name, not adapter.Name(). See HandleStream.
-		Provider: providerKey,
+		metrics.Outcome = StreamHeaderUndelivered
+		return metrics
 	}
 
 	// Tool calls arrive as index-keyed fragments across many chunks. The relay
