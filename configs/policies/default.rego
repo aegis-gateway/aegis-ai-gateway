@@ -2,6 +2,40 @@ package aegis.policy
 
 import rego.v1
 
+# ---------------------------------------------------------------------------
+# WARNING: a deny message is stored, sealed and exported. Never interpolate
+# request content into one.
+#
+# input.messages[_].content and input.messages[_].parts carry the caller's
+# prompt text in full, so that a rule can decide about it. Deciding about it is
+# fine. Quoting it back in the message is not.
+#
+# The string a deny rule produces is joined into `reason`, written to
+# audit_events.reason as up to 512 characters, covered by the leaf hash the
+# sealer computes over that row, sealed into the Merkle chain, and served by
+# GET /aegis/v1/audit/events in JSON and CSV. Nothing downstream filters it,
+# and once a checkpoint covers the row it cannot be edited without breaking
+# chain verification.
+#
+# So this is a retention violation wearing the shape of a helpful error:
+#
+#     msg := sprintf("blocked: %s", [input.messages[0].content])       # NEVER
+#
+# and this is the same rule written correctly:
+#
+#     msg := sprintf("blocked by rule %q (%d match(es))", ["no-ssn", count(hits)])
+#
+# Match on content, report an identifier. Rule names, enumerated categories,
+# counts, offsets, model aliases and classification tiers are all safe: they are
+# operator-authored or drawn from a fixed set. Anything reachable from
+# input.messages is not.
+#
+# The rule below follows that: it interpolates input.request.model, which is an
+# alias name from configs/models.yaml, not caller text.
+#
+# See docs/evidence/known-limitations.md section 2.12.
+# ---------------------------------------------------------------------------
+
 # Default policy: allow all requests unless explicitly denied.
 
 default allow := true

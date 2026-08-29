@@ -399,3 +399,69 @@ record and is empty in every deployment. Migration
 canary still sweeps it, so a future write that put payload there would still be caught.
 Section 2.3 above describes what the column bounds do and do not establish, and that is
 unchanged.
+
+### 2.12 A custom Rego rule can place message text in the sealed audit record
+
+**This is the one route by which caller content can reach the attested audit trail, and
+the gateway does not prevent it.** It is operator-caused, it requires writing a rule that
+does it, and no shipped policy does. It is stated here because the zero-retention property
+is otherwise unconditional, and this is the condition.
+
+**The path, in full.** `PolicyMessage.Content` and `PolicyMessage.Parts`
+(`internal/filter/policy/opa.go`) carry the caller's message text into Rego evaluation.
+A rule that denies returns a message. That message is joined by `concat` into `reason`,
+returned by `Evaluator.Evaluate`, concatenated into `filter.Result.Message` by
+`ScanRequest`, passed as the `reason` argument to `audit.Logger.LogFilterBlock` by
+`internal/gateway/handler.go`, and written to `audit_events.reason`, a `VARCHAR(512)`
+added by migration 013.
+
+From there it does not stop. `reason` is one of the twenty-six fields
+`checkpoint.EventLeafHash` covers at `hash_schema_version=2`, so it is sealed into the
+Merkle chain. It is returned by `GET /aegis/v1/audit/events` in both JSON and CSV. Once a
+checkpoint covers the row, the value cannot be corrected without making `verify-chain`
+report the row as tampered.
+
+So a rule of this shape puts up to 512 characters of prompt into the evidence, permanently:
+
+```rego
+# NEVER do this.
+msg := sprintf("blocked: %s", [input.messages[0].content])
+```
+
+**What an operator should do instead: match on content, return an identifier.**
+
+```rego
+# The deny message names the rule and counts what it found. It carries no input.
+msg := sprintf("blocked by rule %q (%d match(es))", ["no-account-numbers", count(hits)])
+```
+
+Safe to interpolate: rule names and other string literals from the policy itself,
+counts and offsets, `input.request.model` and `input.request.classification` (an alias
+from `configs/models.yaml` and a tier from a four-value enum), `input.user.org` and
+`input.user.team` (already columns on the same row), and `input.time`. Not safe:
+anything reachable from `input.messages`, and `input.request.tools_offered` or
+`tools_called`, which are caller-supplied names.
+
+**Why this is documentation and not a check.** Enforcing it in code means constraining
+what a deny message may contain, and the options are all worse than they look. A length
+bound does not help, because 512 characters is already the bound and a prompt fragment
+fits. A denylist of substrings drawn from the request would need the request text at write
+time, which puts the payload one bug away from the thing it is protecting. Refusing any
+`reason` not drawn from a registered set of rule identifiers would work, and it is a real
+design with a real cost: it breaks every existing custom bundle, and it moves deny-message
+authorship from the policy into a separate registry. That is a decision to take
+deliberately, not a fix to fold into a documentation pass.
+
+**What is in place today.** A warning at the `PolicyMessage` definition
+(`internal/filter/policy/opa.go`) and a warning block at the top of the shipped bundle
+(`configs/policies/default.rego`), which is the file an operator copies when writing their
+first rule. The shipped `RESTRICTED` rule interpolates `input.request.model` only, and says
+so.
+
+**What this does not affect.** Every other retention guarantee stands.
+`TestNoPayload_SchemaIntrospection`, `TestNoPayload_FilterResultStruct` and
+`TestNoPayload_CanaryEndToEnd` are unchanged and still pass: the canary exercises the
+secrets filter, which builds its message from pattern names, and no shipped code path
+interpolates caller text into a deny reason. The exposure is bounded to 512 characters per
+denied request, exists only where an operator has written a rule that does it, and appears
+in the operator's own audit export where they can see it.

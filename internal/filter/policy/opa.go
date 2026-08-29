@@ -34,6 +34,33 @@ import (
 // content array, so a rule that needs per-part granularity has it without the
 // flattening ambiguity. ToolCalls carries the names of tools this turn asked
 // for, never their arguments.
+//
+// WARNING, for anyone writing a Rego rule against these fields.
+//
+// Content and Parts hold the caller's message text in full. That is the point:
+// a policy that cannot see the request cannot decide about it, and this text
+// stays in memory for the length of the evaluation and is written nowhere.
+//
+// The deny reason a rule produces is different. It travels: Evaluate returns
+// it, ScanRequest concatenates it into filter.Result.Message, the handler
+// passes it as the reason argument to audit.Logger.LogFilterBlock, and it is
+// stored in audit_events.reason, a VARCHAR(512). From there it is covered by
+// the leaf hash the sealer computes, sealed into the Merkle chain, and served
+// by the audit read API in JSON and CSV.
+//
+// So a rule of the shape
+//
+//	msg := sprintf("blocked: %s", [input.messages[0].content])
+//
+// places up to 512 characters of the caller's prompt into the attested audit
+// record, permanently and irreversibly, and the gateway will not stop it. That
+// contradicts the zero-retention property the rest of this system is built to
+// hold.
+//
+// Match on the content, return an identifier. A deny message must be built from
+// rule names, enumerated categories, counts and offsets, never from
+// interpolated input. docs/evidence/known-limitations.md section 2.12 states
+// this as an operator obligation and gives the pattern.
 type PolicyMessage struct {
 	Role      string   `json:"role"`
 	Content   string   `json:"content"`
