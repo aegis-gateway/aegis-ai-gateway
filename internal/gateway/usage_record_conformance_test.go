@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"testing"
 )
@@ -21,52 +22,61 @@ import (
 func TestUsageRecordLiteralsCarryCacheDetail(t *testing.T) {
 	required := []string{"CachedTokens", "CacheWrite5mTokens", "CacheWrite1hTokens"}
 
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", nil, 0)
+	// The files are enumerated here rather than with parser.ParseDir, which is
+	// deprecated and, more to the point, drops files whose build tags exclude
+	// them. A call site behind a tag still writes usage rows, so it has to be
+	// checked like any other.
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parsing package source: %v", err)
+		t.Fatalf("listing package source: %v", err)
 	}
 
+	fset := token.NewFileSet()
 	found := 0
-	for _, pkg := range pkgs {
-		for name, file := range pkg.Files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			ast.Inspect(file, func(n ast.Node) bool {
-				lit, ok := n.(*ast.CompositeLit)
-				if !ok {
-					return true
-				}
-				sel, ok := lit.Type.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "UsageRecord" {
-					return true
-				}
-				if ident, ok := sel.X.(*ast.Ident); !ok || ident.Name != "storage" {
-					return true
-				}
-				found++
-
-				set := map[string]bool{}
-				for _, elt := range lit.Elts {
-					kv, ok := elt.(*ast.KeyValueExpr)
-					if !ok {
-						continue
-					}
-					if key, ok := kv.Key.(*ast.Ident); ok {
-						set[key.Name] = true
-					}
-				}
-				for _, field := range required {
-					if !set[field] {
-						t.Errorf("%s: storage.UsageRecord literal does not set %s; "+
-							"the row it writes cannot be repriced from its own contents",
-							fset.Position(lit.Pos()), field)
-					}
-				}
-				return true
-			})
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			sel, ok := lit.Type.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "UsageRecord" {
+				return true
+			}
+			if ident, ok := sel.X.(*ast.Ident); !ok || ident.Name != "storage" {
+				return true
+			}
+			found++
+
+			set := map[string]bool{}
+			for _, elt := range lit.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				if key, ok := kv.Key.(*ast.Ident); ok {
+					set[key.Name] = true
+				}
+			}
+			for _, field := range required {
+				if !set[field] {
+					t.Errorf("%s: storage.UsageRecord literal does not set %s; "+
+						"the row it writes cannot be repriced from its own contents",
+						fset.Position(lit.Pos()), field)
+				}
+			}
+			return true
+		})
 	}
 
 	// Without this the test passes by finding nothing — a rename of the struct,
