@@ -113,7 +113,7 @@ const (
 	// StreamReadError means reading the provider stream failed.
 	StreamReadError StreamOutcome = "read_error"
 	// StreamNotStarted means streaming was refused before any header went out,
-	// so the caller received an error status rather than a stream.
+	// so the gateway sent an error status rather than a stream.
 	StreamNotStarted StreamOutcome = "not_started"
 	// StreamTruncated means the provider closed the stream cleanly without
 	// sending its end-of-stream marker, so the client received a partial
@@ -178,12 +178,14 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), "request_failed")
 		}
 
+		// Written before the event, so the recorded status is one the gateway
+		// has sent rather than one it is about to attempt.
+		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
 				audit.ReasonProviderUnreachable)
 		}
-		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
 
@@ -211,14 +213,15 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
 
-		// The caller receives 500 from WriteInternalError below, so that is what
-		// the record says. The upstream status is in the log line above.
+		// The gateway sends 500 from WriteInternalError, so that is what the
+		// record says, and it is written first so the status is one already
+		// sent. The upstream status is in the log line above.
+		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
 				audit.ReasonProviderError)
 		}
-		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		return
 	}
 
@@ -345,7 +348,7 @@ func (sh *StreamingHandler) HandleStream(
 			// Not the provider's fault, and the reason says so. It is recorded
 			// as a failure because the response was not delivered in full, and
 			// a partial delivery attested as a completion would be a false
-			// record of what the caller received.
+			// record of what the gateway delivered.
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonClientDisconnected)
 		default:
 			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
@@ -392,13 +395,13 @@ func outcomeForContext(err error) StreamOutcome {
 	return StreamClientDisconnected
 }
 
-// clientStatusFor reports the HTTP status the caller received.
+// clientStatusFor reports the HTTP status the gateway sent.
 //
 // A stream sends its 200 header before the first chunk, so any ending after
 // that point was still a 200 on the wire however badly it went. The exception
-// is a stream that never started, where the caller got an error status and
-// nothing else. Both the audit event and the usage row have to agree with what
-// the client saw, or the record contradicts the response.
+// is a stream that never started, where an error status went out and nothing
+// else. Both the audit event and the usage row have to agree with the status
+// line the gateway wrote, or the record contradicts the response.
 func clientStatusFor(outcome StreamOutcome) int {
 	if outcome == StreamNotStarted {
 		return http.StatusInternalServerError

@@ -117,9 +117,12 @@ Two writes happen asynchronously (non-blocking) after the response is sent:
   and then fails at the provider writes `provider_failure`. Before that the sealed chain
   attested what was refused and nothing about what was allowed.
 
-  An allow event carries identity, outcome and routing: request ID, organization, team,
-  user, key ID and key prefix, endpoint, method, status code, the configured provider key,
-  the requested model alias, and whether the response was streamed. It does **not** carry
+  `request_complete` means the gateway wrote and flushed the full response without error,
+  which is not the same as the caller receiving it; a flush proves only that the bytes
+  reached the local kernel. An allow event carries identity, outcome and routing: request
+  ID, organization, team, user, key ID and key prefix, endpoint, method, the status the
+  gateway sent, the configured provider key, the requested model alias, and whether the
+  response was streamed. It does **not** carry
   latency, token counts, the resolved concrete model, or classification: there are no
   columns for those, and adding one would require a `hash_schema_version` bump. Those
   fields live in `usage_records` for the same request ID, which is not sealed. See

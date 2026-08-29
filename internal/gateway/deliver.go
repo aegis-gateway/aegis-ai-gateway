@@ -28,9 +28,21 @@ import (
 // discards the error entirely. Both are invisible to a caller that only checks
 // the write.
 //
-// That matters here because the audit record claims what the caller received.
-// http.NewResponseController surfaces the flush error, which is the last point
-// at which the gateway can still tell.
+// WHAT A SUCCESSFUL FLUSH DOES AND DOES NOT PROVE. It proves the gateway handed
+// the bytes to the local kernel without error. It does NOT prove the peer
+// received them: a client that disconnects after the kernel accepts the write
+// but before the data is delivered or read produces a TCP reset that surfaces
+// later or not at all, and Flush returns nil in that window.
+//
+// Remote receipt is not knowable from an HTTP handler. Establishing it would
+// need an application-level acknowledgement, which an OpenAI-compatible client
+// does not send. So the attested claim is the supportable one, that the gateway
+// wrote and flushed the response without error, and the audit documentation
+// says exactly that rather than implying receipt.
+//
+// This is still worth checking. It is the strongest signal available at this
+// layer and it catches the common cases: a peer that has already gone, and a
+// writer that fails outright.
 //
 // ErrNotSupported is deliberately NOT a delivery failure. It means this writer
 // cannot be flushed on demand, so nothing has been learned either way, and

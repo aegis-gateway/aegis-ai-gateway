@@ -314,16 +314,16 @@ const (
 	// processed.
 	ReasonStreamInterrupted = "stream_interrupted"
 	// ReasonResponseNotDelivered covers a buffered response the gateway could
-	// not write to the caller, most often because the caller went away after
-	// the provider answered. The work was done and billed; the answer did not
-	// arrive, so it is not a completion.
+	// not write or flush, most often because the caller went away after the
+	// provider answered. The work was done and billed; the answer did not go
+	// out, so it is not a completion.
 	ReasonResponseNotDelivered = "response_not_delivered"
 	// ReasonStreamNotStarted covers a streamed request refused before any
-	// stream began, so the caller received an error status and no content.
+	// stream began, so an error status went out and no content.
 	ReasonStreamNotStarted = "stream_not_started"
 	// ReasonStreamTruncated covers a stream the provider closed cleanly without
-	// sending its end-of-stream marker. The caller received a partial response
-	// that looked complete, which is why it is not attested as one.
+	// sending its end-of-stream marker, so what went out was a partial response
+	// that looked complete. That is why it is not attested as one.
 	ReasonStreamTruncated = "stream_truncated"
 	// ReasonClientDisconnected covers a stream the caller abandoned. It is not
 	// a provider fault, and is recorded separately so that an operator counting

@@ -399,12 +399,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Without an event here it would produce no attested record at all,
 		// which is the completeness hole an allow event exists to close,
 		// reached from the other side.
+		//
+		// The refusal is written BEFORE the event, so the recorded status is
+		// one the gateway has actually sent rather than one it is about to
+		// attempt. The success path was already ordered this way.
+		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
 				audit.ReasonProviderUnreachable)
 		}
-		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
 
@@ -423,16 +427,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"adapter", adapter.Name(),
 		)
 		// http.StatusInternalServerError, not providerResp.StatusCode: the
-		// audit record states the outcome the CALLER observed, and the caller
-		// receives 500 from WriteInternalError below. Recording an upstream 401
+		// audit record states the status the GATEWAY SENT, and it sends 500
+		// from WriteInternalError below. Recording an upstream 401
 		// here would seal a row saying the client got 401 when it did not. The
 		// upstream status is in the log line above, where it belongs.
+		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
 				audit.ReasonProviderError)
 		}
-		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
 	}
 
@@ -520,11 +524,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Send the response BEFORE recording anything about it.
 	//
-	// Completion is a claim about what the caller received. Encoding straight
-	// into the ResponseWriter can fail, most obviously when the caller has gone
-	// away, and the error used to be discarded, so a request whose body never
-	// arrived was still attested as a completed 200. The streaming path treats
-	// delivery failure explicitly and this path has to agree with it.
+	// Completion is a claim about what the gateway managed to WRITE AND FLUSH,
+	// which is the strongest thing an HTTP handler can establish. Encoding
+	// straight into the ResponseWriter can fail, most obviously when the caller
+	// has gone away, and the error used to be discarded, so a request whose
+	// body was never written was still attested as a completed 200. The
+	// streaming path treats delivery failure explicitly and this path agrees
+	// with it. Neither path can prove the peer received the bytes; see
+	// flushToClient in deliver.go.
 	w.Header().Set("Content-Type", "application/json")
 	deliveryErr := json.NewEncoder(w).Encode(aegisResp)
 	if deliveryErr == nil {

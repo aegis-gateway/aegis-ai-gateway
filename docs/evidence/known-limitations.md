@@ -495,20 +495,29 @@ finished stream except by the absence of the protocol terminator (`[DONE]` for
 OpenAI-compatible providers, `message_stop` for Anthropic). The caller receives a partial
 answer that looks whole. That is recorded as a failure rather than a completion.
 
-Completion is a claim about what the **caller** received, not about what the provider
-sent. This holds on both paths. On a stream, a terminator the gateway failed to write does
-not establish completion, and neither does one processed on the same tick the caller went
-away. On a buffered response, the event is written only after the body has been encoded to
-the caller successfully; a response that could not be delivered is recorded as
-`response_not_delivered`. The usage row is written either way, because the provider did
-the work and the spend happened whether or not the bytes arrived.
+**What `request_complete` actually claims.** The gateway wrote the full response and
+flushed it without error. That is the strongest statement an HTTP handler can make, and it
+is deliberately weaker than "the caller received it".
 
-`status_code` on any of these is **what the caller received**, not what the provider
+A successful flush proves the bytes were handed to the local kernel. It does not prove the
+peer received them: a client that disconnects after the kernel accepts the write but before
+the data is delivered or read produces a TCP reset that surfaces later, or never, and the
+flush returns nil in that window. Remote receipt would need an application-level
+acknowledgement, which an OpenAI-compatible client does not send. **Do not read a
+`request_complete` row as proof the caller has the answer.** It is proof the gateway
+produced and sent one.
+
+Within that limit, both paths check what they can. On a stream, a terminator the gateway
+failed to write or flush does not establish completion, and neither does one processed on
+the same tick the caller went away. On a buffered response the event follows a successful
+encode and flush; a failure is recorded as `response_not_delivered`. The usage row is
+written either way, because the provider did the work and the spend happened regardless.
+
+`status_code` on any of these is **the status the gateway sent**, not what the provider
 returned. A stream sends its 200 header before the first chunk, so a stream that later
 fails was still a 200 on the wire; and when a provider returns a non-200 the gateway sends
-the caller 500 rather than passing the upstream status through. The provider's own status
-is in the logs. Recording it here would make the sealed row state something the client
-never saw.
+500 rather than passing the upstream status through. The provider's own status is in the
+logs. Recording it here would make the sealed row state something that never went out.
 
 **What it does not carry: latency, prompt and completion tokens, the resolved concrete
 model, and classification.** There are no columns for them, and the reason not to add
