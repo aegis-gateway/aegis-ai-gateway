@@ -23,6 +23,7 @@ import (
 	"net/http"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/redact"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
@@ -134,7 +135,11 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic returned status %d: %s", resp.StatusCode, string(body))
+		// redact.Excerpt, not string(body): this error is logged by the
+		// handler, and a provider error body is unbounded text the gateway
+		// does not control which routinely echoes the caller's own content
+		// back. Logging it verbatim puts caller text into the log store.
+		return nil, fmt.Errorf("anthropic returned status %d: %s", resp.StatusCode, redact.Excerpt(body))
 	}
 
 	var antResp anthropicResponseBody

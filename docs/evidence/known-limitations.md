@@ -392,3 +392,28 @@ piecemeal, so that the table and its reader are removed together or not at all.
 
 What a reader should take from this: the absence of rows in `audit_logs` is not evidence
 about traffic. It has never held anything.
+
+### 2.12 Provider error bodies reach the process log, bounded
+
+When a provider returns a non-200, the gateway logs an excerpt of the response body so an
+operator can tell a bad API key from a rate limit from a malformed request. Until
+2026-08-29 it logged the body **verbatim**, at `ERROR` level, on both the streaming path
+(`internal/gateway/streaming_enhanced.go`) and, indirectly, the non-streaming one, where
+`internal/router/adapters/openai.go` wrapped the whole body into an error that
+`internal/gateway/handler.go` then logged.
+
+Provider error bodies are unbounded strings the gateway does not control, and they
+routinely quote the offending request back. So caller-supplied text could reach whatever
+collects the process logs. The zero-retention claim is about prompts and responses
+reaching durable storage, and a log shipper is durable storage.
+
+`internal/redact.Excerpt` now bounds every such excerpt to 256 characters, collapses it to
+a single line so a crafted body cannot forge additional log records, and drops control
+characters. The status code, provider key and request ID are logged as separate fields,
+which is the part an operator acts on.
+
+**What this does not do.** It does not detect secrets or PII inside the excerpt, and it
+should not be described as though it did. Up to 256 characters of provider-controlled
+text, which may include a fragment of the caller's request, still reaches the log. The
+mitigation is volumetric, not semantic. Treat gateway logs as containing incidental
+third-party text, and set retention on them accordingly.

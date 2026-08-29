@@ -398,7 +398,18 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	aegisResp, err := adapter.TransformResponse(r.Context(), providerResp)
 	if err != nil {
-		slog.Error("failed to transform response", "error", err, "provider", adapter.Name())
+		// err carries the provider status and a bounded excerpt of its body,
+		// never the body itself: the adapters build it with redact.Excerpt for
+		// the reason given at that call site. providerKey rather than
+		// adapter.Name() so the log names the configured provider and not the
+		// adapter type, which is shared across providers.
+		slog.Error("failed to transform response",
+			"request_id", reqID,
+			"error", err,
+			"status", providerResp.StatusCode,
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+		)
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
 	}

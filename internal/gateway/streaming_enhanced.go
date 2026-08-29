@@ -28,6 +28,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/redact"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
@@ -133,10 +134,21 @@ func (sh *StreamingHandler) HandleStream(
 	if providerResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(providerResp.Body)
 		_ = providerResp.Body.Close()
+		// The body is excerpted, never logged whole. A provider error body is
+		// unbounded text the gateway does not control and it routinely echoes
+		// the caller's own content back, so logging it verbatim writes caller
+		// text to the log store, which is a durable copy by any reading of the
+		// zero-retention claim.
+		//
+		// provider is the configured provider key, not adapter.Name(): the
+		// adapter type is shared, so azure_openai and internal_vllm both report
+		// "openai" and an operator could not tell which one failed.
 		slog.Error("streaming provider returned error",
+			"request_id", reqID,
 			"status", providerResp.StatusCode,
-			"provider", adapter.Name(),
-			"body", string(body),
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+			"body_excerpt", redact.Excerpt(body),
 		)
 
 		if sh.handler.metrics != nil {
