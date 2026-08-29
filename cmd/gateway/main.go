@@ -267,6 +267,10 @@ func main() {
 
 	// Build audit logger
 	auditLogger := audit.NewLogger(dbPool)
+	// A dropped audit write leaves no row and no id gap, so the sealer seals a
+	// contiguous run and reports a healthy chain over an incomplete record.
+	// aegis_audit_write_failures_total is the only signal that happened.
+	auditLogger.SetMetrics(metrics)
 
 	// Build retry executor
 	retryConfig := retry.Config{

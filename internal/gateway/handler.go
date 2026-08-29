@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -43,6 +44,32 @@ type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
 	LogModelDenied(requestID, orgID, teamID, keyID, model string, statusCode int, ip string)
+	LogRequestComplete(ev audit.CompletionEvent)
+	LogProviderFailure(ev audit.CompletionEvent, stage string)
+}
+
+// completionEvent builds the audit event for a request that reached the
+// provider, from the identity and route that are settled by then.
+//
+// One constructor for both outcomes and both paths, so the streaming and
+// non-streaming records cannot drift in what they attribute. providerKey and
+// providerModel, never adapter.Name() and never the requested alias: the pair
+// has to match what the pricing record and the pricing gate used, or the
+// attested record and the billed record describe different requests.
+func completionEvent(reqID string, authInfo *auth.AuthInfo, providerKey, providerModel string,
+	streaming bool, statusCode int, ip string) audit.CompletionEvent {
+	return audit.CompletionEvent{
+		RequestID:  reqID,
+		OrgID:      authInfo.OrganizationID,
+		TeamID:     authInfo.TeamID,
+		UserID:     authInfo.UserID,
+		KeyID:      authInfo.KeyID,
+		Provider:   providerKey,
+		Model:      providerModel,
+		Streaming:  streaming,
+		StatusCode: statusCode,
+		IP:         ip,
+	}
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -405,6 +432,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.healthTracker != nil {
 			h.healthTracker.RecordFailure(adapter.Name())
 		}
+		// This request passed every gate and then failed. Without an event
+		// here it leaves no attested trace: no denial applies, and the
+		// completion event below never runs.
+		if h.auditLogger != nil {
+			h.auditLogger.LogProviderFailure(
+				completionEvent(reqID, authInfo, providerKey, providerModel, false,
+					http.StatusServiceUnavailable, r.RemoteAddr),
+				audit.FailureProviderUnreachable)
+		}
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
 	}
@@ -424,6 +460,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"provider", providerKey,
 			"adapter", adapter.Name(),
 		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogProviderFailure(
+				completionEvent(reqID, authInfo, providerKey, providerModel, false,
+					http.StatusInternalServerError, r.RemoteAddr),
+				audit.FailureProviderResponseInvalid)
+		}
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
 		return
 	}
@@ -508,6 +550,22 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			CompletionTokens: aegisResp.Usage.CompletionTokens,
 			CostUSD:          aegisResp.EstimatedCostUSD,
 		})
+	}
+
+	// Attest the allow, beside the usage record rather than anywhere else in
+	// this function, so the two cannot come to describe different requests.
+	// audit_events is the only table the sealer covers, so this is what puts a
+	// permitted request into the sealed chain at all; usage_records is
+	// operational data and is not attested.
+	if h.auditLogger != nil {
+		// providerModel, the value from configs/models.yaml, rather than
+		// aegisResp.Model, which is the provider's echo of it. The echo is
+		// text an upstream controls, and this column is sealed into the chain
+		// and exported by the read API, so it takes the operator-configured
+		// value. usage_records.model_served keeps the echo for reconciliation
+		// against a provider bill.
+		h.auditLogger.LogRequestComplete(completionEvent(reqID, authInfo,
+			providerKey, providerModel, false, http.StatusOK, r.RemoteAddr))
 	}
 
 	// Record usage asynchronously (non-blocking)

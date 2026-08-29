@@ -12,8 +12,18 @@ to `0344929`, where `internal/audit/reader.go` does not exist, so the citation f
 export claim resolved to a missing file. Caught in review.
 Every row cites a package, file, or test. A row with no citation is not in this table.
 
-**One row is ahead of the pin, and says so rather than being quietly dropped.** The CC6.1
-row cites per-key model allowlist *enforcement*. At both pinned commits the allowlist was
+**What the attested record does not carry.** The requested model alias, the
+classification tier, the latency, and the token counts are **not** in `audit_events` and
+are therefore **not covered by a Merkle checkpoint**. They are in `usage_records`, which
+is operational data. Adding them to the attested table changes the field set the leaf hash
+covers and requires `hash_schema_version=3`; ADR 0011 records that decision. An assessor
+asking "was this sealed" must be told which of the two tables the answer came from. Before
+this change `audit_events` held refusals only, so no permitted request was attested at all.
+
+**Rows ahead of the pin, said rather than quietly dropped.** The CC6.1
+row cites per-key model allowlist *enforcement*, and the decision-record and conformance
+rows above cite the allow-path attestation and its canaries. All of them postdate
+`c74fa7a` and are cited by path and test name until this document is re-pinned. At both pinned commits the allowlist was
 stored on the key and applied only by `GET /v1/models`; `ChatCompletions` did not consult
 it, so a key restricted to one alias was served any of them. That is now enforced before
 routing, with `TestChatCompletions_ModelAllowlist` and
@@ -38,16 +48,17 @@ for X.*
 
 | Artifact | Where it comes from | What it helps answer |
 |---|---|---|
-| Per-request decision record: identity, model, provider, classification, outcome, timing, tokens, cost | [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go), tables `audit_logs` and `audit_events` | Can you show what an automated system did, for a given request, after the fact |
+| Attested decision record for every request, permitted and refused: identity, requested endpoint, provider key, concrete model, streamed or not, outcome status | `LogRequestComplete`, `LogProviderFailure` and the denial methods in `internal/audit/logger.go`, table `audit_events` | Can you show what an automated system did, for a given request, after the fact |
+| Operational per-request detail: requested alias, classification, latency, token counts, cost | `internal/storage/usage.go`, table `usage_records`, joinable on `request_id`. **Not sealed**, see the note below | Can you reconcile usage and spend, and answer questions the attested record does not carry |
 | Denial record for every refusal, with the reason string and the stage that produced it | `LogFilterBlock`, `LogRateLimitViolation`, `LogRedisFailure` in [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go) | Can you show that a control fired, and why |
-| Records readable and exportable as JSON or CSV, scoped to one organization | [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go), `GET /aegis/v1/audit/events`, `GET /aegis/v1/audit/logs` | Can you hand an assessor the record without giving them database access |
+| Records readable and exportable as JSON or CSV, scoped to one organization | [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go), `GET /aegis/v1/audit/events`. `GET /aegis/v1/audit/logs` is withdrawn and returns 410 | Can you hand an assessor the record without giving them database access |
 | Merkle checkpoints over event ranges, chained to their predecessor (RFC 6962) | [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint) | Can you show a record has not been altered or deleted since it was sealed |
 | Inclusion proofs for a single event within a sealed range | [`checkpoint/verifier.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint/verifier.go) | Can you prove one specific decision was in the sealed set |
 | Policy evaluated as code, versioned in the repository | [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy), [`configs/policies/`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/policies) | Can you show the rule that was in force, and review changes to it |
 | Classification gating per route | [`internal/router/provider.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/router/provider.go) | Can you show data of a given class could not reach an unapproved model |
 | Credential, PII, and prompt-injection screening on input | [`internal/filter`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter) | Can you show what screening ran before a call left your perimeter |
 | Retention configuration and purge, with a purge record | [`internal/purge`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/purge), table `audit_purges` | Can you show records were deleted on schedule, and which |
-| A conformance test asserting no request or response content is retained | `TestNoPayload_CanaryEndToEnd`, `TestNoPayload_SchemaIntrospection` in [`internal/audit`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit) | Can you show the evidence store is not itself a copy of the data |
+| Conformance tests asserting no request or response content is retained, on the refusal path and on the allow path | `TestNoPayload_CanaryEndToEnd`, `TestNoPayload_AllowPathCanary`, `TestNoPayload_AllowPathCanaryStreaming`, `TestNoPayload_SchemaIntrospection` in `internal/audit` | Can you show the evidence store is not itself a copy of the data |
 
 ## Frameworks an assessor is likely to reference
 

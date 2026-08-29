@@ -465,3 +465,62 @@ secrets filter, which builds its message from pattern names, and no shipped code
 interpolates caller text into a deny reason. The exposure is bounded to 512 characters per
 denied request, exists only where an operator has written a rule that does it, and appears
 in the operator's own audit export where they can see it.
+
+### 2.13 The attested allow record is narrower than the operational one
+
+Permitted requests are now attested. `audit_events` carries a `request_complete` row for
+every request that was served and a `provider_failure` row for every request that passed
+every gate and then failed upstream (`internal/audit/logger.go`,
+`TestNonStreamingAllowIsAttested`, `TestStreamingEmitsExactlyOneEvent`). Before this,
+`audit_events` held refusals only, and since it is the only table the sealer covers, the
+Merkle chain attested what the gateway turned away and nothing about what it allowed
+through.
+
+**What the attested row does not carry:** the model alias the caller requested, the
+classification tier, the request latency, and the prompt and completion token counts.
+
+They are absent for one reason. `audit_events` has no column for any of them, and the
+twenty-six columns it does have are exactly the field set
+`checkpoint.EventLeafHash` covers at `hash_schema_version=2`. Adding a column changes that
+set, which changes every leaf hash, which requires a version 3.
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md) records that decision
+for tool names and its reasoning applies unchanged here: a version 3 costs either the
+single-field-set property that makes verification simple enough to be credible, or a
+migration that refuses to run against existing version-2 chains the way migration 013
+refused version-1, which for a released product means operators verify and archive their
+whole chain before upgrading.
+
+**Where the missing facts are.** `usage_records`, written for every completed request and
+joinable on `request_id`. It carries `model_requested`, `model_served`, `classification`,
+`duration_ms`, `prompt_tokens`, `completion_tokens` and `estimated_cost_usd`.
+
+**What that means for evidence.** `usage_records` is operational data. It is not covered
+by any checkpoint, it is not in the `audit_*` namespace the no-payload schema guard
+matches, and it can be altered without any hash disagreeing. So:
+
+- "This request was permitted, by this key, in this organization, to this provider and
+  model, at this time, with this outcome" is attested and tamper-evident.
+- "It used 812 prompt tokens, took 1.2 seconds, and ran at CONFIDENTIAL" is recorded and
+  **not** attested.
+
+An answer assembled from both tables must say which half came from where. Do not describe
+the join as though the whole of it were sealed.
+
+**Two further consequences of attesting allows**, both operational rather than
+evidentiary:
+
+- `audit_events` goes from a small fraction of traffic to all of it. Measured on
+  PostgreSQL 16: 232 bytes of heap per row, 221 MB total for 540,500 rows including
+  indexes. A checkpoint row is 215 bytes regardless of how many leaves it covers, so
+  `audit_checkpoints` stayed at 112 kB across 55 checkpoints. Sealing ran at roughly
+  34,000 events per second and a full verify at roughly 35,000, both linear across
+  100,000 and 400,000 event runs.
+- `aegis_audit_unsealed_events` now sits at approximately the request rate multiplied by
+  `audit.seal_lag_seconds` (300 by default) at steady state, rather than near zero. A
+  threshold tuned when only denials were recorded will fire continuously. Retune it
+  against the new baseline before treating it as an alert.
+
+**A dropped write is still invisible to the chain.** An audit insert that fails leaves no
+row and no id gap, so the sealer seals a contiguous run and reports a healthy chain over an
+incomplete record. `aegis_audit_write_failures_total`, labelled by event type and reason,
+is the only signal. It did not exist before this change. Alert on any increase.

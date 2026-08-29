@@ -36,15 +36,30 @@ type modelDeniedRecord struct {
 	StatusCode                             int
 }
 
-// allowlistAudit records the denial calls and nothing else.
+// providerFailureRecord is one LogProviderFailure call, captured.
+type providerFailureRecord struct {
+	Event audit.CompletionEvent
+	Stage string
+}
+
+// allowlistAudit records every audit call the handler makes. It is shared with
+// the completion tests, which need the same handler wiring.
 type allowlistAudit struct {
-	denied []modelDeniedRecord
+	denied    []modelDeniedRecord
+	completed []audit.CompletionEvent
+	failed    []providerFailureRecord
 }
 
 func (a *allowlistAudit) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
 func (a *allowlistAudit) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
 func (a *allowlistAudit) LogModelDenied(requestID, orgID, teamID, keyID, model string, statusCode int, _ string) {
 	a.denied = append(a.denied, modelDeniedRecord{requestID, orgID, teamID, keyID, model, statusCode})
+}
+func (a *allowlistAudit) LogRequestComplete(ev audit.CompletionEvent) {
+	a.completed = append(a.completed, ev)
+}
+func (a *allowlistAudit) LogProviderFailure(ev audit.CompletionEvent, stage string) {
+	a.failed = append(a.failed, providerFailureRecord{ev, stage})
 }
 
 // allowlistAliases are the aliases the test handler routes. aegis-gpt4 mirrors
@@ -58,8 +73,15 @@ var allowlistAliases = []string{"aegis-fast", "aegis-balanced", "aegis-reasoning
 // routed to a mock adapter, no filters, and no pricing gate, so the only thing
 // that can refuse a request is the allowlist check.
 func newAllowlistHandler(auditLogger AuditLogger) *Handler {
+	return newAllowlistHandlerWithAdapter(auditLogger,
+		adapters.NewMockAdapter("test-provider", config.ProviderConfig{}))
+}
+
+// newAllowlistHandlerWithAdapter is newAllowlistHandler with the provider
+// adapter chosen by the caller, so the provider-failure paths can be driven.
+func newAllowlistHandlerWithAdapter(auditLogger AuditLogger, adapter adapters.ProviderAdapter) *Handler {
 	reg := router.NewRegistry()
-	reg.Register("test-provider", adapters.NewMockAdapter("test-provider", config.ProviderConfig{}))
+	reg.Register("test-provider", adapter)
 
 	models := map[string]config.ModelMapping{}
 	for _, alias := range allowlistAliases {

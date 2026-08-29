@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
@@ -41,6 +43,13 @@ import (
 // clipped, and small enough that an oversized error body is not a way to spend
 // the gateway's memory.
 const maxProviderErrorRead = 8 << 10
+
+// statusClientClosedRequest is nginx's 499, the conventional code for a caller
+// that hung up before the response finished. Go's net/http does not define it.
+// It is recorded in the audit row so a disconnect is distinguishable from a
+// stream the caller actually read to the end; nothing is sent to the client,
+// which has already gone.
+const statusClientClosedRequest = 499
 
 // StreamingConfig holds configuration for streaming behavior.
 type StreamingConfig struct {
@@ -61,7 +70,41 @@ func DefaultStreamingConfig() StreamingConfig {
 }
 
 // StreamMetrics tracks metrics during a streaming session.
+// StreamOutcome is how a stream ended. It exists so HandleStream can emit
+// exactly one audit event for the stream, and the right one.
+//
+// streamWithMonitoring returns normally from six different places: a clean end,
+// a client disconnect, two timeouts, a read error and a relay error. Before
+// this they were indistinguishable to the caller, which recorded HTTP 200 and a
+// usage row for every one of them. A completeness claim cannot be built on a
+// function that reports a timeout as a success.
+type StreamOutcome string
+
+const (
+	// StreamOutcomeUnset is the zero value and never a real outcome. A path
+	// that returns without setting one is a bug, and it is recorded as a
+	// provider failure rather than silently attested as a success.
+	StreamOutcomeUnset StreamOutcome = ""
+	// StreamOutcomeCompleted is a stream that ended at [DONE] or at the end of
+	// the provider's response.
+	StreamOutcomeCompleted StreamOutcome = "completed"
+	// StreamOutcomeClientDisconnected is the caller going away mid-stream. The
+	// gateway did its work and the provider was billed, so this is a
+	// completion, not a failure.
+	StreamOutcomeClientDisconnected StreamOutcome = "client_disconnected"
+	// StreamOutcomeTimeout is a stream that stalled, per chunk or in total.
+	StreamOutcomeTimeout StreamOutcome = "timeout"
+	// StreamOutcomeReadError is a scanner or relay failure mid-stream.
+	StreamOutcomeReadError StreamOutcome = "read_error"
+	// StreamOutcomeNotSupported is a ResponseWriter that cannot flush.
+	StreamOutcomeNotSupported StreamOutcome = "not_supported"
+)
+
 type StreamMetrics struct {
+	// Outcome is how the stream ended. Always set by streamWithMonitoring
+	// before it returns.
+	Outcome StreamOutcome
+
 	StartTime          time.Time
 	FirstChunkTime     time.Time
 	ChunkCount         int
@@ -125,6 +168,12 @@ func (sh *StreamingHandler) HandleStream(
 	providerResp, err := adapter.SendRequest(providerReq)
 	if err != nil {
 		slog.Error("streaming provider request failed", "error", err, "provider", adapter.Name())
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completionEvent(reqID, authInfo, providerKey, aegisReq.Model, true,
+					http.StatusServiceUnavailable, r.RemoteAddr),
+				audit.FailureProviderUnreachable)
+		}
 
 		// Record failure metrics
 		if sh.handler.healthTracker != nil {
@@ -163,6 +212,12 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
 
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completionEvent(reqID, authInfo, providerKey, aegisReq.Model, true,
+					http.StatusInternalServerError, r.RemoteAddr),
+				audit.FailureProviderHTTPError)
+		}
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		return
 	}
@@ -203,8 +258,51 @@ func (sh *StreamingHandler) HandleStream(
 		}
 	}
 
+	// Exactly one audit event for the stream, chosen by how it ended.
+	//
+	// This is the only emit on the post-stream path, and every return above it
+	// emits its own and stops, so a stream produces one event on every route
+	// through this function. A completion and a failure are mutually exclusive
+	// here by construction rather than by inspection.
+	//
+	// A client disconnect is a completion, not a failure: the gateway did its
+	// work and the provider was engaged and will bill for it, and recording it
+	// as a provider failure would blame an upstream for a caller hanging up.
+	// The status code says 499 so the record still distinguishes it.
+	if sh.handler.auditLogger != nil {
+		// aegisReq.Model is the concrete provider model: handler.go overwrites
+		// it with providerModel before dispatch. Config-derived, so no
+		// provider-supplied text enters the sealed record.
+		ev := completionEvent(reqID, authInfo, providerKey, aegisReq.Model, true,
+			http.StatusOK, r.RemoteAddr)
+		switch metrics.Outcome {
+		case StreamOutcomeCompleted:
+			sh.handler.auditLogger.LogRequestComplete(ev)
+		case StreamOutcomeClientDisconnected:
+			ev.StatusCode = statusClientClosedRequest
+			sh.handler.auditLogger.LogRequestComplete(ev)
+		case StreamOutcomeTimeout:
+			ev.StatusCode = http.StatusGatewayTimeout
+			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamTimeout)
+		case StreamOutcomeReadError:
+			ev.StatusCode = http.StatusBadGateway
+			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamRead)
+		case StreamOutcomeNotSupported:
+			ev.StatusCode = http.StatusInternalServerError
+			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamNotSupported)
+		default:
+			// StreamOutcomeUnset. A return path that set no outcome is a bug,
+			// and the safe reading of an unknown ending is not "it succeeded".
+			slog.Error("stream ended with no recorded outcome; recording a provider failure",
+				"request_id", reqID)
+			ev.StatusCode = http.StatusInternalServerError
+			sh.handler.auditLogger.LogProviderFailure(ev, audit.FailureStreamRead)
+		}
+	}
+
 	slog.Info("streaming completed",
 		"request_id", reqID,
+		"outcome", string(metrics.Outcome),
 		"model_requested", originalModel,
 		"model_served", metrics.Model,
 		"provider", metrics.Provider,
@@ -291,7 +389,7 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httputil.WriteInternalError(w, reqID, "Streaming not supported")
-		return StreamMetrics{}
+		return StreamMetrics{Outcome: StreamOutcomeNotSupported}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -329,13 +427,6 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	scanner := bufio.NewScanner(providerResp.Body)
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
 
-	// Channel to detect client disconnect via context cancellation
-	clientDisconnected := make(chan bool, 1)
-	go func() {
-		<-ctx.Done()
-		clientDisconnected <- true
-	}()
-
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
 	defer chunkTimer.Stop()
@@ -361,15 +452,38 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		select {
 		case <-ctx.Done():
-			slog.Warn("stream total timeout exceeded",
+			// ctx is r.Context() wrapped in a total-stream deadline, so it
+			// ends for two unrelated reasons and the audit record must not
+			// confuse them: the deadline passing is the provider stalling,
+			// while a plain cancellation is the caller hanging up. Reading
+			// ctx.Err() is what tells them apart.
+			//
+			// A separate goroutine used to watch the same channel and feed a
+			// clientDisconnected case in this select. Two ready cases on one
+			// signal meant select chose between them at random, so a
+			// disconnect was reported as a timeout about half the time.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				slog.Warn("stream total timeout exceeded",
+					"request_id", reqID,
+					"chunks_sent", metrics.ChunkCount,
+				)
+				if sh.handler.metrics != nil {
+					sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				}
+				_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+				flusher.Flush()
+				metrics.Outcome = StreamOutcomeTimeout
+				return metrics
+			}
+			slog.Info("client disconnected during streaming",
 				"request_id", reqID,
 				"chunks_sent", metrics.ChunkCount,
 			)
 			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
 			}
-			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
-			flusher.Flush()
+			// Nothing is written back: the client has gone.
+			metrics.Outcome = StreamOutcomeClientDisconnected
 			return metrics
 
 		case <-chunkTimer.C:
@@ -382,25 +496,18 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			}
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
 			flusher.Flush()
-			return metrics
-
-		case <-clientDisconnected:
-			slog.Info("client disconnected during streaming",
-				"request_id", reqID,
-				"chunks_sent", metrics.ChunkCount,
-			)
-			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
-			}
+			metrics.Outcome = StreamOutcomeTimeout
 			return metrics
 
 		case <-scanChan:
 			// Scanner finished
+			metrics.Outcome = StreamOutcomeCompleted
 			if err := scanner.Err(); err != nil {
 				slog.Error("error reading stream", "error", err, "provider", adapter.Name())
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "scanner_error")
 				}
+				metrics.Outcome = StreamOutcomeReadError
 			}
 			return metrics
 
@@ -411,11 +518,13 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
 				}
+				metrics.Outcome = StreamOutcomeReadError
 				return metrics
 			}
 
 			// Check if stream ended
 			if strings.Contains(line, "[DONE]") {
+				metrics.Outcome = StreamOutcomeCompleted
 				return metrics
 			}
 		}

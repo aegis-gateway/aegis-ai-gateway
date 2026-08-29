@@ -228,6 +228,13 @@ jobs:
       REDIS_PORT: "6379"
       # CI-only value. The gateway refuses to start without one of >= 32 chars.
       AEGIS_KEY_PEPPER: ci-only-pepper-not-a-production-secret-000
+      # The allow-path canaries need a request that is actually served, and CI
+      # holds no provider credential. The mock answers locally, so the request
+      # traverses routing, the pricing gate, the provider call and the audit
+      # write without leaving the runner. It does not weaken the block canary:
+      # the secrets filter refuses that request before routing, so no provider
+      # is reached there with or without this.
+      AEGIS_MOCK_PROVIDER: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -299,11 +306,26 @@ jobs:
           set -euo pipefail
           log=$(mktemp)
           go test ./internal/audit/... -tags=integration -run NoPayload -v -count=1 -p 1 | tee "$log"
-          if ! grep -q -- "--- PASS: TestNoPayload_CanaryEndToEnd" "$log"; then
-            echo "::error::TestNoPayload_CanaryEndToEnd did not report PASS; the zero-retention claim is unevidenced by this run"
-            exit 1
-          fi
-          echo "zero-retention canary passed by name"
+          # Each canary is checked by name. `go test -run` exits 0 when its
+          # pattern matches nothing, so a renamed or deleted test would
+          # otherwise leave this step green having run nothing at all.
+          #
+          # Three, not one. The block canary covers the refusal path. The two
+          # allow canaries cover the request_complete path, which is the
+          # majority of what gets sealed in a healthy deployment: nearly every
+          # row is an allow, so a retention regression there is the one that
+          # would reach the most records.
+          for canary in \
+            TestNoPayload_CanaryEndToEnd \
+            TestNoPayload_AllowPathCanary \
+            TestNoPayload_AllowPathCanaryStreaming
+          do
+            if ! grep -q -- "--- PASS: $canary\b" "$log"; then
+              echo "::error::$canary did not report PASS; the zero-retention claim is unevidenced by this run"
+              exit 1
+            fi
+          done
+          echo "zero-retention canaries passed by name"
         env:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
           TEST_SERVER_URL: http://localhost:8080

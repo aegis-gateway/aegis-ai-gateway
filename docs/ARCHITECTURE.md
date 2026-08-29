@@ -148,26 +148,82 @@ already in existence.
 
 ### `audit_logs`
 
-**Created by migration 002 but never written.** No component in the codebase
-inserts into this table — a repository-wide search finds it only in the migration.
-The schema anticipates per-request records (duration, status code, identity, model
-requested vs. served, provider, tokens, cost, filter results, routing attempts),
-but nothing populates it, so it stays empty. Per-request data lives in
-`usage_records` instead.
+**Created by migration 002, never written, and deprecated.** No component
+inserts into this table. `GET /aegis/v1/audit/logs` returned an empty list for
+its whole existence and now returns **410 Gone**, pointing at
+`/aegis/v1/audit/events`. The table is retained because `internal/purge` targets
+it by name and two guards still sweep it; removal is tracked in
+`docs/evidence/known-limitations.md` section 2.11. Per-request data lives in
+`usage_records`, and the attested decision record in `audit_events`.
 
 ### `audit_events`
 
-Written by `audit.Logger`. Five event types are actually emitted, all of them
-denials or failures: `auth_failure`, `rate_limit_violation`, `budget_violation`,
-`filter_block`, `redis_failure`. The `auth_success`, `provider_failure`, and
-`request_complete` constants are declared in `internal/audit/logger.go` but no
-method emits them, so **successful requests produce no audit event**. Each row has
-a structured `metadata` JSONB column for event-specific context (e.g. filter type,
-spend amounts).
+Written by `audit.Logger`, and the only table the sealer covers. **The decision
+record covers both permitted and refused requests.**
 
-Writes are fire-and-forget (`Log()` spawns a goroutine) and are skipped silently
-when the database handle is nil, so audit capture is best-effort rather than
-guaranteed.
+Eight event types are emitted:
+
+| Event type | Emitted when |
+|---|---|
+| `request_complete` | A request was permitted and served, on either the streaming or the non-streaming path |
+| `provider_failure` | A request passed every gate and then failed at the provider |
+| `auth_failure` | A key was rejected, or an authenticated key requested a model outside its allowlist |
+| `rate_limit_violation` | The per-key RPM limit was exceeded |
+| `budget_violation` | The daily team spend limit was exceeded |
+| `filter_block` | The secrets, injection, PII or policy filter blocked the request |
+| `pricing_denied` | The routed provider and model have no pricing entry |
+| `redis_failure` | Redis was configured and unreachable, so the request failed closed |
+
+`auth_success` is declared and deliberately not emitted: it is subsumed by
+`request_complete` and `auth_failure`, and would double write volume for no
+evidentiary gain.
+
+**What a `request_complete` or `provider_failure` row carries.** Only these
+columns, all of them identifiers, enumerated values or status codes:
+
+| Column | Value |
+|---|---|
+| `event_type` | `request_complete` or `provider_failure` |
+| `timestamp` | When the event was constructed |
+| `request_id` | The `X-Request-ID` for the request |
+| `organization_id`, `team_id`, `user_id`, `api_key_id` | The authenticated identity |
+| `ip_address` | The caller's remote address |
+| `endpoint`, `method` | `/v1/chat/completions`, `POST` |
+| `status_code` | What the caller was sent. 499 for a client that disconnected mid-stream |
+| `provider` | The **configured provider key** from the resolved route, not the adapter type |
+| `model` | The **concrete model** that provider served, from `configs/models.yaml`, not the provider's echo of it |
+| `operation` | `chat_completion` or `chat_completion_stream` |
+| `reason` | On `provider_failure` only: one of six enumerated stage constants, never provider or caller text |
+
+**What it does not carry, and why.** The requested model alias, the
+classification tier, the request latency, and the prompt and completion token
+counts. `audit_events` has no column for any of them, and adding one changes the
+field set the leaf hash covers, which requires `hash_schema_version=3`. ADR 0011
+records that decision and its cost. Until that bump is cut, those five facts live
+in `usage_records`, joinable on `request_id` and **not attested**. See
+`docs/evidence/known-limitations.md` section 2.13.
+
+The exposure is deliberate on both sides: no caller-supplied text and no
+provider-supplied text reaches a sealed column.
+`TestCompletionEventCarriesNoFreeText` and `TestProviderFailureStageIsEnumerated`
+enforce that, and `TestNoPayload_AllowPathCanary` plus
+`TestNoPayload_AllowPathCanaryStreaming` assert it end to end against a live
+gateway.
+
+**Exactly one event per request.** The streaming path has six exits, including a
+client disconnect and two timeouts, so `StreamMetrics.Outcome` records which one
+ran and `HandleStream` emits a single event chosen from it.
+`TestStreamingEmitsExactlyOneEvent` covers each. A client disconnect is recorded
+as a completion, not a provider failure: the gateway did its work and the
+provider was engaged.
+
+Writes are fire-and-forget (`Log()` spawns a goroutine) and are dropped when the
+database handle is nil, so audit capture is best-effort rather than guaranteed. A
+dropped write leaves no row and, because `BIGSERIAL` allocates only on a
+successful insert, no id gap either, so the sealer seals a contiguous run and
+reports a healthy chain over an incomplete record.
+`aegis_audit_write_failures_total`, labelled by event type and reason, is the
+only signal that this happened. Alert on any increase.
 
 ### `usage_records`
 

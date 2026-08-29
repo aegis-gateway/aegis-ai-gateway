@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -285,6 +286,8 @@ func (s *spyAuditLogger) LogPricingDenied(_, _, _, _, provider, model, mode stri
 	s.pricingDenied = append(s.pricingDenied, struct{ Provider, Model, Mode string }{provider, model, mode})
 }
 func (s *spyAuditLogger) LogModelDenied(_, _, _, _, _ string, _ int, _ string) {}
+func (s *spyAuditLogger) LogRequestComplete(_ audit.CompletionEvent)           {}
+func (s *spyAuditLogger) LogProviderFailure(_ audit.CompletionEvent, _ string) {}
 
 // newPricingTestHandler wires a handler whose only routed alias points at
 // providerKey/routedModel, with pricing supplied by pricingCfg.

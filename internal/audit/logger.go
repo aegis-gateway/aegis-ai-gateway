@@ -81,14 +81,51 @@ func strPtr(s string) *string {
 
 func i64Ptr(i int64) *int64 { return &i }
 
+// WriteMetrics is the optional recorder for audit writes that did not land.
+//
+// An interface rather than a dependency on internal/telemetry, matching
+// policy.Evaluator.SetMetrics: internal/audit is imported by the packages that
+// telemetry is also imported by, and a concrete dependency here would make the
+// audit writer harder to exercise in a test than it needs to be.
+type WriteMetrics interface {
+	RecordAuditWriteFailure(eventType, reason string)
+}
+
+// Reasons an audit write did not land. A fixed set, because they are metric
+// label values.
+const (
+	// WriteFailureNoDatabase is a gateway running without Postgres. Every
+	// event is discarded, including this one.
+	WriteFailureNoDatabase = "no_database"
+	// WriteFailureInsert is an INSERT that returned an error.
+	WriteFailureInsert = "insert_error"
+)
+
 // Logger writes audit events to the database.
 type Logger struct {
-	db *pgxpool.Pool
+	db      *pgxpool.Pool
+	metrics WriteMetrics
 }
 
 // NewLogger creates a new audit logger.
 func NewLogger(db *pgxpool.Pool) *Logger {
 	return &Logger{db: db}
+}
+
+// SetMetrics attaches a recorder for audit writes that do not land.
+//
+// Without it a dropped write is invisible: no row is inserted, and because
+// BIGSERIAL allocates only on a successful insert there is no id gap either, so
+// the sealer seals a contiguous run and reports a healthy chain. The chain is
+// intact and the record is incomplete, and nothing else in the system can tell.
+func (l *Logger) SetMetrics(m WriteMetrics) {
+	l.metrics = m
+}
+
+func (l *Logger) recordFailure(eventType EventType, reason string) {
+	if l.metrics != nil {
+		l.metrics.RecordAuditWriteFailure(string(eventType), reason)
+	}
 }
 
 // Log records an audit event asynchronously.
@@ -99,6 +136,7 @@ func (l *Logger) Log(event Event) {
 // writeEvent writes the audit event to the database.
 func (l *Logger) writeEvent(event Event) {
 	if l.db == nil {
+		l.recordFailure(event.EventType, WriteFailureNoDatabase)
 		return
 	}
 
@@ -164,6 +202,7 @@ func (l *Logger) writeEvent(event Event) {
 	)
 
 	if err != nil {
+		l.recordFailure(event.EventType, WriteFailureInsert)
 		slog.Error("failed to write audit event",
 			"error", err,
 			"request_id", event.RequestID,
@@ -335,6 +374,161 @@ func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation stri
 		Operation:      strPtr(operation),
 		ErrorDetail:    strPtr(err.Error()),
 	})
+}
+
+// CompletionEvent is the outcome of a request that passed every gate.
+//
+// It is a struct rather than a positional argument list because it carries ten
+// fields and two of them are strings that look alike: Provider is the
+// configured provider key and Model is the concrete model that provider served.
+// Transposing those in a call is not a compile error and would misattribute
+// every allowed request.
+//
+// Every field is an identifier, an enumerated value, or a status code. None is
+// caller-supplied free text, and none is derived from message content. See
+// LogRequestComplete for why that is a constraint rather than a coincidence.
+type CompletionEvent struct {
+	RequestID string
+	OrgID     string
+	TeamID    string
+	UserID    string
+	KeyID     string
+
+	// Provider is the configured provider key from the resolved route, not
+	// adapter.Name(). Model is the concrete model that key served, not the
+	// alias the caller asked for. The pair matches what
+	// LogPricingDenied writes and what configs/pricing.yaml is keyed by.
+	Provider string
+	Model    string
+
+	// Streaming selects the value recorded in the operation column.
+	Streaming bool
+
+	StatusCode int
+	IP         string
+}
+
+// Operations recorded in the operation column for a completion event.
+const (
+	OperationChatCompletion       = "chat_completion"
+	OperationChatCompletionStream = "chat_completion_stream"
+)
+
+// Stages at which a request that passed every gate then failed. A fixed set:
+// these are written to audit_events.reason, which is covered by the leaf hash
+// and sealed, so the value has to be one this code chose rather than one a
+// provider or a caller supplied.
+const (
+	// FailureProviderUnreachable is a send that never produced a response,
+	// after any retries. Connection refused, DNS, timeout.
+	FailureProviderUnreachable = "provider_unreachable"
+	// FailureProviderHTTPError is a response with a non-success status.
+	FailureProviderHTTPError = "provider_http_error"
+	// FailureProviderResponseInvalid is a response the adapter could not
+	// translate.
+	FailureProviderResponseInvalid = "provider_response_invalid"
+	// FailureStreamTimeout is a stream that stalled, either per chunk or in
+	// total.
+	FailureStreamTimeout = "stream_timeout"
+	// FailureStreamRead is a stream that ended on a read or relay error.
+	FailureStreamRead = "stream_read_error"
+	// FailureStreamNotSupported is a response writer that cannot flush, so no
+	// stream could be served.
+	FailureStreamNotSupported = "stream_not_supported"
+)
+
+func (e CompletionEvent) operation() string {
+	if e.Streaming {
+		return OperationChatCompletionStream
+	}
+	return OperationChatCompletion
+}
+
+func (e CompletionEvent) base(eventType EventType) Event {
+	var userID *string
+	if e.UserID != "" {
+		userID = &e.UserID
+	}
+	var keyID *string
+	if e.KeyID != "" {
+		keyID = &e.KeyID
+	}
+	return Event{
+		RequestID:      e.RequestID,
+		Timestamp:      time.Now(),
+		EventType:      eventType,
+		OrganizationID: e.OrgID,
+		TeamID:         e.TeamID,
+		UserID:         userID,
+		APIKeyID:       keyID,
+		IPAddress:      e.IP,
+		Endpoint:       "/v1/chat/completions",
+		Method:         "POST",
+		StatusCode:     e.StatusCode,
+		Provider:       strPtr(e.Provider),
+		Model:          strPtr(e.Model),
+		Operation:      strPtr(e.operation()),
+	}
+}
+
+// LogRequestComplete records a request that was permitted and served.
+//
+// Until this existed, audit_events held only refusals, and audit_events is the
+// only table the sealer covers. The chain therefore attested what the gateway
+// turned away and said nothing about what it allowed through, which is the
+// larger half of any question an auditor asks.
+//
+// What this event does NOT carry, and why it is not an oversight: the alias the
+// caller requested, the classification tier, the latency, and the token counts.
+// audit_events has no column for any of them, and adding one changes the field
+// set the leaf hash covers, which requires hash_schema_version=3. ADR 0011
+// records that decision and its cost. Until that bump is cut, those five facts
+// live in usage_records, which is joinable on request_id and is not attested.
+// docs/evidence/known-limitations.md section 2.13 states the gap.
+func (l *Logger) LogRequestComplete(ev CompletionEvent) {
+	l.Log(ev.base(EventRequestComplete))
+}
+
+// LogProviderFailure records a request that passed every gate and then failed
+// at the provider.
+//
+// Without it, an allowed request that fails leaves no attested trace at all:
+// LogRequestComplete never runs, and no denial event applies because nothing
+// denied it. That is the same completeness hole this change exists to close,
+// one step further along the request path.
+//
+// stage must be one of the Failure* constants. It is written to
+// audit_events.reason, which the leaf hash covers and the sealer seals, so it
+// is deliberately an enumerated value chosen here. A provider's error text and
+// a Go error string are both excluded: the first is attacker-influenced content
+// the gateway does not control, and putting either in a sealed, exported column
+// is the mechanism section 2.12 warns operators against, arriving by a
+// different door.
+func (l *Logger) LogProviderFailure(ev CompletionEvent, stage string) {
+	if !validFailureStage(stage) {
+		// A caller passing free text here would put it in the sealed record.
+		// Refusing the value rather than the event keeps the completeness
+		// property: the event is still written, with the stage recorded as
+		// unknown, and the bug is visible in the trail rather than silently
+		// widening what the column can hold.
+		slog.Error("audit: provider failure stage is not a known constant; recording it as unknown",
+			"request_id", ev.RequestID)
+		stage = "unknown"
+	}
+	e := ev.base(EventProviderFailure)
+	e.ErrorMessage = "Provider call failed after the request was permitted"
+	e.Reason = strPtr(stage)
+	l.Log(e)
+}
+
+func validFailureStage(stage string) bool {
+	switch stage {
+	case FailureProviderUnreachable, FailureProviderHTTPError,
+		FailureProviderResponseInvalid, FailureStreamTimeout,
+		FailureStreamRead, FailureStreamNotSupported:
+		return true
+	}
+	return false
 }
 
 // truncateAPIKey returns the first 8 characters of an API key for logging.

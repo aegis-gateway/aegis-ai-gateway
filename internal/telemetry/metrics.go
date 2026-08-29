@@ -70,6 +70,17 @@ type Metrics struct {
 	AuditLastSealAgeSeconds prometheus.Gauge
 	AuditUnsealedEvents     prometheus.Gauge
 
+	// AuditWriteFailuresTotal counts audit events that were not persisted,
+	// labelled by event type and by why.
+	//
+	// The audit trail's completeness claim needs this. A dropped write leaves
+	// no row and, because BIGSERIAL only allocates on a successful insert, no
+	// id gap either, so the sealer sees a contiguous run and seals a chain that
+	// is intact and incomplete. Nothing downstream can detect it. This counter
+	// is the only signal that it happened, which is why it is a counter an
+	// operator alerts on rather than a log line.
+	AuditWriteFailuresTotal *prometheus.CounterVec
+
 	// AuditOldestEventAgeDays is the age in days of the oldest row in audit_events.
 	// A large value on a deployment with retention configured indicates a purge is overdue.
 	// Set to -1 when the table is empty.
@@ -218,6 +229,14 @@ func NewMetrics() *Metrics {
 			Help: "Count of audit_events rows not yet covered by any checkpoint.",
 		}),
 
+		AuditWriteFailuresTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_audit_write_failures_total",
+			Help: "Audit events that were not persisted, by event type and reason. " +
+				"A dropped write leaves no row and no id gap, so the sealer cannot " +
+				"detect it and the sealed chain is intact but incomplete. Alert on any " +
+				"increase.",
+		}, []string{"event_type", "reason"}),
+
 		AuditOldestEventAgeDays: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "aegis_audit_oldest_event_age_days",
 			Help: "Age in days of the oldest row in audit_events. " +
@@ -286,6 +305,16 @@ func (m *Metrics) RecordToolRequestRefused(provider, adapter string) {
 // on deliberately.
 func (m *Metrics) RecordUnsupportedField(field string) {
 	m.UnsupportedFieldTotal.WithLabelValues(field).Inc()
+}
+
+// RecordAuditWriteFailure records an audit event that was not persisted.
+//
+// Both arguments come from fixed sets defined in internal/audit: the event type
+// is one of the declared audit.EventType values and the reason is one of the
+// audit.WriteFailure* constants. Neither is derived from client input, so this
+// label pair cannot be pushed on to mint time series.
+func (m *Metrics) RecordAuditWriteFailure(eventType, reason string) {
+	m.AuditWriteFailuresTotal.WithLabelValues(eventType, reason).Inc()
 }
 
 // RecordDBPoolStats records database pool statistics.
