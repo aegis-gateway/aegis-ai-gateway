@@ -149,3 +149,38 @@ func TestKeyMetadata_CachedAbsentAllowlistIsRejected(t *testing.T) {
 		t.Errorf("got %v, want an empty allowlist", unrestricted.AllowedModels)
 	}
 }
+
+// KeyPrefix must never return the whole input.
+//
+// It is written to audit_events.api_key_prefix, which is sealed and served by
+// the audit read API, so returning the credential puts it somewhere it can
+// never be removed from. A generated key is always long enough that this did
+// not arise, but an imported or manually provisioned one need not be.
+func TestKeyPrefix_NeverReturnsTheWholeKey(t *testing.T) {
+	for _, key := range []string{
+		"aegis-dev-abcdefgh12345678abcdefgh12345678", // generated
+		"short-key",             // shorter than 16, returned verbatim before
+		"sixteenbyteskey0",      // exactly 16 with no second dash
+		"imported_token_nodash", // no dashes at all
+		"tiny",
+		"",
+	} {
+		got := KeyPrefix(key)
+		if key != "" && got == key {
+			t.Errorf("KeyPrefix(%q) returned the key itself; this value is sealed "+
+				"into audit_events.api_key_prefix", key)
+		}
+		if len(got) > len(key) {
+			t.Errorf("KeyPrefix(%q) = %q, longer than its input", key, got)
+		}
+	}
+}
+
+// The generated format must still yield the documented display prefix, or the
+// hardening above would break the value operators match against.
+func TestKeyPrefix_KeepsTheDocumentedFormat(t *testing.T) {
+	const key = "aegis-dev-abcdefgh12345678abcdefgh12345678"
+	if got := KeyPrefix(key); got != "aegis-dev-abcdefgh" {
+		t.Errorf("KeyPrefix(%q) = %q, want aegis-dev-abcdefgh", key, got)
+	}
+}

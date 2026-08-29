@@ -835,7 +835,14 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 	}
 
 	// Update model if present
-	if chunkData.Model != "" && metrics.Model == "" {
+	// The model the PROVIDER reports always wins over the routed one.
+	//
+	// Model is pre-populated with the routed model so an early return can still
+	// attribute the request, and the old "only if empty" guard then made this
+	// permanently false: a completed stream kept the routed name, so
+	// model_served and the streaming cost were wrong whenever the provider
+	// served something else. The routed value is a fallback, not a floor.
+	if chunkData.Model != "" {
 		metrics.Model = chunkData.Model
 	}
 

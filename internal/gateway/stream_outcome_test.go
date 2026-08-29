@@ -933,3 +933,46 @@ func TestStreamWithMonitoring_EarlyReturnsKeepTheModel(t *testing.T) {
 			"otherwise be empty for the request being investigated", got.Model)
 	}
 }
+
+// The model the provider reports must overwrite the routed one.
+//
+// Model is pre-populated with the routed model so an early return can attribute
+// the request, and the "only if empty" guard in extractTokensFromChunk then made
+// that pre-population permanent: a completed stream kept the routed name, so
+// model_served and the streaming cost were wrong whenever the provider served
+// something else. The routed value is a fallback, not a floor.
+func TestStream_ProviderReportedModelOverridesTheRoutedOne(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	adapter := &scriptedStreamAdapter{
+		body: `data: {"model":"claude-haiku-4-5-20251001","choices":[{"delta":{"content":"hi"}}]}` +
+			"\n\ndata: [DONE]\n\n",
+	}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	resp, err := adapter.SendRequest(providerReq)
+	if err != nil {
+		t.Fatalf("sending: %v", err)
+	}
+
+	got := sh.streamWithMonitoring(context.Background(), httptest.NewRecorder(), "req-model-win",
+		resp, adapter, "anthropic", "routed-model-name", info)
+
+	if got.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("model = %q, want the model the provider reported; the routed name "+
+			"is a fallback for early returns, not a floor", got.Model)
+	}
+}

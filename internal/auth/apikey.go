@@ -65,11 +65,25 @@ func VerifyKey(rawKey, storedHash string, version int, pepper string) bool {
 }
 
 // KeyPrefix extracts a display-safe prefix from a key: aegis-{env}-{first 8 chars}
+//
+// It never returns the whole input. It used to: a key shorter than 16 bytes was
+// returned verbatim, and a 16-byte key without two dashes returned all 16. A
+// generated key is always longer than that, but an imported or manually
+// provisioned one need not be, and this value is written to
+// audit_events.api_key_prefix, which is sealed and served by the audit read
+// API. A credential belongs in neither.
+//
+// The authoritative prefix is api_keys.key_prefix, which is what the middleware
+// now uses. This remains for keygen, which computes the stored value, and as a
+// display helper.
 func KeyPrefix(key string) string {
-	// Key format: aegis-{env}-{32chars}
-	// We want: aegis-{env}-{first 8 of random}
+	// Never return the input whole, however short it is. A quarter of a very
+	// short key is not useful for display, but it is not the credential.
 	if len(key) < 16 {
-		return key
+		if len(key) <= 4 {
+			return ""
+		}
+		return key[:len(key)/4]
 	}
 	// Find the position after the second dash
 	dashes := 0
@@ -85,7 +99,9 @@ func KeyPrefix(key string) string {
 			}
 		}
 	}
-	return key[:16]
+	// No second dash: this is not a generated key, so take a fixed short slice
+	// rather than the 16 bytes that could be the whole thing.
+	return key[:12]
 }
 
 func randomString(n int) (string, error) {
@@ -103,7 +119,12 @@ func randomString(n int) (string, error) {
 
 // KeyMetadata holds the cached metadata for an API key.
 type KeyMetadata struct {
-	ID                   string               `json:"id"`
+	ID string `json:"id"`
+	// KeyPrefix is api_keys.key_prefix, the value the operator was shown when
+	// the key was issued. It is read from the row rather than derived from the
+	// presented token, because a token that does not follow the generated
+	// format can yield itself, and this ends up in the sealed audit record.
+	KeyPrefix            string               `json:"key_prefix"`
 	OrganizationID       string               `json:"organization_id"`
 	TeamID               string               `json:"team_id"`
 	UserID               string               `json:"user_id,omitempty"`

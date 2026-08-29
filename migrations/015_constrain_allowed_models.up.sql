@@ -31,12 +31,24 @@ DO $$
 DECLARE
     affected INTEGER;
 BEGIN
+    -- Only an ACTIVE key is revoked here. A key that is already revoked or
+    -- expired carries lifecycle evidence, a compromise response or a departure,
+    -- in revoked_at and revoked_reason. Overwriting those with this migration's
+    -- timestamp and generic message would destroy security-relevant history
+    -- irreversibly, and it would do so merely to prepare a column for NOT NULL.
+    -- Such rows get the allowed_models fill and nothing else; they already deny.
+    UPDATE api_keys
+       SET allowed_models = '[]'::jsonb
+     WHERE allowed_models IS NULL
+       AND status <> 'active';
+
     UPDATE api_keys
        SET status         = 'revoked',
            revoked_at     = NOW(),
            revoked_reason = 'allowed_models was NULL at migration 015; restrictions unknown, revoked to fail closed',
            allowed_models = '[]'::jsonb
-     WHERE allowed_models IS NULL;
+     WHERE allowed_models IS NULL
+       AND status = 'active';
 
     GET DIAGNOSTICS affected = ROW_COUNT;
     IF affected > 0 THEN

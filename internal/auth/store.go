@@ -31,13 +31,14 @@ const redisCacheTTL = 5 * time.Minute
 // redisKeyPrefix is versioned so a change to how cached metadata is validated
 // cannot be defeated by entries written under the old rules.
 //
-// v2 exists because entries cached before the allowlist decode failed closed
-// hold "allowed_models":null for keys whose stored value was malformed. Those
-// decode cleanly into an empty slice, which grants every model, and would have
-// been served unrestricted for the whole cache TTL after the fix rolled out.
-// Bumping the prefix makes them unreachable rather than trusting a TTL to
-// expire them.
-const redisKeyPrefix = "aegis:key:v2:"
+// v2 made entries cached before the allowlist decode failed closed unreachable:
+// they hold "allowed_models":null for keys whose stored value was malformed,
+// which decodes into an empty slice and grants every model.
+//
+// v3 adds key_prefix to the cached shape. A v2 entry lacks it, so it would
+// decode with an empty prefix and the audit record would lose the key
+// attribution for the length of the TTL.
+const redisKeyPrefix = "aegis:key:v3:"
 
 // KeyStore looks up API key metadata by hash.
 type KeyStore interface {
@@ -133,7 +134,7 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 	var userID *string
 
 	err := s.db.QueryRow(ctx, `
-		SELECT id, organization_id, team_id, user_id, name, max_classification,
+		SELECT id, key_prefix, organization_id, team_id, user_id, name, max_classification,
 		       allowed_models, rpm_limit, tpm_limit, daily_spend_limit_cents, expires_at
 		FROM api_keys
 		WHERE key_hash = $1
@@ -141,6 +142,7 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 		  AND expires_at > NOW()
 	`, keyHash).Scan(
 		&meta.ID,
+		&meta.KeyPrefix,
 		&meta.OrganizationID,
 		&meta.TeamID,
 		&userID,

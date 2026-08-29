@@ -28,15 +28,17 @@ const authContextKey contextKey = "aegis_auth"
 type AuthInfo struct {
 	KeyID string
 
-	// KeyPrefix is the display-safe leading portion of the presented key,
-	// aegis-{env}-{first 8}. It is derived from the token rather than read from
-	// api_keys.key_prefix so that adding it costs no query and no change to the
-	// Redis-cached KeyMetadata shape.
+	// KeyPrefix is api_keys.key_prefix, the display-safe value the operator was
+	// shown when the key was issued.
 	//
-	// It is not a credential: it is the same value keygen prints and the same
-	// one audit_events.api_key_prefix already stores for authentication
-	// failures. It exists so an attested event can name the key in a form a
-	// human can match against a key list without holding the key itself.
+	// Read from the row, NOT derived from the presented token. Deriving it
+	// looked cheaper and was wrong: KeyPrefix() returned the whole input for a
+	// key shorter than 16 bytes, so an imported or manually provisioned
+	// credential could be sealed into audit_events.api_key_prefix and served by
+	// the audit read API.
+	//
+	// It exists so an attested event can name the key in a form a human can
+	// match against a key list without holding the key itself.
 	KeyPrefix            string
 	OrganizationID       string
 	TeamID               string
