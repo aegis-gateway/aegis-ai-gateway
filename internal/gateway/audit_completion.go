@@ -164,6 +164,23 @@ func completedRequest(
 // once a provider has answered, and the failure paths that never got that far
 // must not invent them. Leaving them zero there is what makes the logger write
 // NULL rather than a measurement nobody took.
+// withDuration attaches only the elapsed time.
+//
+// For the failure paths, which have no provider outcome to record but did
+// measure how long the gateway spent before giving up. That measurement is the
+// most useful thing a provider_failure row carries beyond the reason: a
+// provider that refused in 3 ms and one that hung for 30 s produce the same
+// event otherwise.
+//
+// The token counts stay absent there, because they are provider-reported and
+// no provider reported any. Duration is different: the gateway measures it
+// itself, so it exists on every path that got far enough to fail.
+func withDuration(rec audit.CompletedRequest, d time.Duration) audit.CompletedRequest {
+	ms := d.Milliseconds()
+	rec.DurationMs = &ms
+	return rec
+}
+
 func withOutcome(
 	rec audit.CompletedRequest,
 	modelServed string,

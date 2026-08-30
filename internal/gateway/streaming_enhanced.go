@@ -194,7 +194,9 @@ func (sh *StreamingHandler) HandleStream(
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
 		}
 		return
@@ -230,7 +232,9 @@ func (sh *StreamingHandler) HandleStream(
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+					time.Since(receivedAt)),
 				// Not providerFailureReason: this branch runs only when the
 				// provider returned a non-200, so its failure is already
 				// established and a concurrent disconnect merely interrupted

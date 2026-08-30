@@ -1447,3 +1447,44 @@ func TestStream_DeadlineDuringBlockedReadIsATimeoutWhicheverBranchWins(t *testin
 		t.Errorf("outcomes = %v, want all %d runs %q", seen, runs, StreamTotalTimeout)
 	}
 }
+
+// A provider_failure row must carry the elapsed time.
+//
+// The gateway measures the duration itself, so unlike the token counts it
+// exists on every path that got far enough to fail. Omitting it discards a
+// measurement that was taken, and it is the most useful thing the row carries
+// beyond the reason: a provider that refused in 3 ms and one that hung for 30 s
+// are otherwise indistinguishable in the sealed record.
+func TestStream_ProviderFailureSealsTheMeasuredDuration(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{})
+	adapter := &erroringStreamAdapter{body: `{"error":{"code":"invalid_api_key"}}`}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	sh.HandleStream(httptest.NewRecorder(), req, "req-duration", providerReq, adapter,
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	rec := spy.failures[0].Req
+	if rec.DurationMs == nil {
+		t.Error("provider_failure sealed no duration; the gateway measured the elapsed " +
+			"time and discarded it, so the row cannot say whether the provider refused " +
+			"immediately or hung")
+	}
+	// The token counts stay absent: they are provider-reported and no provider
+	// reported any. That distinction is the reason duration is a pointer.
+	if rec.TotalTokens != 0 {
+		t.Errorf("total_tokens = %d on a failure with no provider usage, want 0 so the "+
+			"logger writes NULL", rec.TotalTokens)
+	}
+}

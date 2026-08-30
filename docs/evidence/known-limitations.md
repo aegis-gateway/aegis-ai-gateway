@@ -566,6 +566,14 @@ Absent measurements are `null`, never `0`. A streamed response whose provider re
 usage did not consume zero tokens, and a row saying so would attest a measurement nobody
 took.
 
+`duration_ms` behaves differently from the token counts, and the difference is deliberate.
+The counts are provider-reported and absent when no provider reported any. The duration is
+measured by the gateway itself, so it exists on every path that got far enough to fail: a
+`provider_failure` carries it even though it carries no token counts, which is what lets
+the record distinguish a provider that refused in three milliseconds from one that hung for
+thirty seconds. A request completing in under a millisecond records `0`, which is a
+measurement rather than an absence.
+
 **All six are gateway- or provider-derived, which is why they can be sealed.** A column a
 caller can write is a channel out of the zero-retention guarantee, as the `(unconfigured)`
 sentinel on `model` records. That is also why tool names are **not** in version 3: they are

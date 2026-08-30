@@ -441,7 +441,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				failureReason = audit.ReasonProviderError
 			}
 			h.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerStatus, failureReason))
 		}
 		return
@@ -473,7 +475,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// otherwise be erased.
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
 		}
 		return
