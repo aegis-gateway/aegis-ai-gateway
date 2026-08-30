@@ -21,9 +21,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -36,12 +39,30 @@ func main() {
 	classification := flag.String("classification", "INTERNAL", "max classification tier: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED")
 	expires := flag.String("expires", "365d", "expiry duration (e.g., 365d, 720h)")
 	dbURL := flag.String("db-url", "", "database URL (overrides env)")
+	allowedModels := flag.String("allowed-models", "",
+		"comma-separated model aliases this key may use (required), or 'any' for no restriction")
+	modelsConfig := flag.String("models-config", "configs/models.yaml",
+		"models.yaml to validate -allowed-models against; unreadable means the check is skipped")
 	flag.Parse()
 
 	if *org == "" || *team == "" || *name == "" {
 		flag.Usage()
 		fmt.Fprintln(os.Stderr, "\nerror: -org, -team, and -name are required")
 		os.Exit(1)
+	}
+	if *allowedModels == "" {
+		flag.Usage()
+		fmt.Fprintln(os.Stderr, "\nerror: -allowed-models is required.\n"+
+			"An empty allowlist does not mean 'no access', it means NO RESTRICTION: the\n"+
+			"gateway permits every configured model when the list is empty. Issuing keys\n"+
+			"without saying so is how every key ends up unrestricted. Name the models, or\n"+
+			"pass -allowed-models=any to grant everything deliberately.")
+		os.Exit(1)
+	}
+
+	models, unrestricted, err := parseAllowedModels(*allowedModels, *modelsConfig)
+	if err != nil {
+		log.Fatalf("-allowed-models: %v", err)
 	}
 
 	// Require AEGIS_KEY_PEPPER for HMAC-SHA256 hashing of new keys
@@ -93,8 +114,12 @@ func main() {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
-	// Serialize allowed_models as empty JSON array
-	allowedModels, _ := json.Marshal([]string{})
+	// An empty array is the unrestricted value, which is why -allowed-models=any
+	// has to be asked for rather than defaulted to.
+	allowedModelsJSON, err := json.Marshal(models)
+	if err != nil {
+		log.Fatalf("encoding allowed_models: %v", err)
+	}
 
 	// Insert key
 	var keyID string
@@ -102,7 +127,7 @@ func main() {
 		INSERT INTO api_keys (key_hash, key_prefix, organization_id, team_id, user_id, name, max_classification, allowed_models, expires_at, hash_version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, keyHash, keyPrefix, *org, *team, nilIfEmpty(*user), *name, *classification, allowedModels, expiresAt, hashVersion).Scan(&keyID)
+	`, keyHash, keyPrefix, *org, *team, nilIfEmpty(*user), *name, *classification, allowedModelsJSON, expiresAt, hashVersion).Scan(&keyID)
 	if err != nil {
 		log.Fatalf("failed to insert key: %v", err)
 	}
@@ -117,6 +142,11 @@ func main() {
 		fmt.Printf("  User:           %s\n", *user)
 	}
 	fmt.Printf("  Classification: %s\n", *classification)
+	if unrestricted {
+		fmt.Printf("  Allowed models: ANY (unrestricted)\n")
+	} else {
+		fmt.Printf("  Allowed models: %s\n", strings.Join(models, ", "))
+	}
 	fmt.Printf("  Expires:        %s\n", expiresAt.Format(time.RFC3339))
 	fmt.Println()
 	fmt.Println("  API Key (save this — it will NOT be shown again):")
@@ -137,4 +167,68 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseAllowedModels turns the -allowed-models value into the JSON array the
+// api_keys column holds, and reports whether the key is unrestricted.
+//
+// "any" yields an empty slice, which is the value the gateway reads as no
+// restriction: modelAllowed returns true when the list is empty. That is the
+// whole reason this flag is required rather than defaulted. Before it existed,
+// keygen wrote an empty array unconditionally, so every key it issued could use
+// every configured model and nothing said so at issue time.
+//
+// Names are validated against models.yaml when it can be read. A misspelled
+// alias is otherwise a key that authenticates and is refused every model,
+// because matching is exact string equality against the alias, and the operator
+// finds out from a caller rather than from the tool.
+func parseAllowedModels(raw, modelsPath string) ([]string, bool, error) {
+	if strings.EqualFold(strings.TrimSpace(raw), "any") {
+		return []string{}, true, nil
+	}
+
+	seen := map[string]bool{}
+	out := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		alias := strings.TrimSpace(part)
+		if alias == "" {
+			return nil, false, fmt.Errorf(
+				"empty entry in %q; list aliases separated by commas, or pass 'any'", raw)
+		}
+		if seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		out = append(out, alias)
+	}
+
+	// Migration 015 constrains the column to a JSON array of strings and the
+	// reader fails closed on anything else, so a malformed value here would
+	// produce a key that cannot authenticate at all.
+	var cfg config.ModelsConfig
+	if err := config.LoadFile(modelsPath, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: could not read %s (%v); -allowed-models was not checked against the "+
+				"configured aliases, so a typo here becomes a key that is refused every model\n",
+			modelsPath, err)
+		return out, false, nil
+	}
+	var unknown []string
+	for _, alias := range out {
+		if _, ok := cfg.Models[alias]; !ok {
+			unknown = append(unknown, alias)
+		}
+	}
+	if len(unknown) > 0 {
+		known := make([]string, 0, len(cfg.Models))
+		for alias := range cfg.Models {
+			known = append(known, alias)
+		}
+		sort.Strings(known)
+		return nil, false, fmt.Errorf(
+			"%s is not configured in %s. Matching is exact, so this key would be refused "+
+				"that model on every request. Configured aliases: %s",
+			strings.Join(unknown, ", "), modelsPath, strings.Join(known, ", "))
+	}
+	return out, false, nil
 }

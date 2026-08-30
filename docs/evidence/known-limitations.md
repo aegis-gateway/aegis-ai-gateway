@@ -757,15 +757,38 @@ version counter checked on every hit, and is deliberately not attempted here.
 
 ---
 
-### 2.16 `keygen` mints keys that may use every configured model
+### 2.16 `keygen` used to mint keys that may use every configured model
 
-`cmd/keygen` writes `allowed_models` as an empty JSON array
-(`cmd/keygen/main.go:96-105`) and offers no flag to populate it. An empty allowlist
-**permits every configured model**: `modelAllowed` returns `true` when `len(allowed) == 0`
-(`internal/gateway/model_allowlist.go:43-46`). The allowlist is opt-in per key.
+**Fixed on 2026-08-30.** `cmd/keygen` wrote `allowed_models` as an empty JSON array and
+offered no flag to populate it. An empty allowlist **permits every configured model**:
+`modelAllowed` returns `true` when `len(allowed) == 0`
+(`internal/gateway/model_allowlist.go:43-46`). The allowlist is opt-in per key, so every key
+keygen issued was unrestricted and nothing said so at issue time.
 
-So every key `keygen` issues is unrestricted, and the only way to restrict one is a direct
-`UPDATE` against `api_keys`:
+`-allowed-models` is now required. It takes a comma-separated list of aliases, or the
+literal `any` for an unrestricted key, so granting everything is something an operator types
+rather than something that happens by omission. The value is validated against
+`configs/models.yaml` when that file can be read: matching in the gateway is exact string
+equality, so a misspelled alias would otherwise produce a key that authenticates and is
+refused every model, and the operator would learn it from a caller rather than from the
+tool. Where the config cannot be read, for instance running against a remote database from
+elsewhere, the check is skipped with a warning rather than blocking the key.
+
+The resulting allowlist is printed with the key.
+
+**Keys issued before this date are unaffected and are unrestricted.** There is no migration
+that could fix them, because an empty allowlist is indistinguishable from a deliberate
+grant-all. Auditing them means reading `api_keys.allowed_models` and deciding which of the
+empty ones were meant that way:
+
+```sql
+SELECT key_prefix, name, organization_id, created_at
+  FROM api_keys
+ WHERE status = 'active' AND allowed_models = '[]'::jsonb
+ ORDER BY created_at;
+```
+
+Restricting an existing key is still a direct `UPDATE` against `api_keys`:
 
 ```sql
 UPDATE api_keys SET allowed_models = '["aegis-fast"]'::jsonb
@@ -785,7 +808,6 @@ previously a display filter, and it is now an enforced access control, so the gr
 default carries a consequence it did not carry before: a key issued and forgotten is a key
 that may reach every model in `configs/models.yaml`, including any added later.
 
-This is recorded rather than fixed because giving `keygen` an allowlist flag is a change to
-the issuing tool, which this work order does not cover. Whoever picks it up should decide
-whether the flag is required rather than defaulted, since the safe default and the
-convenient default point in opposite directions here.
+The flag is required rather than defaulted because the safe default and the convenient
+default point in opposite directions: any default that lets a key be issued without a
+decision recreates exactly the situation this section described.

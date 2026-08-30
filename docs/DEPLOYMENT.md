@@ -54,9 +54,16 @@ docker compose -f deploy/docker-compose.yaml exec gateway ./migrate up
 ### 4. Generate Your First API Key
 
 ```bash
-docker compose -f deploy/docker-compose.yaml exec gateway ./keygen
+docker compose -f deploy/docker-compose.yaml exec gateway ./keygen \
+  -org acme -team platform -name "first key" \
+  -allowed-models aegis-fast,aegis-balanced
 # Save the displayed key — it is shown only once
 ```
+
+`-allowed-models` is required. It names the aliases from `configs/models.yaml` the key may
+use, and is validated against that file. Pass `-allowed-models=any` for an unrestricted key:
+an empty allowlist means **no restriction** rather than no access, so granting everything is
+something you type rather than something that happens by omission.
 
 ### 5. Verify
 
