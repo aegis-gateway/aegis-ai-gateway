@@ -272,9 +272,9 @@ misclassified.
 
 ## Review rounds after submission
 
-The PR went through **46 review rounds and 71 findings** from the automated
-reviewers (37 rounds and 59 findings from Codex, 9 and 12 from Cursor) before coming back
-clean on the current commit. All 71 are resolved. Almost all of them landed on Phase 5, and
+The PR went through **48 review rounds and 74 findings** from the automated
+reviewers (39 rounds and 62 findings from Codex, 9 and 12 from Cursor) before coming back
+clean on the current commit. All 74 are resolved. Almost all of them landed on Phase 5, and
 almost all were one root cause: **the attestation claiming an outcome the caller
 did not experience.** The code changes were mostly small; the corrections were
 mostly to claims.
@@ -324,7 +324,7 @@ Two corrections to statements made in this report or in review:
 
 ### The later rounds, and what changed shape
 
-Rounds 14 to 46 stopped being about Phase 5 and became about three things.
+Rounds 14 to 48 stopped being about Phase 5 and became about three things.
 
 **Cause classification oscillated, and the oscillation was the finding.** Deciding *why* a
 stream ended is a three-signal problem, and I repeatedly fixed one signal in a way that
@@ -385,7 +385,7 @@ enforced for the same window. That is long-standing behaviour, but migration 015
 revocation depends on it and the allowlist is now an enforced control, so it is recorded in
 known-limitations 2.15 with what an operator should do instead.
 
-**What this says about the work order.** Across all 46 rounds, Phase 5 drew the majority, phases 2, 3 and 4 drew none,
+**What this says about the work order.** Across all 48 rounds, Phase 5 drew the majority, phases 2, 3 and 4 drew none,
 and **Phase 1 and the migration it forced drew the most serious defects on the PR**: the unconfigured-model retention defect described above. A phase can be small,
 uncontroversial and still be where the worst defect lands, which is an argument against
 reading a low finding count as a clean bill of health.
