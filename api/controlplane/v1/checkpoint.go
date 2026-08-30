@@ -87,10 +87,15 @@ type CheckpointSubmission struct {
 	// checkpoint with every hash still verifying. The gateway's own
 	// verify-chain makes the same distinction.
 	//
-	// At version 3 it is also inside the digest, so a repointed chain fails
-	// [VerifyCheckpointHash] on its own. It stays a separate field because a
-	// receiver still needs the ordering to check the chain, and because the
-	// field is part of a shipped wire contract.
+	// At version 3 it is also inside the digest, which means an externally
+	// retained digest commits to the ordering as well. That is NOT standalone
+	// detection: [VerifyCheckpointHash] recomputes an unkeyed digest from the
+	// submission's own fields, so a party who rewrites the predecessor id and
+	// hash and recomputes the digest still passes, at version 3 as at version
+	// 2. Only a digest retained independently of the sender exposes the rewrite.
+	//
+	// It stays a separate field because a receiver still needs the ordering to
+	// check the chain, and because the field is part of a shipped wire contract.
 	PrevCheckpointID *int64 `json:"prev_checkpoint_id"`
 
 	// PrevCheckpointHash is the predecessor's CheckpointHash, or

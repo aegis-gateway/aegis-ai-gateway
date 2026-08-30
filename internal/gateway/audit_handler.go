@@ -73,7 +73,7 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 				"status_code", "error_message",
 				"api_key_prefix", "limit_dimension", "limit_value", "spent_cents",
 				"limit_cents", "filter_type", "reason", "provider", "model", "mode",
-				"operation", "error_detail",
+				"operation", "error_detail", "user_agent",
 				"model_served", "classification", "prompt_tokens",
 				"completion_tokens", "total_tokens", "duration_ms"},
 			func(yield func([]string) error) error {
@@ -87,7 +87,7 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 						deref(e.APIKeyPrefix), deref(e.LimitDimension), derefInt64(e.LimitValue),
 						derefInt64(e.SpentCents), derefInt64(e.LimitCents), deref(e.FilterType),
 						deref(e.Reason), deref(e.Provider), deref(e.Model), deref(e.Mode),
-						deref(e.Operation), deref(e.ErrorDetail),
+						deref(e.Operation), deref(e.ErrorDetail), deref(e.UserAgent),
 						deref(e.ModelServed), deref(e.Classification),
 						derefInt64(e.PromptTokens), derefInt64(e.CompletionTokens),
 						derefInt64(e.TotalTokens), derefInt64(e.DurationMs),

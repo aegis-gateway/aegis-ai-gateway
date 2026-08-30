@@ -246,3 +246,8 @@ func nullableInt64(i *int64) interface{} {
 	}
 	return *i
 }
+
+// EventLeafJCSV3ForTest exposes the version-3 canonical encoding so that other
+// packages can check their own coverage of the field set against the encoder
+// rather than against a restated list.
+func EventLeafJCSV3ForTest(row AuditEventRow) ([]byte, error) { return eventJCSV3(row) }

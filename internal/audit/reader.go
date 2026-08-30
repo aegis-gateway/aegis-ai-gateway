@@ -100,10 +100,13 @@ type EventRow struct {
 	UserID         *string   `json:"user_id"`
 	APIKeyID       *string   `json:"api_key_id"`
 	IPAddress      *string   `json:"ip_address"`
-	Endpoint       *string   `json:"endpoint"`
-	Method         *string   `json:"method"`
-	StatusCode     *int      `json:"status_code"`
-	ErrorMessage   *string   `json:"error_message"`
+	// In the leaf hash at both version 2 and version 3, so a reader that cannot
+	// see it cannot reconstruct the leaf it is being asked to trust.
+	UserAgent    *string `json:"user_agent"`
+	Endpoint     *string `json:"endpoint"`
+	Method       *string `json:"method"`
+	StatusCode   *int    `json:"status_code"`
+	ErrorMessage *string `json:"error_message"`
 
 	APIKeyPrefix   *string `json:"api_key_prefix"`
 	LimitDimension *string `json:"limit_dimension"`
@@ -174,6 +177,7 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		       error_message,
 		       api_key_prefix, limit_dimension, limit_value,
 		       spent_cents, limit_cents, filter_type, reason,
+		       user_agent,
 		       provider, model, mode, operation, error_detail,
 		       model_served, classification, prompt_tokens, completion_tokens,
 		       total_tokens, duration_ms
@@ -206,6 +210,7 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 			&e.ErrorMessage,
 			&e.APIKeyPrefix, &e.LimitDimension, &e.LimitValue,
 			&e.SpentCents, &e.LimitCents, &e.FilterType, &e.Reason,
+			&e.UserAgent,
 			&e.Provider, &e.Model, &e.Mode, &e.Operation, &e.ErrorDetail,
 			&e.ModelServed, &e.Classification, &e.PromptTokens,
 			&e.CompletionTokens, &e.TotalTokens, &e.DurationMs); err != nil {
