@@ -26,10 +26,12 @@ import (
 // providerFailureReason picks the reason for a request that failed before a
 // response was produced.
 //
-// A caller cancelling mid-request lands on the same error path as a provider
-// that could not be reached: both surface as an error from the send. Sealing
-// provider_unreachable for both attributes every routine client disconnect to a
-// provider outage, permanently and in the record an operator would use to judge
+// A caller cancelling mid-request lands on the same error paths as a provider
+// that failed. It surfaces as an error from the send when the provider was
+// never reached, and as an error from the body read when the provider had
+// answered and the caller went away while the response was being decoded.
+// Sealing a provider reason for either attributes routine client disconnects to
+// a provider fault, permanently, in the record an operator would use to judge
 // provider reliability.
 //
 // The request context distinguishes them. It is cancelled when the client goes

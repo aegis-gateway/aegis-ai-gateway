@@ -451,7 +451,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
-				audit.ReasonProviderError)
+				providerFailureReason(r, audit.ReasonProviderError))
 		}
 		return
 	}

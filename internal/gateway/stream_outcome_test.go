@@ -976,3 +976,64 @@ func TestStream_ProviderReportedModelOverridesTheRoutedOne(t *testing.T) {
 			"is a fallback for early returns, not a floor", got.Model)
 	}
 }
+
+// decodeFailingAdapter answers with 200 and then fails while the body is being
+// read, which is what a caller disconnecting mid-decode looks like from here.
+type decodeFailingAdapter struct{}
+
+func (decodeFailingAdapter) Name() string { return "stub-provider" }
+func (decodeFailingAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, "http://provider.invalid/v1/chat/completions", nil)
+}
+func (decodeFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
+}
+func (decodeFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
+	return nil, context.Canceled
+}
+func (decodeFailingAdapter) TransformStreamChunk(c []byte) ([]byte, error) { return c, nil }
+func (decodeFailingAdapter) SupportsStreaming() bool                       { return true }
+func (decodeFailingAdapter) SupportsTools() bool                           { return false }
+
+// A caller who goes away while the response body is being decoded reaches the
+// transform-failure branch, not the send-failure branch. Sealing provider_error
+// there attributes a routine disconnect to the provider, in the record an
+// operator uses to judge provider reliability.
+func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.T) {
+	tests := map[string]struct {
+		cancel bool
+		want   string
+	}{
+		"caller cancelled":  {true, audit.ReasonClientDisconnected},
+		"provider at fault": {false, audit.ReasonProviderError},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			spy := &outcomeSpy{}
+			h := newAllowlistTestHandler(spy)
+			reg := router.NewRegistry()
+			reg.Register("stub-provider", decodeFailingAdapter{})
+			h.registry = reg
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+				strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+			req = req.WithContext(auth.ContextWithAuth(ctx, info))
+			if tt.cancel {
+				cancel()
+			}
+
+			h.ChatCompletions(httptest.NewRecorder(), req)
+
+			if len(spy.failures) != 1 {
+				t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+			}
+			if got := spy.failures[0].Reason; got != tt.want {
+				t.Errorf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
