@@ -272,8 +272,9 @@ misclassified.
 
 ## Review rounds after submission
 
-The PR went through **24 review rounds and 46 findings** from the automated
-reviewers before coming back clean on the current commit. Almost all of them landed on Phase 5, and
+The PR went through **46 review rounds and 71 findings** from the automated
+reviewers (37 rounds and 59 findings from Codex, 9 and 12 from Cursor) before coming back
+clean on the current commit. All 71 are resolved. Almost all of them landed on Phase 5, and
 almost all were one root cause: **the attestation claiming an outcome the caller
 did not experience.** The code changes were mostly small; the corrections were
 mostly to claims.
@@ -323,7 +324,19 @@ Two corrections to statements made in this report or in review:
 
 ### The later rounds, and what changed shape
 
-Rounds 14 to 24 stopped being about Phase 5 and became about two things.
+Rounds 14 to 46 stopped being about Phase 5 and became about three things.
+
+**Cause classification oscillated, and the oscillation was the finding.** Deciding *why* a
+stream ended is a three-signal problem, and I repeatedly fixed one signal in a way that
+broke another. Status-only, then error-only, then a corroboration loosened from
+`context.Canceled` to any non-nil context error so that a socket-shaped write failure would
+be recognised; that last one made the gateway's own deadline unreachable as an outcome, so
+a stream **AEGIS itself cut short was sealed as `client_disconnect`**. Each fix passed its
+own test and broke the neighbouring case. The stable form required naming the precedence
+explicitly, deadline first, and requiring all three signals rather than any one of them.
+The lesson is not about streams: a classifier reached by several paths needs its
+precedence written down, because tests that each cover one path will not catch a rule that
+makes another unreachable.
 
 **Phase 1 produced the two worst defects on the PR**, both fail-opens on an access
 control, and both latent until enforcement made them matter:
@@ -335,6 +348,13 @@ control, and both latent until enforcement made them matter:
   **every model permitted**, so a malformed value silently produced an unrestricted key.
   The fix then had to be applied twice, because the Redis path returns before the database
   read and I fixed only the database read first.
+
+**`keygen` now issues keys that are denied every model.** It writes `allowed_models` as
+`[]`, which was inert while the allowlist was a display filter and means deny-all now that
+Phase 1 enforces it. Found by running the canaries against a freshly minted key rather than
+by review. Recorded in known-limitations 2.16 rather than fixed, because changing the
+issuing tool is outside the work order, and because whether the flag should be mandatory or
+default to a starter set is a decision about who is allowed to grant models.
 
 **Migration 015 was the single most defect-dense artefact here.** It is the only schema
 change on the PR, the work order preferred none, and it drew five findings across four
@@ -356,7 +376,7 @@ enforced for the same window. That is long-standing behaviour, but migration 015
 revocation depends on it and the allowlist is now an enforced control, so it is recorded in
 known-limitations 2.15 with what an operator should do instead.
 
-**What this says about the work order.** Across all 24 rounds, Phase 5 drew the majority, phases 2, 3 and 4 drew none,
+**What this says about the work order.** Across all 46 rounds, Phase 5 drew the majority, phases 2, 3 and 4 drew none,
 and **Phase 1 and the migration it forced drew the most serious defects on the PR**: the unconfigured-model retention defect described above. A phase can be small,
 uncontroversial and still be where the worst defect lands, which is an argument against
 reading a low finding count as a clean bill of health.
