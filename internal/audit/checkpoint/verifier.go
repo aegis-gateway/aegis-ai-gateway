@@ -161,19 +161,18 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 
 		// Verify the predecessor's *identity*, not just its hash.
 		//
-		// At hash_schema_version=3 the identity IS in the digest, so a repointed
-		// checkpoint fails the hash comparison below on its own. This check
-		// stays because it is the only defence a version-2 checkpoint has: that
-		// construction covers the predecessor's hash and not its id, so an
-		// attacker can repoint at an earlier checkpoint, leaving every digest
-		// valid and the foreign key satisfied, and silently detach the
-		// checkpoints in between.
+		// This is a weak check at every version and ADR 0006 says why: it reads
+		// prev_checkpoint_id from the same table an attacker with write access
+		// would have altered, so it compares the stored ordering against itself.
+		// It catches an inconsistent edit, not a thorough one.
 		//
-		// For version 2 it remains a weak defence, and ADR 0006 says why: it
-		// reads prev_checkpoint_id from the same table the attacker would have
-		// altered, so it compares the stored ordering against itself. Version 3
-		// is what actually closes that; this is what version-2 rows have
-		// meanwhile.
+		// Version 3 does not make it strong. The digest is unkeyed, so a party
+		// who can rewrite the chain recomputes every hash including the tail
+		// that covers the id. What version 3 changes is that the ordering is
+		// inside the digest, so an externally retained digest now commits to it;
+		// under version 2 the ordering could be rewritten with every anchored
+		// digest still verifying. Detection remains a property of anchoring, not
+		// of this function.
 		if i > 0 {
 			prev := checkpoints[i-1]
 			switch {

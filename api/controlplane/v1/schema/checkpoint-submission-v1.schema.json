@@ -84,7 +84,7 @@
         "null"
       ],
       "minimum": 1,
-      "description": "Checkpoint ID of the predecessor, or null for the first checkpoint in the chain. At hash_schema_version 1 and 2 the checkpoint hash input does not cover the predecessor's identity, so a chain can be repointed with every hash still verifying and this field is the only record of the ordering. At version 3 it is also bound into checkpoint_hash as an int64_le tail, so a repointed chain fails verification on its own. A verifier still needs the field to check the ordering."
+      "description": "Checkpoint ID of the predecessor, or null for the first checkpoint in the chain. At hash_schema_version 1 and 2 the checkpoint hash input does not cover it, so the recorded ordering can be changed while every digest still verifies. At version 3 it is bound into checkpoint_hash as an int64_le tail, which means an externally retained digest also commits to the ordering. This does NOT make a repointed chain detectable from a submission alone: the digest is unkeyed, so a party who can rewrite the chain can recompute every hash including this one, at version 3 as at version 2. Detection requires digests retained independently of the gateway's database. A verifier needs this field to check the ordering at every version."
     },
     "prev_checkpoint_hash": {
       "$ref": "#/$defs/sha256Hex",
