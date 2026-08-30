@@ -372,7 +372,7 @@ const UnconfiguredModel = "(unconfigured)"
 // sealed, and an unknown model name here is caller-controlled text: validation
 // does not check that a model exists, and this denial happens before
 // ResolveRoute would. See UnconfiguredModel.
-func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string) {
+func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, ip string) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -380,11 +380,16 @@ func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, model string, i
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
-		StatusCode:     403,
-		ErrorMessage:   "Model not permitted for this API key",
-		Model:          strPtr(model),
-		Reason:         strPtr("model_not_allowed"),
+		// The prefix as well as the id, so a denial row names the key in the
+		// same human-readable form the completion rows use. Without it an
+		// operator reading the trail can match an allow to a key at a glance
+		// and has to resolve a UUID to do the same for a refusal.
+		APIKeyPrefix: strPtr(keyPrefix),
+		IPAddress:    ip,
+		StatusCode:   403,
+		ErrorMessage: "Model not permitted for this API key",
+		Model:        strPtr(model),
+		Reason:       strPtr("model_not_allowed"),
 	})
 }
 

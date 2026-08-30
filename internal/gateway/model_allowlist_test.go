@@ -30,16 +30,16 @@ import (
 // modelDenialSpy records LogModelDenied calls so a refusal can be checked for
 // its audit row as well as its status.
 type modelDenialSpy struct {
-	denied []struct{ RequestID, Org, Team, Key, Model string }
+	denied []struct{ RequestID, Org, Team, Key, KeyPrefix, Model string }
 }
 
 func (s *modelDenialSpy) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
 func (s *modelDenialSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
 func (s *modelDenialSpy) LogRequestComplete(_ audit.CompletedRequest)           {}
 func (s *modelDenialSpy) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
-func (s *modelDenialSpy) LogModelDenied(requestID, org, team, key, model string, _ string) {
-	s.denied = append(s.denied, struct{ RequestID, Org, Team, Key, Model string }{
-		requestID, org, team, key, model})
+func (s *modelDenialSpy) LogModelDenied(requestID, org, team, key, keyPrefix, model string, _ string) {
+	s.denied = append(s.denied, struct{ RequestID, Org, Team, Key, KeyPrefix, Model string }{
+		requestID, org, team, key, keyPrefix, model})
 }
 
 // newAllowlistTestHandler routes every alias in configs/models.yaml order to a
@@ -75,6 +75,7 @@ func doAllowlistRequest(t *testing.T, h *Handler, model string, allowed []string
 		bytes.NewBufferString(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
 	req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
 		OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+		KeyPrefix:     "aegis-dev-testpfx",
 		AllowedModels: allowed,
 	}))
 	w := httptest.NewRecorder()
@@ -193,6 +194,11 @@ func TestChatCompletions_EnforcesModelAllowlist(t *testing.T) {
 			}
 			if got.Org != "org-test" || got.Team != "team-test" || got.Key != "key-test" {
 				t.Errorf("audit event lost the request's identity: %+v", got)
+			}
+			// The prefix as well as the id, so a denial names the key the same
+			// way a completion does rather than requiring a UUID lookup.
+			if got.KeyPrefix != "aegis-dev-testpfx" {
+				t.Errorf("denial event key prefix = %q, want the presenting key's prefix", got.KeyPrefix)
 			}
 		})
 	}

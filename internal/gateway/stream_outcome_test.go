@@ -40,7 +40,7 @@ type outcomeSpy struct {
 
 func (o *outcomeSpy) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
 func (o *outcomeSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
-func (o *outcomeSpy) LogModelDenied(_, _, _, _, _ string, _ string)         {}
+func (o *outcomeSpy) LogModelDenied(_, _, _, _, _, _ string, _ string)      {}
 func (o *outcomeSpy) LogRequestComplete(req audit.CompletedRequest) {
 	o.completes = append(o.completes, req)
 }

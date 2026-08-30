@@ -282,7 +282,7 @@ type spyAuditLogger struct {
 }
 
 func (s *spyAuditLogger) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
-func (s *spyAuditLogger) LogModelDenied(_, _, _, _, _ string, _ string)         {}
+func (s *spyAuditLogger) LogModelDenied(_, _, _, _, _, _ string, _ string)      {}
 func (s *spyAuditLogger) LogRequestComplete(_ audit.CompletedRequest)           {}
 func (s *spyAuditLogger) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
 func (s *spyAuditLogger) LogPricingDenied(_, _, _, _, provider, model, mode string, _ string) {

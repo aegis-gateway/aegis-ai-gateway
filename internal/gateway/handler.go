@@ -43,7 +43,7 @@ import (
 type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
-	LogModelDenied(requestID, orgID, teamID, keyID, model string, ip string)
+	LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, ip string)
 	LogRequestComplete(req audit.CompletedRequest)
 	LogProviderFailure(req audit.CompletedRequest, reason string)
 }
@@ -221,7 +221,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			deniedModel = audit.UnconfiguredModel
 		}
 		if h.auditLogger != nil {
-			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, deniedModel, r.RemoteAddr)
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, authInfo.KeyPrefix, deniedModel, r.RemoteAddr)
 		}
 		httputil.WriteModelNotAllowedError(w, reqID,
 			"model "+aegisReq.Model+" is not permitted for this API key")
