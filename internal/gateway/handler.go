@@ -429,9 +429,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// hide a provider returning errors from anyone reading the trail.
 			failureReason := audit.ReasonProviderUnreachable
 			providerStatus := 0
-			if providerResp != nil {
+			switch {
+			case providerResp != nil:
 				failureReason = audit.ReasonProviderError
 				providerStatus = providerResp.StatusCode
+			case errors.Is(err, retry.ErrProviderStatus):
+				// A retryable status followed by a disconnect during backoff
+				// returns no response, but the error carries the fault. Without
+				// this the reason falls back to unreachable and the provider
+				// failure disappears exactly where it was just made visible.
+				failureReason = audit.ReasonProviderError
 			}
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),

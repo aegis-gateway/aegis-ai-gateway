@@ -244,8 +244,12 @@ func TestRequestIDMiddleware_ReplacesUnusableIDs(t *testing.T) {
 		"exactly the limit": {strings.Repeat("a", 50), false},
 		"one over":          {strings.Repeat("a", 51), true},
 		"invalid utf-8":     {"req-\xff-123", true},
-		"short invalid":     {"\xff", true},
-		"absent":            {"", true},
+		// VARCHAR(50) counts characters, so a multibyte id that fits must be
+		// kept: replacing it would break the caller's correlation for nothing.
+		"30 CJK characters, 90 bytes": {strings.Repeat("\u6f22", 30), false},
+		"51 CJK characters":           {strings.Repeat("\u6f22", 51), true},
+		"short invalid":               {"\xff", true},
+		"absent":                      {"", true},
 	}
 
 	for name, tt := range tests {
@@ -267,8 +271,9 @@ func TestRequestIDMiddleware_ReplacesUnusableIDs(t *testing.T) {
 			if !utf8.ValidString(seen) {
 				t.Errorf("request id %q is not valid UTF-8; PostgreSQL will refuse it", seen)
 			}
-			if len(seen) > audit.MaxRequestID {
-				t.Errorf("request id is %d bytes, over the %d the column holds", len(seen), audit.MaxRequestID)
+			if utf8.RuneCountInString(seen) > audit.MaxRequestID {
+				t.Errorf("request id is %d characters, over the %d the column holds",
+					utf8.RuneCountInString(seen), audit.MaxRequestID)
 			}
 			if tt.replace && seen == tt.given {
 				t.Errorf("unusable id %q was passed through unchanged", tt.given)

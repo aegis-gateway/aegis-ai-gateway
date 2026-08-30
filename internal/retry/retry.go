@@ -94,7 +94,17 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			if e.metrics != nil {
 				e.metrics.RecordCancellation(provider, "before_attempt")
 			}
-			return nil, fmt.Errorf("%w: %v", ErrContextCancelled, ctx.Err())
+			// lastErr is joined for the same reason as the backoff arm below:
+			// when cancellation and the backoff timer are ready together the
+			// timer can win, the loop advances, and this check then runs with a
+			// provider fault already recorded. Returning only the cancellation
+			// would discard it and the request would be attributed to the
+			// caller.
+			cancelled := fmt.Errorf("%w: %v", ErrContextCancelled, ctx.Err())
+			if lastErr != nil {
+				return nil, errors.Join(cancelled, lastErr)
+			}
+			return nil, cancelled
 		default:
 		}
 

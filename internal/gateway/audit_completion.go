@@ -48,12 +48,18 @@ func providerFailureReason(r *http.Request, err error, providerStatus int, provi
 	return audit.ReasonClientDisconnected
 }
 
-// clientGone reports whether an error is the network telling us the caller has
-// gone: a write to a socket the peer has closed.
+// clientGone reports whether an error is the network telling us the peer has
+// gone: a write to a socket the other end has closed.
 //
-// A disconnect during a write surfaces as EPIPE or ECONNRESET, not as anything
-// wrapping context.Canceled, so a check for cancellation alone misses the
-// commonest form of the very thing it is looking for.
+// A disconnect during a write to the CLIENT surfaces as EPIPE or ECONNRESET,
+// not as anything wrapping context.Canceled, so a check for cancellation alone
+// misses the commonest form of it.
+//
+// ONLY call this with an error from writing to the caller. The same errnos come
+// back from a provider connection being reset, and this cannot tell the two
+// apart: it names the shape of the failure, not which peer caused it. Using it
+// on a provider error would seal a provider reset as a client disconnect, which
+// is the mirror of the defect it was added to fix.
 func clientGone(err error) bool {
 	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, net.ErrClosed)
@@ -77,8 +83,11 @@ func callerWentAway(r *http.Request, err error) bool {
 	if !errors.Is(r.Context().Err(), context.Canceled) {
 		return false
 	}
-	if !errors.Is(err, context.Canceled) && !errors.Is(err, retry.ErrContextCancelled) &&
-		!clientGone(err) {
+	// clientGone is deliberately NOT consulted here. This runs on provider send
+	// and body-read failures, where EPIPE and ECONNRESET mean the PROVIDER
+	// reset the connection, and treating that as a disconnect would discard the
+	// provider fault these checks exist to preserve.
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, retry.ErrContextCancelled) {
 		return false
 	}
 	// A cancellation that arrived on top of a provider failure is not a clean

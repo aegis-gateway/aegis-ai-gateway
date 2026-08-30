@@ -1217,3 +1217,33 @@ func TestStream_SocketWriteFailureIsADisconnect(t *testing.T) {
 	}
 	_ = spy
 }
+
+// A provider resetting its connection is not the caller leaving.
+//
+// EPIPE and ECONNRESET name the shape of a failure, not which peer caused it.
+// callerWentAway runs on provider send and body-read failures, so consulting
+// clientGone there sealed a provider reset as client_disconnected, which is the
+// mirror of the defect clientGone was added to fix.
+func TestChatCompletions_ProviderResetIsNotAClientDisconnect(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newSendFailingHandler(spy, fmt.Errorf("dial provider: %w", syscall.ECONNRESET))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel() // the caller has also gone, which must not change the attribution
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"aegis-fast","messages":[{"role":"user","content":"hi"}]}`))
+	req = req.WithContext(auth.ContextWithAuth(ctx, info))
+
+	h.ChatCompletions(httptest.NewRecorder(), req)
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Reason; got == audit.ReasonClientDisconnected {
+		t.Errorf("a provider connection reset was sealed as %q; the same errno comes "+
+			"from either peer and this path only sees provider errors", got)
+	}
+}

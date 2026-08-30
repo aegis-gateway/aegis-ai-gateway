@@ -628,8 +628,10 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 		// Two ways an id is unusable, and both must be caught here so that every
 		// sink uses the same value.
 		//
-		// Too long: audit_events.request_id is VARCHAR(50) and PostgreSQL
-		// rejects an over-long value rather than truncating it.
+		// Too long: audit_events.request_id is VARCHAR(50), which PostgreSQL
+		// measures in CHARACTERS, and audit.clip counts runes to match. Counting
+		// bytes here would replace a perfectly storable id, for example thirty
+		// CJK characters, and break the caller's correlation for no reason.
 		//
 		// Not valid UTF-8: Go accepts an obs-text byte such as 0xff in an HTTP/1
 		// header, and the two sinks then diverge. The audit path clips, and clip
@@ -638,7 +640,7 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 		// be correlated. The usage path does not clip at all, and PostgreSQL
 		// refuses the byte sequence outright, so the spend record is lost.
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" || len(reqID) > audit.MaxRequestID || !utf8.ValidString(reqID) {
+		if reqID == "" || utf8.RuneCountInString(reqID) > audit.MaxRequestID || !utf8.ValidString(reqID) {
 			reqID = generateRequestID()
 		}
 		w.Header().Set("X-Request-ID", reqID)
