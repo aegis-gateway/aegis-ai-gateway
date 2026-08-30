@@ -240,9 +240,9 @@ request rather than one per refusal. A deployment serving a million requests a d
 budget roughly **600 MB/day** of growth and set retention accordingly.
 
 **Re-measured 2026-08-30 at ten times the corpus, and the figure holds.** 540,500 events
-occupy 324 MB with indexes, 628 bytes per row against the 608 recorded above, so the
-600 MB/day budget stands. Sealing is linear: 100,000 events in 2.19 s and 400,000 in
-8.74 s, four times the corpus for 3.99 times the work. The 215-byte checkpoint row is
+occupy 331 MB with indexes, 642 bytes per row against the 608 recorded above, so the
+600 MB/day budget stands. Sealing is linear: 100,000 events in 2.22 s and 400,000 in
+8.73 s, four times the corpus for 3.93 times the work. The 215-byte checkpoint row is
 exact and constant at every size.
 
 The table above and this re-measurement were taken from different ad hoc corpora, and a
@@ -250,7 +250,8 @@ third measurement made elsewhere reported 429 bytes per row, which would have cu
 retention budget by a quarter had anyone adopted it. The cause was not scale. Heap per row
 is invariant at 248 bytes; the with-indexes figure moves with the width of indexed values
 and with insertion order, because three indexes are ordered by `timestamp DESC`. Seeding
-descending measures 545 bytes per row where ascending measures 610 on identical heap data.
+descending measures 542.5 bytes per row where ascending measures 609.2 on identical heap
+data, and on how many distinct API keys the traffic uses.
 The seed is now committed as `scripts/measure-audit-volume.sql` so that the next
 measurement of this quantity compares against these numbers rather than against a
 different corpus. See `docs/evidence/known-limitations.md` 2.14.

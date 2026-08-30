@@ -602,16 +602,16 @@ sample, using `scripts/measure-audit-volume.sql` on PostgreSQL 16.14 with `fsync
 | | 50,000 events | 540,500 events |
 |---|---|---|
 | Heap per row | 248.4 B | 248.2 B |
-| Total per row, with indexes | 610.6 B | 628.1 B |
-| Table size | 29 MB | 324 MB |
+| Total per row, with indexes | 609.2 B | 642.1 B |
+| Table size | 29 MB | 331 MB |
 
 **A deployment serving a million requests a day should budget in the region of 600 MB a
-day** of `audit_events` growth and plan retention accordingly. The larger corpus confirms
-the original figure rather than revising it.
+day** of `audit_events` growth and plan retention accordingly. The measured range is 581 to
+612 MB a day; the larger corpus confirms the original figure rather than revising it.
 
-Sealing and full verification are **linear**: 100,000 events seal in 2.19 s and 400,000 in
-8.74 s, four times the corpus for 3.99 times the work, at roughly 45,000 events per second.
-Verifying all 540,500 with `verify-chain --full` takes 11.66 s. A checkpoint row is
+Sealing and full verification are **linear**: 100,000 events seal in 2.22 s and 400,000 in
+8.73 s, four times the corpus for 3.93 times the work, at roughly 45,000 events per second.
+Verifying all 540,500 with `verify-chain --full` takes 11.75 s. A checkpoint row is
 215.0 bytes and stays that size at every corpus size, because it holds digests rather than
 content; 55 checkpoints occupy 112 kB.
 
@@ -619,11 +619,17 @@ content; 55 checkpoints occupy 112 kB.
 is a property of the event and is invariant: 248 bytes across an eleven-fold change in row
 count, and a real gateway-written row measures 231 bytes against this seed's 238. The
 with-indexes figure is not a property of the event at all. It depends on the width of the
-indexed values and on insertion order, since three indexes are ordered by `timestamp DESC`.
-Seeding in descending timestamp order measures 545 bytes per row where ascending measures
-610, on byte-identical heap data. That sensitivity is why two earlier ad hoc measurements
-of this quantity disagreed by a factor of 1.4, and why the seed is now committed: quote the
-with-indexes number only from a run of that harness, or measure the heap instead.
+indexed values, on how many distinct API keys the traffic uses, and on insertion order,
+since three indexes are ordered by `timestamp DESC`. Seeding 50,000 events in descending
+timestamp order measures 542.5 bytes per row where ascending measures 609.2, on
+byte-identical heap data.
+
+That sensitivity is why two earlier ad hoc measurements of this quantity disagreed by a
+factor of 1.4, one of them reporting 429 bytes per row, which would have cut the retention
+budget by a quarter had it been adopted. The seed is committed for that reason: quote the
+with-indexes number only from a run of that harness, or quote the heap figure, which is
+stable. The harness refuses to seed a non-empty table, because dividing whole-table size by
+whole-table count across a mixed corpus reports a figure for neither.
 
 ### 2.15 A revoked or expired key keeps working for up to five minutes
 
