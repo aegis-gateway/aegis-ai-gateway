@@ -127,8 +127,17 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Explicit, so that clearing a corpus is never an accident of running the seed.
+--
+-- audit_purges is included for the same reason the checkpoint integration reset
+-- includes it (internal/audit/checkpoint/integration_test.go:74). RESTART
+-- IDENTITY reuses event ids from 1, so a purge recorded against an earlier
+-- corpus still covers the new one: verifyFull consults those ranges
+-- (internal/audit/checkpoint/verifier.go:234-249) and skips rehashing any
+-- checkpoint they span, reporting it attested-but-unverifiable. Leaving the row
+-- behind makes verify-chain --full exit non-zero over a perfectly healthy
+-- corpus, which is exactly the benchmark this file documents.
 CREATE OR REPLACE FUNCTION reset_audit_volume_corpus() RETURNS void AS $$
-  TRUNCATE audit_events, audit_checkpoints RESTART IDENTITY CASCADE;
+  TRUNCATE audit_events, audit_checkpoints, audit_purges RESTART IDENTITY CASCADE;
 $$ LANGUAGE sql;
 
 -- Report the figures the documentation quotes.
