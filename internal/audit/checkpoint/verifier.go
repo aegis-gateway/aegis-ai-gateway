@@ -195,6 +195,12 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		var computed []byte
 		var err error
 		switch cp.HashSchemaVersion {
+		case controlplanev1.HashSchemaVersion1, controlplanev1.HashSchemaVersion2:
+			computed, err = computeCheckpointHash(
+				cp.MerkleRoot, expectedPrev,
+				cp.RangeStart, cp.RangeEnd, cp.EventCount,
+				cp.HashSchemaVersion, cp.SealedAt,
+			)
 		case controlplanev1.HashSchemaVersion3:
 			prevIDHashed := controlplanev1.GenesisPrevCheckpointID
 			if cp.PrevCheckpointID != nil {
@@ -206,11 +212,18 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 				cp.HashSchemaVersion, cp.SealedAt, prevIDHashed,
 			)
 		default:
-			computed, err = computeCheckpointHash(
-				cp.MerkleRoot, expectedPrev,
-				cp.RangeStart, cp.RangeEnd, cp.EventCount,
-				cp.HashSchemaVersion, cp.SealedAt,
-			)
+			// Refuse rather than fall back, for the reason VerifyCheckpointHash
+			// refuses: the version selects the construction, so recomputing an
+			// unknown version with the 96-byte input would count the checkpoint
+			// as verified whenever the two happened to agree. verify-chain
+			// without --full would then report OK and exit 0 over a chain this
+			// build cannot check.
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes versions %d, %d and %d). Not a chain break: this checkpoint is attested but unverifiable here.",
+					cp.ID, cp.HashSchemaVersion,
+					controlplanev1.HashSchemaVersion1, controlplanev1.HashSchemaVersion2,
+					controlplanev1.HashSchemaVersion3))
+			continue
 		}
 		if err != nil {
 			// A stored digest of the wrong length. The row cannot be verified,

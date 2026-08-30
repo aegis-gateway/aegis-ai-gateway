@@ -15,11 +15,20 @@
 package types
 
 type AegisResponse struct {
-	RequestID        string        `json:"request_id"`
-	Model            string        `json:"model"`
-	Provider         string        `json:"provider"`
-	Choices          []Choice      `json:"choices"`
-	Usage            Usage         `json:"usage"`
+	RequestID string   `json:"request_id"`
+	Model     string   `json:"model"`
+	Provider  string   `json:"provider"`
+	Choices   []Choice `json:"choices"`
+	Usage     Usage    `json:"usage"`
+	// UsageReported records that the provider's response actually carried a
+	// usage object, as distinct from one carrying zeros. An adapter sets it
+	// when it decodes the field.
+	//
+	// audit_events seals the counts at hash_schema_version=3, where absent and
+	// zero are different facts: a provider that reported nothing did not report
+	// zero tokens. Without this the two are indistinguishable once decoded into
+	// a value type.
+	UsageReported    bool          `json:"-"`
 	EstimatedCostUSD float64       `json:"estimated_cost_usd"`
 	FilterActions    FilterSummary `json:"filter_actions"`
 }

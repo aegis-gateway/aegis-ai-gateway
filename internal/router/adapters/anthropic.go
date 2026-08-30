@@ -171,7 +171,10 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 				FinishReason: mapStopReason(antResp.StopReason),
 			},
 		},
-		Usage: anthropicUsageToCanonical(antResp.Usage),
+		// Anthropic always returns a usage object on a successful message, so
+		// the counts are always a reported measurement rather than an absence.
+		Usage:         anthropicUsageToCanonical(antResp.Usage),
+		UsageReported: true,
 	}, nil
 }
 
