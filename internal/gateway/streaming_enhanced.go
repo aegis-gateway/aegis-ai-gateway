@@ -509,8 +509,8 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	// The header flush is checked like every other write on this path. Leaving
 	// it unchecked meant a stream whose 200 never reached the client could
 	// still be attested as complete if the later chunk and terminator writes
-	// happened to succeed, which contradicts the claim that the full response
-	// was written and flushed.
+	// happened to succeed, which contradicts the attested claim. See
+	// flushToClient in deliver.go for exactly what that claim is.
 	if err := flushToClient(w); err != nil {
 		slog.Error("failed to flush the streaming response header",
 			"request_id", reqID,
@@ -802,7 +802,8 @@ func (sh *StreamingHandler) processChunk(
 	// These errors used to be discarded, so a chunk that failed to reach the
 	// client midway through a response was invisible: if a later terminator
 	// wrote and flushed cleanly the stream was attested as complete, which
-	// contradicts the claim that the FULL response was written and flushed.
+	// contradicts the attested claim about the FULL response. See
+	// flushToClient in deliver.go.
 	// Returning the error makes the loop record StreamChunkError instead.
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", transformed); err != nil {
 		return fmt.Errorf("writing stream chunk: %w", err)

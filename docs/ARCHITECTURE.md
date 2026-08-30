@@ -166,7 +166,8 @@ distinguished by `reason = 'model_not_allowed'`), `rate_limit_violation`,
 `budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`.
 
 Emitted on the allow path: `request_complete` when a request passes every gate and the
-response is written and flushed, and `provider_failure` when it passes every gate and then
+response is written in full and flushed where the response writer supports on-demand
+flushing (see the component note above), and `provider_failure` when it passes every gate and then
 fails, with an enumerated `reason` distinguishing an unreachable provider, a provider
 error, a truncated or interrupted stream, a stream that never started, an undelivered
 buffered response, and a client that disconnected.
