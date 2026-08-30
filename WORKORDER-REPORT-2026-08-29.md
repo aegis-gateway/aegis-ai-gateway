@@ -248,11 +248,11 @@ exact and constant at every size.
 The table above and this re-measurement were taken from different ad hoc corpora, and a
 third measurement made elsewhere reported 429 bytes per row, which would have cut the
 retention budget by a quarter had anyone adopted it. The cause was not scale. Heap per row
-is invariant at 248 bytes; the with-indexes figure moves with the width of indexed values
-and with insertion order, because five of the seven indexes on `audit_events` are ordered
-by `timestamp DESC`. Seeding
-descending measures 549.8 bytes per row where ascending measures 616.5 on identical heap
-data, and on how many distinct API keys the traffic uses.
+is invariant at 256 bytes. The with-indexes figure moves with the width of the indexed
+values, with how many distinct API keys the traffic uses, and with insertion order, because
+five of the seven indexes on `audit_events` are ordered by `timestamp DESC`: seeding 50,000
+events in descending timestamp order measures 549.8 bytes per row where ascending measures
+616.5, on identical heap data.
 The seed is now committed as `scripts/measure-audit-volume.sql` so that the next
 measurement of this quantity compares against these numbers rather than against a
 different corpus. See `docs/evidence/known-limitations.md` 2.14.
