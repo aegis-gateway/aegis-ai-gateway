@@ -114,3 +114,19 @@ func TestParseAllowedModels_UnreadableConfigSkipsTheCheck(t *testing.T) {
 		t.Errorf("got %v, want the names through unchecked", got)
 	}
 }
+
+// The image installs configs at /etc/aegis/configs and exports AEGIS_CONFIG_DIR,
+// and the entrypoint execs keygen without changing directory. A repo-relative
+// default is unreadable there, which would silently skip alias validation on the
+// documented Docker path.
+func TestDefaultModelsConfig_FollowsTheConfigDir(t *testing.T) {
+	t.Setenv("AEGIS_CONFIG_DIR", "/etc/aegis/configs")
+	if got, want := defaultModelsConfig(), "/etc/aegis/configs/models.yaml"; got != want {
+		t.Errorf("defaultModelsConfig() = %q, want %q", got, want)
+	}
+
+	t.Setenv("AEGIS_CONFIG_DIR", "")
+	if got, want := defaultModelsConfig(), filepath.Join("configs", "models.yaml"); got != want {
+		t.Errorf("without AEGIS_CONFIG_DIR: got %q, want %q", got, want)
+	}
+}

@@ -244,6 +244,7 @@ jobs:
           set -euo pipefail
           go run ./cmd/keygen \
             -org ci-org -team ci-team -name audit-conformance \
+            -allowed-models aegis-fast \
             -env ci -classification INTERNAL -expires 1d | tee /tmp/keygen.out
           key=$(grep -oE 'aegis-ci-[a-z0-9]{32}' /tmp/keygen.out | head -1)
           if [ -z "$key" ]; then

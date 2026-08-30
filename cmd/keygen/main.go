@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ func main() {
 	dbURL := flag.String("db-url", "", "database URL (overrides env)")
 	allowedModels := flag.String("allowed-models", "",
 		"comma-separated model aliases this key may use (required), or 'any' for no restriction")
-	modelsConfig := flag.String("models-config", "configs/models.yaml",
+	modelsConfig := flag.String("models-config", defaultModelsConfig(),
 		"models.yaml to validate -allowed-models against; unreadable means the check is skipped")
 	flag.Parse()
 
@@ -231,4 +232,18 @@ func parseAllowedModels(raw, modelsPath string) ([]string, bool, error) {
 			strings.Join(unknown, ", "), modelsPath, strings.Join(known, ", "))
 	}
 	return out, false, nil
+}
+
+// defaultModelsConfig locates models.yaml the way the running image does.
+//
+// The Dockerfile installs configs at /etc/aegis/configs and exports
+// AEGIS_CONFIG_DIR, and the entrypoint execs keygen without changing directory,
+// so a repo-relative default is never readable there. That would silently skip
+// alias validation on exactly the documented Docker path, which is the one an
+// operator issuing a first key is most likely to follow.
+func defaultModelsConfig() string {
+	if dir := os.Getenv("AEGIS_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "models.yaml")
+	}
+	return filepath.Join("configs", "models.yaml")
 }
