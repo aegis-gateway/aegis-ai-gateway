@@ -46,10 +46,21 @@
 -- REVOCATION IS NOT INSTANT. internal/auth caches key metadata in Redis for
 -- five minutes and re-validates nothing on a cache hit, so a key revoked here
 -- keeps authenticating until its entry expires. There is no invalidation hook.
--- On a deployment where these rows might exist, flush the aegis:key:v3: entries
--- after migrating, or accept up to five minutes of continued access. This is a
--- pre-existing property of the cache rather than something this migration
--- introduces, and it is recorded in docs/evidence/known-limitations.md 2.15.
+--
+-- Flush EVERY cache generation, not just the current one:
+--
+--     redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL
+--
+-- The prefix is versioned, and gateways from before this change use the
+-- unversioned 'aegis:key:' namespace. During a rolling upgrade those instances
+-- are still running while this migration executes, so flushing only the newest
+-- namespace deletes entries that may not exist yet and leaves the old ones
+-- authenticating the keys just revoked. Stopping the pre-migration gateways
+-- first has the same effect.
+--
+-- This is a pre-existing property of the cache rather than something this
+-- migration introduces, and it is recorded in
+-- docs/evidence/known-limitations.md 2.15.
 --
 -- WHERE THE WARNINGS BELOW APPEAR. They are RAISE WARNING, so PostgreSQL emits
 -- them to the server log and to psql. cmd/migrate does not surface server

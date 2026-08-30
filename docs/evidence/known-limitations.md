@@ -618,8 +618,19 @@ So for up to five minutes after the change:
 
 There is no invalidation hook. `cost.Calculator.InvalidateCache` exists for pricing and has
 no counterpart here, so an operator revoking a credential during an incident cannot make it
-take effect immediately except by flushing the `aegis:key:v3:` entries in Redis or running
-without Redis.
+take effect immediately except by flushing the cache or running without Redis.
+
+**Flush every generation, not just the current one.** The prefix is versioned, and it has
+changed twice: `aegis:key:` before 2026-08-30, then `aegis:key:v2:`, now `aegis:key:v3:`.
+During a rolling upgrade, instances running older code are still reading and writing the
+older namespace, so clearing only the newest one deletes entries that may not exist yet
+while the old instances keep serving the credential.
+
+```
+redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL
+```
+
+Stopping the pre-upgrade instances before relying on a revocation has the same effect.
 
 This is long-standing behaviour rather than anything introduced recently, but two things
 now depend on it being understood. Migration `015` revokes keys whose `allowed_models`
