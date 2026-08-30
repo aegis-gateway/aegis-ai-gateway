@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -90,11 +92,12 @@ func (f *failingAdapter) TransformRequest(ctx context.Context, _ *types.AegisReq
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://provider.invalid/v1/chat", nil)
 	return req, nil
 }
+
+// SendRequest mirrors retry.Executor's contract: on exhausted retries it
+// returns the last response AND an error, so a test that could only return one
+// or the other could not reach the branch this covers.
 func (f *failingAdapter) SendRequest(*http.Request) (*http.Response, error) {
-	if f.sendErr != nil {
-		return nil, f.sendErr
-	}
-	return f.response, nil
+	return f.response, f.sendErr
 }
 
 // TransformResponse mirrors the real adapters: they return an error both for a
@@ -126,6 +129,24 @@ func TestNonStreamingProviderFailureIsAttested(t *testing.T) {
 			name:       "provider unreachable",
 			adapter:    &failingAdapter{sendErr: errors.New("connection refused")},
 			wantStage:  audit.FailureProviderUnreachable,
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			// retry.Executor returns the last response alongside
+			// ErrMaxRetriesExceeded when it gives up on a retryable status, so
+			// this arrives as a non-nil response AND a non-nil error. The
+			// provider answered, so it is not unreachable, and the streaming
+			// path seals the same rejection as provider_http_error.
+			name: "retries exhausted on a provider 5xx",
+			adapter: &failingAdapter{
+				response: &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"code":"upstream"}}`))),
+					Header:     make(http.Header),
+				},
+				sendErr: fmt.Errorf("%w after 3 attempts: 502", retry.ErrMaxRetriesExceeded),
+			},
+			wantStage:  audit.FailureProviderHTTPError,
 			wantStatus: http.StatusServiceUnavailable,
 		},
 		{

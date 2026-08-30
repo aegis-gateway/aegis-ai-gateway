@@ -437,11 +437,38 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		// retry.Executor returns the last response alongside
+		// ErrMaxRetriesExceeded when it gave up on a retryable status, so a
+		// non-nil response here means the provider answered and kept
+		// answering badly. That is provider_http_error, the same stage the
+		// streaming path seals for the same rejection; provider_unreachable
+		// is for a send that produced no response at all.
+		//
+		// Getting this wrong is not a cosmetic mislabel. reason is one of the
+		// twenty-six fields the leaf hash covers, so once a checkpoint covers
+		// the row the stage cannot be corrected without verify-chain
+		// reporting the row as tampered.
+		stage := audit.FailureProviderUnreachable
+		status := 0
+		if providerResp != nil {
+			// Nothing reads this body: the retry executor has already decided,
+			// and the caller gets a fixed message. Closing it returns the
+			// connection to the pool instead of leaking one per exhausted
+			// retry.
+			_ = providerResp.Body.Close()
+			status = providerResp.StatusCode
+			if status < 200 || status > 299 {
+				stage = audit.FailureProviderHTTPError
+			}
+		}
+
 		slog.Error("provider request failed",
 			"request_id", reqID,
 			"error", err,
 			"provider", providerKey,
 			"adapter", adapter.Name(),
+			"provider_status", status,
+			"stage", stage,
 		)
 		if h.healthTracker != nil {
 			h.healthTracker.RecordFailure(adapter.Name())
@@ -453,7 +480,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.auditLogger.LogProviderFailure(
 				completionEvent(reqID, authInfo, providerKey, providerModel, false,
 					http.StatusServiceUnavailable, r.RemoteAddr),
-				audit.FailureProviderUnreachable)
+				stage)
 		}
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		return
