@@ -272,8 +272,8 @@ misclassified.
 
 ## Review rounds after submission
 
-The PR went through 13 review rounds and 24 findings from the automated
-reviewers before coming back clean. Almost all of them landed on Phase 5, and
+The PR went through **24 review rounds and 46 findings** from the automated
+reviewers before coming back clean on the current commit. Almost all of them landed on Phase 5, and
 almost all were one root cause: **the attestation claiming an outcome the caller
 did not experience.** The code changes were mostly small; the corrections were
 mostly to claims.
@@ -321,9 +321,43 @@ Two corrections to statements made in this report or in review:
   [#63](https://github.com/aegis-gateway/aegis-ai-gateway/pull/63), already on
   `main`. Fixed here.
 
-**What this says about the work order.** Twenty-two of the twenty-four findings were on
-Phase 5. Phases 2, 3 and 4 drew none. **Phase 1 drew one, and it was the most serious of
-them all**: the unconfigured-model retention defect described above. A phase can be small,
+### The later rounds, and what changed shape
+
+Rounds 14 to 24 stopped being about Phase 5 and became about two things.
+
+**Phase 1 produced the two worst defects on the PR**, both fail-opens on an access
+control, and both latent until enforcement made them matter:
+
+- An unconfigured model name on an allowlist denial was **sealed verbatim**, so any caller
+  holding a key with a non-empty allowlist could write their own text into the immutable,
+  exported chain. Confirmed by probe before fixing.
+- `api_keys.allowed_models` discarded its JSON decode error, and an empty allowlist means
+  **every model permitted**, so a malformed value silently produced an unrestricted key.
+  The fix then had to be applied twice, because the Redis path returns before the database
+  read and I fixed only the database read first.
+
+**Migration 015 was the single most defect-dense artefact here.** It is the only schema
+change on the PR, the work order preferred none, and it drew five findings across four
+rounds: it aborted on non-array values and would have blocked the rollout; it backfilled
+NULL to `'[]'`, which means unrestricted, granting access on exactly the deployments it was
+meant to secure; it overwrote `revoked_at` and `revoked_reason` on already-revoked keys,
+destroying incident evidence; it accepted arrays of non-strings, which the reader rejects,
+silently breaking active keys; and it relabelled expired keys as revoked, because expiry is
+expressed by `expires_at` and not by `status`.
+
+It is correct now and verified against seeded databases at version 14 in every one of those
+shapes. It is also the part of this PR a reviewer should read hardest.
+
+**A late discovery that is not a defect in this work.** Verifying Phase 1 end to end
+appeared to show the allowlist not being enforced. It was the Redis key cache serving
+metadata from before the change. Nothing re-validates a cached key, so a **revoked or
+expired key keeps authenticating for up to five minutes**, and a tightened allowlist is not
+enforced for the same window. That is long-standing behaviour, but migration 015's
+revocation depends on it and the allowlist is now an enforced control, so it is recorded in
+known-limitations 2.15 with what an operator should do instead.
+
+**What this says about the work order.** Across all 24 rounds, Phase 5 drew the majority, phases 2, 3 and 4 drew none,
+and **Phase 1 and the migration it forced drew the most serious defects on the PR**: the unconfigured-model retention defect described above. A phase can be small,
 uncontroversial and still be where the worst defect lands, which is an argument against
 reading a low finding count as a clean bill of health.
 

@@ -601,3 +601,36 @@ refusal. Measured on 2026-08-29: 50,000 events occupy 29 MB including indexes, a
 checkpoints of about 215 bytes each. A deployment serving a million requests a day should
 budget in the region of 600 MB a day of `audit_events` growth and plan retention
 accordingly.
+
+### 2.15 A revoked or expired key keeps working for up to five minutes
+
+`internal/auth.CachedKeyStore` caches key metadata in Redis for five minutes
+(`redisCacheTTL`). On a cache hit `Lookup` returns the stored metadata directly and
+**nothing re-validates it**: the `status = 'active' AND expires_at > NOW()` filter lives in
+`lookupDB`, which a cache hit never reaches, and the middleware does not check `ExpiresAt`
+afterwards.
+
+So for up to five minutes after the change:
+
+- A **revoked** key still authenticates.
+- An **expired** key still authenticates.
+- A **tightened allowlist** is not enforced; the key keeps the models it had.
+
+There is no invalidation hook. `cost.Calculator.InvalidateCache` exists for pricing and has
+no counterpart here, so an operator revoking a credential during an incident cannot make it
+take effect immediately except by flushing the `aegis:key:v3:` entries in Redis or running
+without Redis.
+
+This is long-standing behaviour rather than anything introduced recently, but two things
+now depend on it being understood. Migration `015` revokes keys whose `allowed_models`
+could not be read, expecting them to fail closed, and that revocation is subject to the
+same delay. And the per-key model allowlist is now an enforced access control rather than a
+display filter, so the delay applies to tightening it.
+
+**What an operator should do.** Treat revocation as eventually consistent with a
+five-minute bound. During an incident, flush the key cache rather than assuming a `revoked`
+status is immediately effective. Verifying that a revocation has taken hold means observing
+a 401, not observing the database row.
+
+Closing this properly needs a design decision, an invalidation channel or a short-lived
+version counter checked on every hit, and is deliberately not attempted here.

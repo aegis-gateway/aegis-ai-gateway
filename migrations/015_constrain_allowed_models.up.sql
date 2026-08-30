@@ -43,6 +43,14 @@
 -- keygen has always written this column, so on a deployment whose keys were all
 -- issued normally this affects no rows at all.
 --
+-- REVOCATION IS NOT INSTANT. internal/auth caches key metadata in Redis for
+-- five minutes and re-validates nothing on a cache hit, so a key revoked here
+-- keeps authenticating until its entry expires. There is no invalidation hook.
+-- On a deployment where these rows might exist, flush the aegis:key:v3: entries
+-- after migrating, or accept up to five minutes of continued access. This is a
+-- pre-existing property of the cache rather than something this migration
+-- introduces, and it is recorded in docs/evidence/known-limitations.md 2.15.
+--
 -- WHERE THE WARNINGS BELOW APPEAR. They are RAISE WARNING, so PostgreSQL emits
 -- them to the server log and to psql. cmd/migrate does not surface server
 -- notices, so running the migration through it will NOT print them. On a
