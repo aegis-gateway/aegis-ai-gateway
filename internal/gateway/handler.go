@@ -635,7 +635,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// part way through the body still went out as a 200. What changes is the
 	// event, not the status.
 	if h.auditLogger != nil {
-		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false)
+		rec := withOutcome(
+			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false),
+			aegisResp.Model,
+			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,
+			aegisResp.Usage.TotalTokens, totalDuration)
 		if deliveryErr != nil {
 			h.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
 		} else {

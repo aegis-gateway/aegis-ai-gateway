@@ -350,8 +350,17 @@ func (sh *StreamingHandler) HandleStream(
 	// would be inventing a response that was never sent. The event type and
 	// reason carry the outcome instead.
 	if sh.handler.auditLogger != nil {
-		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey,
-			clientStatusFor(metrics.Outcome), true)
+		// A stream that ended early still reports what it managed: the counts
+		// are whatever the provider sent before it stopped, and zero where it
+		// sent none, which the logger writes as NULL rather than as a
+		// measurement. Duration is measured to here rather than to the last
+		// chunk, because that is how long the request occupied the gateway.
+		rec := withOutcome(
+			completedRequest(reqID, authInfo, r, originalModel, providerKey,
+				clientStatusFor(metrics.Outcome), true),
+			metrics.Model,
+			metrics.PromptTokens, metrics.CompletionTokens, metrics.TotalTokens,
+			time.Since(metrics.StartTime))
 		switch metrics.Outcome {
 		case StreamOutcomeUnset:
 			// A path out of the monitoring loop set no outcome. The event is

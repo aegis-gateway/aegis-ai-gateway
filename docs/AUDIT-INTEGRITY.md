@@ -83,9 +83,30 @@ checkpoint_hash = SHA-256(
 )
 ```
 
-Where `||` is byte concatenation. Total input: 96 bytes for schema version 1.
+Where `||` is byte concatenation. Total input: 96 bytes for schema versions 1 and 2.
 
 The chain binds `prev_checkpoint_hash` — the previous checkpoint's own hash — not its `merkle_root`. An attacker who alters a checkpoint's metadata fields (range bounds, event count) must recompute that checkpoint's `checkpoint_hash` and then every subsequent checkpoint's hash. Altering the Merkle root alone is not sufficient.
+
+### Hash input (schema version 3)
+
+```
+checkpoint_hash = SHA-256(
+    merkle_root            ||   -- 32 bytes
+    prev_checkpoint_hash   ||   -- 32 bytes (genesis constant for first checkpoint)
+    uint64_le(range_start) ||   -- 8 bytes, little-endian
+    uint64_le(range_end)   ||   -- 8 bytes, little-endian
+    uint32_le(event_count) ||   -- 4 bytes, little-endian
+    uint32_le(hash_schema_version) ||  -- 4 bytes, little-endian
+    sealed_at_micros       ||   -- 8 bytes, little-endian; microseconds since Unix epoch UTC
+    int64_le(prev_checkpoint_id)  -- 8 bytes, little-endian; 0 for genesis
+)
+```
+
+Total input: **104 bytes for schema version 3**. The first 96 bytes are byte-identical to versions 1 and 2, so an implementation of both shares everything but the tail.
+
+`prev_checkpoint_id` is `0` for the genesis checkpoint, a normative constant in the same way the genesis `prev_checkpoint_hash` is 32 zero bytes: the input is fixed width, so "no predecessor" needs a defined encoding rather than an absent one.
+
+**Why version 3 binds the predecessor's identity.** Versions 1 and 2 covered the predecessor's *hash* but not *which row it was*. A checkpoint could therefore be repointed at an earlier one, and if `prev_checkpoint_hash` was updated to match, every digest still verified and the foreign key was still satisfied while the checkpoints in between were silently detached. Nothing in the cryptography objected; only a comparison of the stored ordering against itself could notice, and that ordering lives in the same table an attacker with write access would have altered. Binding the id makes the detachment change the digest, so an offline verifier detects it without needing to have witnessed the original ordering. This closes ADR 0006 and issue #38.
 
 ---
 
@@ -189,6 +210,57 @@ version-1 leaf implementation. `Verifier` still checks each checkpoint's
 `hash_schema_version` and reports anything it cannot recompute as
 attested-but-unverifiable, rather than hashing the wrong field set and reporting
 the mismatch as tampering.
+
+---
+
+## 5.2 Field set, schema version 3
+
+Version 3 is the field set migration 016 established. It adds six columns recording
+what a permitted request actually did, and changes the checkpoint hash construction
+of Section 3 to bind the predecessor's identity.
+
+**Everything in Section 5 still applies unchanged**: RFC 8785, keys in Unicode code
+point order, microsecond UTC timestamps, ECMAScript numbers, JSON `null` for absent
+values. The canonicalization spec identifier is still `"rfc8785-v1"`.
+
+The leaf is the SHA-256 of `0x00 || JCS(event)` over **thirty-two** fields: the
+twenty-six of version 2, unchanged in name and encoding, plus these six.
+
+| Field | Source | Notes |
+|---|---|---|
+| `classification` | **v3** | the tier on the presenting API key, the authority the request ran under |
+| `completion_tokens` | **v3** | provider-reported; `null` where the provider reported none |
+| `duration_ms` | **v3** | gateway-measured wall time |
+| `model_served` | **v3** | the model the provider returned, as distinct from `model`, which is the alias the caller requested |
+| `prompt_tokens` | **v3** | provider-reported |
+| `total_tokens` | **v3** | provider-reported |
+
+Absent measurements are `null`, never `0`. A request whose provider reported no
+usage did not consume zero tokens, and a row saying so would attest a measurement
+nobody took.
+
+**Every version-3 field is gateway- or provider-derived.** None carries caller text.
+That is a requirement rather than an observation: `audit_events` is sealed and
+exported, so a column a caller can write is a channel out of the zero-retention
+guarantee. It is why `model_served` is safe where the requested `model` needed the
+`(unconfigured)` sentinel, and why tool names are **not** in this version.
+
+### Why version 3 does not force a re-seal, where version 2 did
+
+Migration 013 refused to run while any version-1 checkpoint existed, because it
+**dropped** `metadata`, a column the version-1 leaf covers: once gone, those leaves
+could never be recomputed and every version-1 checkpoint would have become
+permanently unverifiable.
+
+Migration 016 only **adds**. The version-2 leaf covers an explicit field list rather
+than every column of the row, so a version-2 leaf still recomputes byte-for-byte on
+a database that has run 016. A chain may therefore hold version-2 and version-3
+checkpoints side by side, and `verify-chain --full` verifies both.
+
+The cost is that a verifier computes two field sets rather than one, which is the
+simplicity version 2 was careful to preserve. The trade was made deliberately: the
+alternative was refusing to run against existing chains, and adding a column should
+not destroy old evidence.
 
 ---
 

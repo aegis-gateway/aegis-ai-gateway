@@ -144,7 +144,8 @@ func TestSealerWritesThePublishedHash(t *testing.T) {
 
 	rows, err := db.Query(ctx, `
 		SELECT id, range_start, range_end, event_count, merkle_root,
-		       prev_checkpoint_hash, checkpoint_hash, hash_schema_version, sealed_at
+		       prev_checkpoint_hash, checkpoint_hash, hash_schema_version, sealed_at,
+		       prev_checkpoint_id
 		FROM audit_checkpoints
 		ORDER BY id ASC
 	`)
@@ -161,14 +162,33 @@ func TestSealerWritesThePublishedHash(t *testing.T) {
 			eventCount, hashSchemaVersion int32
 			merkleRoot, prevHash, stored  []byte
 			sealedAt                      time.Time
+			prevID                        *int64
 		)
 		if err := rows.Scan(&id, &rangeStart, &rangeEnd, &eventCount, &merkleRoot,
-			&prevHash, &stored, &hashSchemaVersion, &sealedAt); err != nil {
+			&prevHash, &stored, &hashSchemaVersion, &sealedAt, &prevID); err != nil {
 			t.Fatalf("scanning a checkpoint: %v", err)
 		}
 
-		recomputed, err := controlplanev1.ComputeCheckpointHash(
-			merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, hashSchemaVersion, sealedAt)
+		// Recompute with the construction the row states, not with whichever one
+		// this test was written against. Using the wrong input reports intact
+		// data as tampered, which is the accusation this test exists to prevent
+		// an independent verifier from making.
+		var recomputed []byte
+		var err error
+		switch hashSchemaVersion {
+		case controlplanev1.HashSchemaVersion3:
+			hashedPrevID := controlplanev1.GenesisPrevCheckpointID
+			if prevID != nil {
+				hashedPrevID = *prevID
+			}
+			recomputed, err = controlplanev1.ComputeCheckpointHashV3(
+				merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
+				hashSchemaVersion, sealedAt, hashedPrevID)
+		default:
+			recomputed, err = controlplanev1.ComputeCheckpointHash(
+				merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
+				hashSchemaVersion, sealedAt)
+		}
 		if err != nil {
 			t.Fatalf("checkpoint %d: recomputing: %v", id, err)
 		}

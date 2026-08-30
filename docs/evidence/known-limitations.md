@@ -356,15 +356,36 @@ not record which capabilities were put in front of the model. For an agent workl
 that is a real gap: "a call was made" and "a shell tool was offered and called" are
 different facts, and only the first is in the evidence.
 
-It is safe under the zero-retention rule. A tool name is metadata of the same kind as
-`model`, while arguments and results are payload, and
-`internal/audit/tool_no_payload_test.go` tests that boundary rather than asserting it.
+Arguments and results are payload and stay out; `internal/audit/tool_no_payload_test.go`
+tests that boundary rather than asserting it.
 
-It is deferred anyway, because adding a field to `audit_events` changes every leaf hash
-and requires `hash_schema_version=3`, and the verifier deliberately computes one field
-set. Spending that on additive metadata is a bad trade. The decision, the three
-rejected alternatives, and the specific thing to watch for are recorded in
-[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md), and the bump itself is tracked on [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38).
+**The reason for the deferral changed on 2026-08-30, and the earlier reason no longer
+applies.** It used to be cost: adding a field requires a `hash_schema_version` bump, and
+spending one on additive metadata was a bad trade. That bump has now happened, for
+[ADR 0006](../adr/0006-predecessor-identity-is-not-hash-bound.md) and the outcome fields
+in §2.14, and tool names still did not ride it.
+
+They did not because the safety argument does not survive inspection. It rested on a tool
+name being "metadata of the same kind as `model`". The `model` column was later hardened
+so that **only a configured alias is ever sealed**, precisely because an arbitrary model
+string let a caller write into the sealed chain. Tool names have no equivalent allowlist:
+the caller chooses them, bounded only by validation at 128 names of 64 characters, so
+sealing them would admit up to **8 KB per request** of caller-controlled text into an
+immutable record that leaves the deployment.
+
+This repository already treats a tool name that way elsewhere.
+`TestValidationErrorsDoNotEchoScannedValues` exists to keep tool names out of error bodies
+and log lines, on the grounds that a label built from one would copy a credential into
+both before anything had looked for one. Sealing is a stronger commitment than logging:
+logs rotate, and the chain is exported.
+
+The evidentiary gap above is real and unresolved. Closing it needs a decision about the
+zero-retention boundary and a mitigation of its own, not a rider on someone else's version
+bump: a hard clip in the logger rather than only in the validator, digests instead of
+names, or sealing only tools drawn from a configured allowlist, which is the answer `model`
+arrived at. Recorded in the amendment to
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md). Doing it now costs a
+`hash_schema_version=4`.
 
 ### 2.11 `audit_logs` still exists and is still never written
 
@@ -474,7 +495,7 @@ constraint enforceable is a design decision that has not been taken. Until it is
 a documented operator responsibility, and a Rego bundle that will be sealed deserves the
 same review as any other code that writes to the audit trail.
 
-### 2.14 The allow event carries identity and outcome, not tokens or latency
+### 2.14 What the allow event attests
 
 `audit_events` records permitted requests as of 2026-08-29. `request_complete` is written
 when a request passes every gate and completes; `provider_failure` when a request passes
@@ -530,27 +551,44 @@ fails was still a 200 on the wire; and when a provider returns a non-200 the gat
 500 rather than passing the upstream status through. The provider's own status is in the
 logs. Recording it here would make the sealed row state something that never went out.
 
-**What it does not carry: latency, prompt and completion tokens, the resolved concrete
-model, and classification.** There are no columns for them, and the reason not to add
-columns is specific rather than conservative.
+**Since 2026-08-30 it also carries the outcome, at `hash_schema_version=3`.** Migration 016
+added `model_served`, `classification`, `prompt_tokens`, `completion_tokens`,
+`total_tokens` and `duration_ms`, and all six are inside the leaf hash. `audit_events` now
+has thirty-two columns and all thirty-two are fields the version-3 leaf covers; that
+correspondence is still exact, which is what makes "the row is attested" mean the whole
+row.
 
-`audit_events` has twenty-six columns and all twenty-six are fields in the leaf hash at
-`hash_schema_version=2`. That correspondence is exact, and it is what makes "the row is
-attested" mean the whole row. Adding a column and putting it in the hash changes every
-leaf hash and requires `hash_schema_version=3`, which is deferred under
-[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md) and tracked on
-[issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38). Adding a column
-and leaving it out of the hash would be worse than not adding it: the fields carrying the
-evidence would be the only fields nothing attests, and the record would look more complete
-than it is.
+`model_served` is the model the provider returned, as distinct from `model`, which remains
+the alias the caller requested. The two differ whenever an alias resolves, and only the
+first answers what actually ran.
 
-So the token counts and the latency for a given `request_id` are in `usage_records`, which
-is **not sealed**. Joining the two gives the full picture of a request and gives it at two
-different levels of assurance. An assessor should be told which half is attested.
+Absent measurements are `null`, never `0`. A streamed response whose provider reported no
+usage did not consume zero tokens, and a row saying so would attest a measurement nobody
+took.
 
-If those fields need to be attested, they should be added in the same
-`hash_schema_version=3` bump as the tool names in §2.10, because the bump is the expensive
-part and doing it twice costs twice.
+**All six are gateway- or provider-derived, which is why they can be sealed.** A column a
+caller can write is a channel out of the zero-retention guarantee, as the `(unconfigured)`
+sentinel on `model` records. That is also why tool names are **not** in version 3: they are
+caller-chosen text, and the decision is described in §2.10 and in the amendment to
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md).
+
+The same bump bound `prev_checkpoint_id` into the checkpoint hash, closing
+[ADR 0006](../adr/0006-predecessor-identity-is-not-hash-bound.md) and
+[issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38). Doing both at once
+was deliberate: the bump is the expensive part, and doing it twice costs twice.
+
+**A chain may hold version-2 and version-3 checkpoints together.** Migration 016 only adds
+columns, and the version-2 leaf covers an explicit field list rather than the whole row, so
+a version-2 leaf still recomputes byte-for-byte afterwards and `verify-chain --full`
+verifies both. No deployment has to archive its chain to upgrade, which migration 013 did
+require, because 013 dropped a hashed column and this one does not.
+
+`estimated_cost_usd` was deliberately left out. It is derived from `pricing.yaml` at
+request time, so a verifier reading the row later cannot recompute it once prices change:
+sealing it would bind a number nobody can subsequently check. Cost for a given
+`request_id` stays in `usage_records`, which is **not sealed**, along with the cached-token
+detail. Joining the two still gives two different levels of assurance, and an assessor
+should be told which half is attested.
 
 **Loss visibility.** A failed audit write leaves no row, and what it leaves in the id
 sequence depends on where it failed. That distinction matters operationally, so it is

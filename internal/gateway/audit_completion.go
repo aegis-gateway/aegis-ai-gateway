@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"syscall"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -148,5 +149,32 @@ func completedRequest(
 		StatusCode:     statusCode,
 		IPAddress:      r.RemoteAddr,
 		Stream:         stream,
+		// Known on every path, including the ones that never reach a provider:
+		// it is the authority the request ran under, not an outcome of running
+		// it. The outcome fields are attached separately by withOutcome.
+		Classification: string(authInfo.MaxClassification),
 	}
+}
+
+// withOutcome attaches what actually ran to a completion record.
+//
+// Separate from completedRequest because the two are known at different times
+// and on different paths. Identity and authority exist from the moment the key
+// is resolved; the served model, the token counts and the duration exist only
+// once a provider has answered, and the failure paths that never got that far
+// must not invent them. Leaving them zero there is what makes the logger write
+// NULL rather than a measurement nobody took.
+func withOutcome(
+	rec audit.CompletedRequest,
+	modelServed string,
+	promptTokens, completionTokens, totalTokens int,
+	d time.Duration,
+) audit.CompletedRequest {
+	rec.ModelServed = modelServed
+	rec.PromptTokens = int64(promptTokens)
+	rec.CompletionTokens = int64(completionTokens)
+	rec.TotalTokens = int64(totalTokens)
+	ms := d.Milliseconds()
+	rec.DurationMs = &ms
+	return rec
 }

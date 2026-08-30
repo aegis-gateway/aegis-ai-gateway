@@ -74,11 +74,16 @@ type CheckpointSubmission struct {
 	// PrevCheckpointID is the gateway's checkpoint ID of the predecessor, or
 	// nil for the first checkpoint in the chain.
 	//
-	// It is sent alongside PrevCheckpointHash because the hash alone does not
-	// pin identity: the checkpoint hash input does not cover the predecessor's
-	// id, so a chain can be repointed at an earlier checkpoint with every hash
-	// still verifying. The gateway's own verify-chain makes the same
-	// distinction.
+	// At hash_schema_version 1 and 2 it is sent alongside PrevCheckpointHash
+	// because the hash alone does not pin identity: those inputs do not cover
+	// the predecessor's id, so a chain can be repointed at an earlier
+	// checkpoint with every hash still verifying. The gateway's own
+	// verify-chain makes the same distinction.
+	//
+	// At version 3 it is also inside the digest, so a repointed chain fails
+	// [VerifyCheckpointHash] on its own. It stays a separate field because a
+	// receiver still needs the ordering to check the chain, and because the
+	// field is part of a shipped wire contract.
 	PrevCheckpointID *int64 `json:"prev_checkpoint_id"`
 
 	// PrevCheckpointHash is the predecessor's CheckpointHash, or

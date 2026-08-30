@@ -1,9 +1,29 @@
 # 0006. Predecessor identity is not bound into the checkpoint hash
 
-Status:   Proposed
+Status:   Implemented in `hash_schema_version=3`, 2026-08-30
 Date:     2026-08-22
 Tracked:  https://github.com/aegis-gateway/aegis-ai-gateway/issues/38
-Decision: Record the gap. Propose binding `prev_checkpoint_id` into a future `hash_schema_version`. Do not implement now.
+Decision: Record the gap. Bind `prev_checkpoint_id` into a future `hash_schema_version`.
+
+## Resolution, 2026-08-30
+
+Version 3 appends `int64_le(prev_checkpoint_id)` to the checkpoint hash input,
+making it 104 bytes where versions 1 and 2 are 96. See
+`docs/AUDIT-INTEGRITY.md` section 3.
+
+The structural limit this ADR describes is now version-dependent, and the
+distinction matters when reading an old chain:
+
+- **Version 3.** Repointing a checkpoint changes its digest. An offline verifier
+  detects the detachment without having witnessed the original ordering.
+- **Versions 1 and 2.** Unchanged, and unchangeable: those digests are sealed.
+  The verifier's ordering check is still the only defence, and it still reads
+  `prev_checkpoint_id` from the same table an attacker with write access would
+  have altered. A chain sealed under version 2 keeps that weakness for as long
+  as those checkpoints are the evidence.
+
+So the gap is closed going forward and not retroactively, which is the nature of
+a hash bump rather than an oversight in the fix.
 
 ## Context
 

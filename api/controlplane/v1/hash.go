@@ -277,9 +277,27 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 		return fmt.Errorf("checkpoint %d: prev_checkpoint_hash: %w", sub.CheckpointID, err)
 	}
 
-	recomputed, err := ComputeCheckpointHash(
-		merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
-		sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
+	// The construction differs by version and the submission states which one
+	// sealed it. Recomputing a version-3 checkpoint with the version-2 input
+	// yields a mismatch from intact data, which this function reports as a
+	// checkpoint that does not hash to its stated value: a false accusation
+	// against a gateway whose chain is sound, and one that would stop every
+	// version-3 checkpoint at submission.
+	var recomputed []byte
+	switch sub.HashSchemaVersion {
+	case HashSchemaVersion3:
+		prevID := GenesisPrevCheckpointID
+		if sub.PrevCheckpointID != nil {
+			prevID = *sub.PrevCheckpointID
+		}
+		recomputed, err = ComputeCheckpointHashV3(
+			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
+			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time, prevID)
+	default:
+		recomputed, err = ComputeCheckpointHash(
+			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
+			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
+	}
 	if err != nil {
 		return fmt.Errorf("checkpoint %d: %w", sub.CheckpointID, err)
 	}

@@ -183,7 +183,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 
 	// Load up to BatchSize eligible events.
 	rows, err := conn.Query(ctx, `
-		SELECT `+EventColumns+`
+		SELECT `+EventColumnsV3+`
 		FROM audit_events
 		WHERE id > $1 AND timestamp < $2
 		ORDER BY id ASC
@@ -193,7 +193,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		return false, fmt.Errorf("seal: query events: %w", err)
 	}
 
-	events, err := scanEventRows(rows)
+	events, err := scanEventRowsV3(rows)
 	if err != nil {
 		return false, fmt.Errorf("seal: scan events: %w", err)
 	}
@@ -249,7 +249,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	// being sealed, so the root always matches the committed range.
 	leaves := make([][]byte, len(events))
 	for i, ev := range events {
-		lh, err := EventLeafHash(ev)
+		lh, err := EventLeafHashV3(ev)
 		if err != nil {
 			return false, fmt.Errorf("seal: leaf hash event %d: %w", ev.ID, err)
 		}
@@ -291,8 +291,16 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	// The version hashed and the version stored must be the same number. They
 	// were both the literal 1 before migration 013; they are both this constant
 	// now, so they cannot drift apart in a later edit.
-	cpHash, err := computeCheckpointHash(merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
-		controlplanev1.HashSchemaVersion2, sealedAt)
+	// readPrevCheckpointHash reports -1 for genesis; the hash input encodes
+	// "no predecessor" as GenesisPrevCheckpointID, the same way prevHash
+	// encodes it as 32 zero bytes rather than an absent value.
+	prevIDHashed := prevID
+	if prevIDHashed < 0 {
+		prevIDHashed = controlplanev1.GenesisPrevCheckpointID
+	}
+	cpHash, err := controlplanev1.ComputeCheckpointHashV3(
+		merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
+		controlplanev1.HashSchemaVersion3, sealedAt, prevIDHashed)
 	if err != nil {
 		return false, fmt.Errorf("seal: compute checkpoint hash: %w", err)
 	}
@@ -322,7 +330,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,
 		coveredFrom, coveredTo,
-		controlplanev1.HashSchemaVersion2,
+		controlplanev1.HashSchemaVersion3,
 	)
 	if err != nil {
 		return false, fmt.Errorf("seal: insert checkpoint: %w", err)
@@ -374,6 +382,34 @@ func readPrevCheckpointHash(ctx context.Context, conn *pgx.Conn) ([]byte, int64,
 func computeCheckpointHash(merkleRoot, prevHash []byte, rangeStart, rangeEnd int64, eventCount, schemaVersion int32, sealedAt time.Time) ([]byte, error) {
 	return controlplanev1.ComputeCheckpointHash(
 		merkleRoot, prevHash, rangeStart, rangeEnd, eventCount, schemaVersion, sealedAt)
+}
+
+// scanEventRowsV3 reads rows selected with [EventColumnsV3].
+//
+// Separate from scanEventRows because the column lists differ and pgx scans
+// positionally: passing version-2 rows to this, or the reverse, silently binds
+// the wrong columns rather than failing.
+func scanEventRowsV3(rows pgx.Rows) ([]AuditEventRow, error) {
+	defer rows.Close()
+	var out []AuditEventRow
+	for rows.Next() {
+		var r AuditEventRow
+		if err := rows.Scan(
+			&r.ID, &r.RequestID, &r.Timestamp, &r.EventType,
+			&r.OrganizationID, &r.TeamID, &r.UserID, &r.APIKeyID,
+			&r.IPAddress, &r.UserAgent, &r.Endpoint, &r.Method,
+			&r.StatusCode, &r.ErrorMessage,
+			&r.APIKeyPrefix, &r.LimitDimension, &r.LimitValue,
+			&r.SpentCents, &r.LimitCents, &r.FilterType, &r.Reason,
+			&r.Provider, &r.Model, &r.Mode, &r.Operation, &r.ErrorDetail,
+			&r.ModelServed, &r.Classification,
+			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.DurationMs,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // scanEventRows reads all rows from pgx.Rows into a slice of AuditEventRow.
