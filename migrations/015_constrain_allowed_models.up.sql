@@ -11,7 +11,15 @@
 -- constraining makes the anomaly impossible rather than leaving the code to
 -- refuse it at every read.
 --
--- Every row that is not a JSON array is repaired, not just the NULLs.
+-- Every row the reader would refuse is repaired, not just the NULLs.
+--
+-- "An array" is not enough. ["aegis-fast", null] and [1] are arrays, so an
+-- element check is the only way for the schema to enforce what the reader
+-- accepts: without it such a row survives the cleanup, satisfies the
+-- constraint, and then fails to unmarshal into []string, so an active
+-- credential starts returning authentication errors having never been revoked,
+-- warned about, or repaired. A key that silently stops working is a worse
+-- outcome than one that is explicitly revoked with a reason.
 --
 -- The CHECK below is validated against existing rows, so a single key holding
 -- {} or "aegis-fast" would abort the migration and block the whole gateway
@@ -46,30 +54,40 @@ BEGIN
     -- Such rows get the allowed_models fill and nothing else; they already deny.
     UPDATE api_keys
        SET allowed_models = '[]'::jsonb
-     WHERE (allowed_models IS NULL OR jsonb_typeof(allowed_models) <> 'array')
+     WHERE (allowed_models IS NULL
+              OR jsonb_typeof(allowed_models) <> 'array'
+              OR jsonb_path_exists(allowed_models, '$[*] ? (@.type() != "string")'))
        AND status <> 'active';
 
     UPDATE api_keys
        SET status         = 'revoked',
            revoked_at     = NOW(),
-           revoked_reason = 'allowed_models was NULL or not a JSON array at migration 015; restrictions unknown, revoked to fail closed',
+           revoked_reason = 'allowed_models was not a JSON array of strings at migration 015; restrictions unknown, revoked to fail closed',
            allowed_models = '[]'::jsonb
-     WHERE (allowed_models IS NULL OR jsonb_typeof(allowed_models) <> 'array')
+     WHERE (allowed_models IS NULL
+              OR jsonb_typeof(allowed_models) <> 'array'
+              OR jsonb_path_exists(allowed_models, '$[*] ? (@.type() != "string")'))
        AND status = 'active';
 
     GET DIAGNOSTICS affected = ROW_COUNT;
     IF affected > 0 THEN
-        RAISE WARNING 'migration 015 revoked % API key(s) whose allowed_models was NULL or not a JSON array. Their restrictions could not be determined, so they fail closed. Set an explicit allowed_models and reissue.', affected;
+        RAISE WARNING 'migration 015 revoked % API key(s) whose allowed_models was not a JSON array of strings. Their restrictions could not be determined, so they fail closed. Set an explicit allowed_models and reissue.', affected;
     END IF;
 END $$;
 
 ALTER TABLE api_keys ALTER COLUMN allowed_models SET NOT NULL;
 
--- jsonb_typeof pins the shape as well as the presence. An object or a bare
--- string decodes to an empty Go slice just as NULL did, with the same effect.
+-- The constraint pins the shape AND the element type, so the column can hold
+-- only what the reader accepts. An object or a bare string decodes to an empty
+-- Go slice just as NULL did, with the same fail-open effect; an array with a
+-- non-string element decodes to an error, which fails closed but leaves an
+-- active key that can never authenticate.
 ALTER TABLE api_keys
-    ADD CONSTRAINT allowed_models_is_array
-    CHECK (jsonb_typeof(allowed_models) = 'array');
+    ADD CONSTRAINT allowed_models_is_string_array
+    CHECK (
+        jsonb_typeof(allowed_models) = 'array'
+        AND NOT jsonb_path_exists(allowed_models, '$[*] ? (@.type() != "string")')
+    );
 
 COMMENT ON COLUMN api_keys.allowed_models IS
-    'JSON array of permitted model aliases. An empty array means every model is permitted. Never NULL: an unreadable value would grant every model.';
+    'JSON array of permitted model alias strings. An empty array means every model is permitted. Never NULL: an unreadable value would grant every model.';
