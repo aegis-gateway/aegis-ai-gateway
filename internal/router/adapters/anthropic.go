@@ -157,7 +157,7 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 	}
 	toolCalls := fromAnthropicToolUse(antResp.Content)
 
-	return &types.AegisResponse{
+	out := &types.AegisResponse{
 		Model:    antResp.Model,
 		Provider: "anthropic",
 		Choices: []types.Choice{
@@ -171,8 +171,12 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 				FinishReason: mapStopReason(antResp.StopReason),
 			},
 		},
-		Usage: anthropicUsageToCanonical(antResp.Usage),
-	}, nil
+	}
+	if u := antResp.Usage; u != nil && !anthropicUsageHasNegative(*u) {
+		out.UsageReported = true
+		out.Usage = anthropicUsageToCanonical(*u)
+	}
+	return out, nil
 }
 
 // TransformStreamChunk converts an Anthropic SSE data payload to OpenAI streaming format.
@@ -321,7 +325,12 @@ type anthropicResponseBody struct {
 	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
-	Usage      anthropicUsage          `json:"usage"`
+	// A pointer for the reason the OpenAI body uses one: an absent usage object
+	// and one carrying zeros are different facts, and audit_events seals the
+	// counts. Anthropic does return usage on a successful message, so this is
+	// belt and braces rather than a known case, but asserting it unconditionally
+	// would seal three zeros as measured for any response that did not.
+	Usage *anthropicUsage `json:"usage"`
 }
 
 // anthropicUsageToCanonical converts Anthropic's token counts to the canonical
@@ -338,6 +347,25 @@ type anthropicResponseBody struct {
 // through as the prompt count would have understated that request by 4411
 // tokens, and handing the same figure to the calculator as a subset would have
 // made uncached input negative.
+// anthropicUsageHasNegative reports whether any component of a usage object is
+// negative, which is not a measurement.
+//
+// It has to be asked of the RAW components, before anything sums or filters
+// them. anthropicUsageToCanonical adds the three prompt components together, so
+// a negative one can cancel a positive one and produce a plausible total: input
+// 10 with a cached read of -10 yields a prompt of 0. The stream transformer
+// launders it differently, assigning only positive values and leaving the
+// component at zero. Either way the downstream guard, which sees only the final
+// three counts, has nothing left to object to.
+//
+// Shared by the buffered and streaming paths so the two cannot disagree about
+// what a malformed usage object is.
+func anthropicUsageHasNegative(u anthropicUsage) bool {
+	return u.InputTokens < 0 || u.OutputTokens < 0 ||
+		u.CacheReadInputTokens < 0 || u.CacheCreationInputTokens < 0 ||
+		u.CacheCreation.Ephemeral5m < 0 || u.CacheCreation.Ephemeral1h < 0
+}
+
 func anthropicUsageToCanonical(u anthropicUsage) types.Usage {
 	prompt := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 	usage := types.Usage{

@@ -146,11 +146,18 @@ func (a *MockAdapter) TransformResponse(ctx context.Context, resp *http.Response
 	aegisResp := &types.AegisResponse{
 		Model:    oaiResp.Model,
 		Provider: MockAdapterName,
-		Usage: types.Usage{
-			PromptTokens:     oaiResp.Usage.PromptTokens,
-			CompletionTokens: oaiResp.Usage.CompletionTokens,
-			TotalTokens:      oaiResp.Usage.TotalTokens,
-		},
+	}
+	// Nil-checked rather than dereferenced: openAIResponseBody.Usage is a
+	// pointer so that an absent usage object stays distinguishable from a
+	// reported zero, and reaching through it unguarded would panic on a
+	// response that carries none.
+	if u := oaiResp.Usage; u != nil {
+		aegisResp.UsageReported = true
+		aegisResp.Usage = types.Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+		}
 	}
 	for _, c := range oaiResp.Choices {
 		aegisResp.Choices = append(aegisResp.Choices, types.Choice{

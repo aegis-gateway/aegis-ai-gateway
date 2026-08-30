@@ -105,6 +105,16 @@ type anthropicStreamTransformer struct {
 	cacheWrite1hTokens int
 	outputTokens       int
 
+	// usageSeen records that the provider sent a usage object at all, which is
+	// a different fact from the counts in it being non-zero. An all-zero usage
+	// block is a measurement; no usage block is not.
+	usageSeen bool
+	// usageInvalid records that some usage object carried a negative counter.
+	// Sticky for the life of the stream: once a provider has reported nonsense
+	// the reconstructed total is not trustworthy, and a later well-formed event
+	// does not repair the components the bad one was meant to supply.
+	usageInvalid bool
+
 	// model is the model the provider actually served, taken from
 	// message_start. The gateway reads it off a relayed chunk and uses it to
 	// look up pricing, so a stream that never carries one is priced at zero
@@ -158,10 +168,13 @@ type anthropicStreamEvent struct {
 	// message_start nests usage under message; message_delta carries it at the
 	// top level.
 	Message struct {
-		Model string         `json:"model"`
-		Usage anthropicUsage `json:"usage"`
+		Model string `json:"model"`
+		// Pointers so that an event carrying a usage object of zeros is
+		// distinguishable from one carrying no usage object. audit_events seals
+		// the counts and must not record a reported zero as an absence.
+		Usage *anthropicUsage `json:"usage"`
 	} `json:"message"`
-	Usage anthropicUsage `json:"usage"`
+	Usage *anthropicUsage `json:"usage"`
 }
 
 func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
@@ -179,7 +192,9 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		if ev.Message.Model != "" {
 			t.model = ev.Message.Model
 		}
-		t.absorbUsage(ev.Message.Usage)
+		if ev.Message.Usage != nil {
+			t.absorbUsage(*ev.Message.Usage)
+		}
 		return nil, nil
 
 	case "content_block_start":
@@ -222,13 +237,19 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		// The final event: stop reason plus the settled token counts. Both are
 		// carried on one chunk, in the OpenAI shape, because that is what the
 		// gateway's usage extraction and every OpenAI client read.
-		t.absorbUsage(ev.Usage)
+		if ev.Usage != nil {
+			t.absorbUsage(*ev.Usage)
+		}
 		finish := mapStopReason(ev.Delta.StopReason)
 		chunk := openAIStreamChunkWithUsage{
 			Model:   t.model,
 			Choices: []openAIStreamChoice{{Index: 0, Delta: openAIDelta{}, FinishReason: &finish}},
 		}
-		if t.promptTokens() > 0 || t.outputTokens > 0 {
+		// Gated on a usage object having been seen, not on a count being
+		// positive. A message_delta reporting all zeros is a measurement, and
+		// dropping it here made metrics.UsageReported false downstream, which
+		// sealed three NULLs meaning "the provider reported nothing".
+		if t.usageSeen && !t.usageInvalid {
 			chunk.Usage = &openAIUsage{
 				PromptTokens:     t.promptTokens(),
 				CompletionTokens: t.outputTokens,
@@ -293,6 +314,19 @@ type openAIPromptTokensDetails struct {
 // Updating each component independently means an event that omits a field
 // leaves that component alone rather than erasing it.
 func (t *anthropicStreamTransformer) absorbUsage(u anthropicUsage) {
+	t.usageSeen = true
+
+	// A negative counter is not a measurement, and it has to be caught HERE.
+	// The assignments below take a value only when it is positive, so a
+	// negative one is silently discarded and leaves the component at zero;
+	// downstream the block would then look like a valid all-zero measurement
+	// and the gateway's negative-count guard would never see it. Recording the
+	// whole block as invalid keeps a malformed usage object out of the sealed
+	// row rather than laundering it into an explicit zero.
+	if anthropicUsageHasNegative(u) {
+		t.usageInvalid = true
+	}
+
 	if u.InputTokens > 0 {
 		t.uncachedInputTokens = u.InputTokens
 	}

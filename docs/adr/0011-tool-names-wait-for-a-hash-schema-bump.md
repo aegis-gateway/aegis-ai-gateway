@@ -1,8 +1,42 @@
 # 0011. Tool names wait for a hash schema bump rather than causing one
 
-Status:   Accepted
+Status:   Superseded by the amendment below, 2026-08-30
 Date:     2026-08-29
 Decision: Do not record tool names in `audit_events` yet. Add them as a rider when a `hash_schema_version=3` is cut for another reason, tracked on issue #38.
+
+## Amendment, 2026-08-30: version 3 was cut and tool names did not ride it
+
+`hash_schema_version=3` was cut for ADR 0006 and the allow-event outcome fields.
+This ADR said tool names should ride such a bump. They did not, and the reason is
+a consideration this ADR did not weigh.
+
+**Tool names are caller-chosen text.** The original reasoning was that a tool name
+is "metadata of the same kind as `model`". That comparison no longer holds. The
+`model` column was subsequently hardened so that only a **configured alias** is
+ever sealed, precisely because an arbitrary model string let a caller write into
+the sealed, exported chain. Tool names have no such allowlist: the caller picks
+them. Validation bounds them at 128 names of 64 characters, so sealing them admits
+up to **8 KB per request** of caller-controlled text into an immutable record that
+leaves the deployment.
+
+**The repository already treats a tool name as possibly credential-bearing.**
+`TestValidationErrorsDoNotEchoScannedValues` exists to keep tool names out of error
+bodies and log lines, on the grounds that a label built from one "would copy a
+credential into both, before anything had looked for one". Sealing is a stronger
+commitment than logging: process logs rotate, and the chain is exported to an
+anchoring party.
+
+That is not an argument that tool names must never be recorded. The evidentiary
+case in this ADR stands: for an agent workload, which capabilities were offered
+is a real and currently unanswerable question. It is an argument that the decision
+is about the zero-retention boundary and deserves deciding on its own terms, with
+its own mitigation, rather than settling as a passenger on someone else's version
+bump. Three shapes are open: seal the names with a hard clip in the logger rather
+than only in the validator; seal digests of the names, preserving correlation
+without the text; or seal them only for tools drawn from a configured allowlist,
+which is the answer `model` arrived at.
+
+Deferred to a decision of its own. Recording tool names now requires a version 4.
 
 ## Context
 

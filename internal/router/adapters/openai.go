@@ -126,17 +126,19 @@ func (a *OpenAIAdapter) TransformResponse(ctx context.Context, resp *http.Respon
 	aegisResp := &types.AegisResponse{
 		Model:    oaiResp.Model,
 		Provider: "openai",
-		Usage: types.Usage{
-			PromptTokens:     oaiResp.Usage.PromptTokens,
-			CompletionTokens: oaiResp.Usage.CompletionTokens,
-			TotalTokens:      oaiResp.Usage.TotalTokens,
-		},
 	}
-
-	// prompt_tokens already includes the cached portion, so this is carried
-	// through as the subset it is.
-	if d := oaiResp.Usage.PromptTokensDetails; d != nil && d.CachedTokens > 0 {
-		aegisResp.Usage.PromptTokensDetails = &types.PromptTokensDetails{CachedTokens: d.CachedTokens}
+	if u := oaiResp.Usage; u != nil {
+		aegisResp.UsageReported = true
+		aegisResp.Usage = types.Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+		}
+		// prompt_tokens already includes the cached portion, so this is carried
+		// through as the subset it is.
+		if d := u.PromptTokensDetails; d != nil && d.CachedTokens > 0 {
+			aegisResp.Usage.PromptTokensDetails = &types.PromptTokensDetails{CachedTokens: d.CachedTokens}
+		}
 	}
 
 	for _, c := range oaiResp.Choices {
@@ -198,7 +200,10 @@ type openAIResponseBody struct {
 		Message      types.Message `json:"message"`
 		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
+	// A pointer so that a response carrying no usage object is distinguishable
+	// from one carrying zeros. audit_events seals the counts and must not
+	// record an absent measurement as a reported zero.
+	Usage *struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`

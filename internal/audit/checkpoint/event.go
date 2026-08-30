@@ -60,6 +60,18 @@ type AuditEventRow struct {
 	Mode           *string
 	Operation      *string
 	ErrorDetail    *string
+
+	// Added by migration 016 and covered by the leaf hash at
+	// hash_schema_version=3 only. They stay nil when a version-2 row is scanned,
+	// and eventJCS never reads them: that function lists its twenty-six keys
+	// explicitly, so a version-2 leaf recomputes byte-for-byte on a database
+	// that has these columns.
+	ModelServed      *string
+	Classification   *string
+	PromptTokens     *int64
+	CompletionTokens *int64
+	TotalTokens      *int64
+	DurationMs       *int64
 }
 
 // EventColumns is the audit_events column list the leaf hash covers at
@@ -77,6 +89,16 @@ const EventColumns = `id, request_id, timestamp, event_type,
 	api_key_prefix, limit_dimension, limit_value,
 	spent_cents, limit_cents, filter_type, reason,
 	provider, model, mode, operation, error_detail`
+
+// EventColumnsV3 is the column list the leaf hash covers at
+// hash_schema_version=3: everything version 2 covered, plus the six columns
+// migration 016 added.
+//
+// Built from EventColumns rather than restated, so the two cannot drift in the
+// twenty-six fields they share. scanEventRowsV3 expects this order.
+const EventColumnsV3 = EventColumns + `,
+	model_served, classification,
+	prompt_tokens, completion_tokens, total_tokens, duration_ms`
 
 // EventLeafHash computes the RFC 6962 leaf hash for a single audit_events row.
 //
@@ -133,6 +155,73 @@ func eventJCS(row AuditEventRow) ([]byte, error) {
 	return JCSEncode(obj)
 }
 
+// EventLeafHashV3 computes the RFC 6962 leaf hash for one audit_events row at
+// hash_schema_version=3.
+//
+// Separate from [EventLeafHash] rather than a version parameter because the two
+// must never be reachable by accident: hashing a version-2 row with the
+// version-3 field set produces a digest that verifies against nothing, and the
+// Merkle mismatch that follows is reported as tampering.
+func EventLeafHashV3(row AuditEventRow) ([]byte, error) {
+	jcsBytes, err := eventJCSV3(row)
+	if err != nil {
+		return nil, fmt.Errorf("v3 leaf hash for event %d: %w", row.ID, err)
+	}
+	return LeafHash(jcsBytes), nil
+}
+
+// eventJCSV3 returns the RFC 8785 canonical JSON for one audit_events row at
+// hash_schema_version=3, per docs/AUDIT-INTEGRITY.md section 5.1.
+//
+// Thirty-two fields: the twenty-six of version 2, unchanged in name and
+// encoding, plus the six migration 016 added. Every one of the six is gateway-
+// or provider-derived; none carries caller text. Adding, removing or renaming
+// any of the thirty-two changes every leaf hash and requires a version 4.
+//
+// The shared twenty-six are restated here rather than merged from eventJCS at
+// runtime. A merge would let a change to one version silently alter the other,
+// and these two functions defining different bytes for the same row is the
+// whole reason both exist.
+func eventJCSV3(row AuditEventRow) ([]byte, error) {
+	obj := map[string]interface{}{
+		"api_key_id":      nullableString(row.APIKeyID),
+		"api_key_prefix":  nullableString(row.APIKeyPrefix),
+		"endpoint":        nullableString(row.Endpoint),
+		"error_detail":    nullableString(row.ErrorDetail),
+		"error_message":   nullableString(row.ErrorMessage),
+		"event_type":      row.EventType,
+		"filter_type":     nullableString(row.FilterType),
+		"id":              row.ID,
+		"ip_address":      nullableString(row.IPAddress),
+		"limit_cents":     nullableInt64(row.LimitCents),
+		"limit_dimension": nullableString(row.LimitDimension),
+		"limit_value":     nullableInt64(row.LimitValue),
+		"method":          nullableString(row.Method),
+		"mode":            nullableString(row.Mode),
+		"model":           nullableString(row.Model),
+		"operation":       nullableString(row.Operation),
+		"organization_id": nullableString(row.OrganizationID),
+		"provider":        nullableString(row.Provider),
+		"reason":          nullableString(row.Reason),
+		"request_id":      row.RequestID,
+		"spent_cents":     nullableInt64(row.SpentCents),
+		"status_code":     nullableInt32(row.StatusCode),
+		"team_id":         nullableString(row.TeamID),
+		"timestamp":       row.Timestamp.UTC().Format(timestampFormat),
+		"user_agent":      nullableString(row.UserAgent),
+		"user_id":         nullableString(row.UserID),
+
+		// Migration 016.
+		"classification":    nullableString(row.Classification),
+		"completion_tokens": nullableInt64(row.CompletionTokens),
+		"duration_ms":       nullableInt64(row.DurationMs),
+		"model_served":      nullableString(row.ModelServed),
+		"prompt_tokens":     nullableInt64(row.PromptTokens),
+		"total_tokens":      nullableInt64(row.TotalTokens),
+	}
+	return JCSEncode(obj)
+}
+
 func nullableString(s *string) interface{} {
 	if s == nil {
 		return nil
@@ -157,3 +246,8 @@ func nullableInt64(i *int64) interface{} {
 	}
 	return *i
 }
+
+// EventLeafJCSV3ForTest exposes the version-3 canonical encoding so that other
+// packages can check their own coverage of the field set against the encoder
+// rather than against a restated list.
+func EventLeafJCSV3ForTest(row AuditEventRow) ([]byte, error) { return eventJCSV3(row) }

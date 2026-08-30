@@ -34,7 +34,14 @@ import (
 //	    uint64_le(range_end)           ||
 //	    uint32_le(event_count)         ||
 //	    uint32_le(hash_schema_version) ||
-//	    int64_le(sealed_at_unix_micros))
+//	    int64_le(sealed_at_unix_micros)
+//	    [|| int64_le(prev_checkpoint_id)])  -- version 3 only
+//
+// The construction depends on HashSchemaVersion: 96 bytes at versions 1 and 2,
+// and 104 at version 3, which appends the predecessor's id (0 for genesis). A
+// verifier must select the construction from the stated version. Recomputing a
+// version-3 checkpoint with the 96-byte input produces a mismatch from intact
+// data, which reads as tampering.
 //
 // It contains no audit event. MerkleRoot attests a range of events; it does
 // not reveal one. Proving that a specific event falls under a specific root
@@ -74,11 +81,21 @@ type CheckpointSubmission struct {
 	// PrevCheckpointID is the gateway's checkpoint ID of the predecessor, or
 	// nil for the first checkpoint in the chain.
 	//
-	// It is sent alongside PrevCheckpointHash because the hash alone does not
-	// pin identity: the checkpoint hash input does not cover the predecessor's
-	// id, so a chain can be repointed at an earlier checkpoint with every hash
-	// still verifying. The gateway's own verify-chain makes the same
-	// distinction.
+	// At hash_schema_version 1 and 2 it is sent alongside PrevCheckpointHash
+	// because the hash alone does not pin identity: those inputs do not cover
+	// the predecessor's id, so a chain can be repointed at an earlier
+	// checkpoint with every hash still verifying. The gateway's own
+	// verify-chain makes the same distinction.
+	//
+	// At version 3 it is also inside the digest, which means an externally
+	// retained digest commits to the ordering as well. That is NOT standalone
+	// detection: [VerifyCheckpointHash] recomputes an unkeyed digest from the
+	// submission's own fields, so a party who rewrites the predecessor id and
+	// hash and recomputes the digest still passes, at version 3 as at version
+	// 2. Only a digest retained independently of the sender exposes the rewrite.
+	//
+	// It stays a separate field because a receiver still needs the ordering to
+	// check the chain, and because the field is part of a shipped wire contract.
 	PrevCheckpointID *int64 `json:"prev_checkpoint_id"`
 
 	// PrevCheckpointHash is the predecessor's CheckpointHash, or

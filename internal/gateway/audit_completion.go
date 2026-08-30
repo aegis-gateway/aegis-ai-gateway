@@ -17,9 +17,11 @@ package gateway
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"syscall"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -148,5 +150,73 @@ func completedRequest(
 		StatusCode:     statusCode,
 		IPAddress:      r.RemoteAddr,
 		Stream:         stream,
+		// Known on every path, including the ones that never reach a provider:
+		// it is the authority the request ran under, not an outcome of running
+		// it. The outcome fields are attached separately by withOutcome.
+		Classification: string(authInfo.MaxClassification),
 	}
+}
+
+// withOutcome attaches what actually ran to a completion record.
+//
+// Separate from completedRequest because the two are known at different times
+// and on different paths. Identity and authority exist from the moment the key
+// is resolved; the served model, the token counts and the duration exist only
+// once a provider has answered, and the failure paths that never got that far
+// must not invent them. Leaving them zero there is what makes the logger write
+// NULL rather than a measurement nobody took.
+// withDuration attaches only the elapsed time.
+//
+// For the failure paths, which have no provider outcome to record but did
+// measure how long the gateway spent before giving up. That measurement is the
+// most useful thing a provider_failure row carries beyond the reason: a
+// provider that refused in 3 ms and one that hung for 30 s produce the same
+// event otherwise.
+//
+// The token counts stay absent there, because they are provider-reported and
+// no provider reported any. Duration is different: the gateway measures it
+// itself, so it exists on every path that got far enough to fail.
+func withDuration(rec audit.CompletedRequest, d time.Duration) audit.CompletedRequest {
+	ms := d.Milliseconds()
+	rec.DurationMs = &ms
+	return rec
+}
+
+func withOutcome(
+	rec audit.CompletedRequest,
+	modelServed string,
+	usageReported bool,
+	promptTokens, completionTokens, totalTokens int,
+	d time.Duration,
+) audit.CompletedRequest {
+	rec.ModelServed = modelServed
+	// Only when a provider actually reported usage. A zero it reported is a
+	// measurement and is sealed as zero; the absence of a usage block is not a
+	// measurement and is sealed as NULL.
+	//
+	// A negative count is neither. It is treated as no usage at all, and the
+	// reason is not fastidiousness: migration 016 puts a non-negative CHECK on
+	// these columns, the audit write is asynchronous and happens after the
+	// caller already has its response, and a rejected insert still consumes the
+	// BIGSERIAL id. So one malformed usage block from a provider would lose the
+	// event AND leave a permanent gap in audit_events.id, at which the sealer
+	// pauses and stops sealing everything after it. A provider that reports
+	// nonsense must not be able to stall the chain.
+	if usageReported {
+		if promptTokens < 0 || completionTokens < 0 || totalTokens < 0 {
+			slog.Warn("provider reported a negative token count; recording no usage for this request",
+				"request_id", rec.RequestID,
+				"provider", rec.ProviderKey,
+				"prompt_tokens", promptTokens,
+				"completion_tokens", completionTokens,
+				"total_tokens", totalTokens,
+			)
+		} else {
+			p, c, t := int64(promptTokens), int64(completionTokens), int64(totalTokens)
+			rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = &p, &c, &t
+		}
+	}
+	ms := d.Milliseconds()
+	rec.DurationMs = &ms
+	return rec
 }

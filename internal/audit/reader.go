@@ -100,10 +100,13 @@ type EventRow struct {
 	UserID         *string   `json:"user_id"`
 	APIKeyID       *string   `json:"api_key_id"`
 	IPAddress      *string   `json:"ip_address"`
-	Endpoint       *string   `json:"endpoint"`
-	Method         *string   `json:"method"`
-	StatusCode     *int      `json:"status_code"`
-	ErrorMessage   *string   `json:"error_message"`
+	// In the leaf hash at both version 2 and version 3, so a reader that cannot
+	// see it cannot reconstruct the leaf it is being asked to trust.
+	UserAgent    *string `json:"user_agent"`
+	Endpoint     *string `json:"endpoint"`
+	Method       *string `json:"method"`
+	StatusCode   *int    `json:"status_code"`
+	ErrorMessage *string `json:"error_message"`
 
 	APIKeyPrefix   *string `json:"api_key_prefix"`
 	LimitDimension *string `json:"limit_dimension"`
@@ -117,6 +120,17 @@ type EventRow struct {
 	Mode           *string `json:"mode"`
 	Operation      *string `json:"operation"`
 	ErrorDetail    *string `json:"error_detail"`
+
+	// Sealed at hash_schema_version=3 by migration 016. Exposed here because a
+	// field that is attested but unreadable through the supported API cannot be
+	// checked by the tenant or auditor it is attested for, and a v3 leaf cannot
+	// be reconstructed without them.
+	ModelServed      *string `json:"model_served"`
+	Classification   *string `json:"classification"`
+	PromptTokens     *int64  `json:"prompt_tokens"`
+	CompletionTokens *int64  `json:"completion_tokens"`
+	TotalTokens      *int64  `json:"total_tokens"`
+	DurationMs       *int64  `json:"duration_ms"`
 }
 
 // LogRow is one row of audit_logs as returned to a reader.
@@ -163,7 +177,10 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		       error_message,
 		       api_key_prefix, limit_dimension, limit_value,
 		       spent_cents, limit_cents, filter_type, reason,
-		       provider, model, mode, operation, error_detail
+		       user_agent,
+		       provider, model, mode, operation, error_detail,
+		       model_served, classification, prompt_tokens, completion_tokens,
+		       total_tokens, duration_ms
 		FROM audit_events
 		WHERE organization_id = $1
 		  AND organization_id <> $8
@@ -193,7 +210,10 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 			&e.ErrorMessage,
 			&e.APIKeyPrefix, &e.LimitDimension, &e.LimitValue,
 			&e.SpentCents, &e.LimitCents, &e.FilterType, &e.Reason,
-			&e.Provider, &e.Model, &e.Mode, &e.Operation, &e.ErrorDetail); err != nil {
+			&e.UserAgent,
+			&e.Provider, &e.Model, &e.Mode, &e.Operation, &e.ErrorDetail,
+			&e.ModelServed, &e.Classification, &e.PromptTokens,
+			&e.CompletionTokens, &e.TotalTokens, &e.DurationMs); err != nil {
 			return nil, fmt.Errorf("audit read: scanning event: %w", err)
 		}
 		out = append(out, e)

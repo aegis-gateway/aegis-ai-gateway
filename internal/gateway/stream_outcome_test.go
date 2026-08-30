@@ -1447,3 +1447,70 @@ func TestStream_DeadlineDuringBlockedReadIsATimeoutWhicheverBranchWins(t *testin
 		t.Errorf("outcomes = %v, want all %d runs %q", seen, runs, StreamTotalTimeout)
 	}
 }
+
+// A provider_failure row must carry the elapsed time.
+//
+// The gateway measures the duration itself, so unlike the token counts it
+// exists on every path that got far enough to fail. Omitting it discards a
+// measurement that was taken, and it is the most useful thing the row carries
+// beyond the reason: a provider that refused in 3 ms and one that hung for 30 s
+// are otherwise indistinguishable in the sealed record.
+func TestStream_ProviderFailureSealsTheMeasuredDuration(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{})
+	adapter := &erroringStreamAdapter{body: `{"error":{"code":"invalid_api_key"}}`}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	sh.HandleStream(httptest.NewRecorder(), req, "req-duration", providerReq, adapter,
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	rec := spy.failures[0].Req
+	if rec.DurationMs == nil {
+		t.Error("provider_failure sealed no duration; the gateway measured the elapsed " +
+			"time and discarded it, so the row cannot say whether the provider refused " +
+			"immediately or hung")
+	}
+	// The token counts stay absent: they are provider-reported and no provider
+	// reported any. That distinction is why they are pointers as well.
+	if rec.TotalTokens != nil {
+		t.Errorf("total_tokens = %d on a failure with no provider usage, want nil so the "+
+			"row records no measurement", *rec.TotalTokens)
+	}
+}
+
+// model_served attests what the PROVIDER returned. StreamMetrics.Model falls
+// back to the routed model so an early return still attributes the usage row,
+// and sealing that fallback would put a claim in the attested record that the
+// provider named a model it never named.
+//
+// runStream passes "claude-test" as the routed model, and this body carries no
+// model field, so the fallback is exactly what would leak.
+func TestStream_EarlyEndSealsNoProviderReportedModel(t *testing.T) {
+	spy := runStream(t, &scriptedStreamAdapter{
+		body: "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n",
+	})
+
+	if len(spy.failures) != 1 {
+		t.Fatalf("expected exactly 1 failure event, got %d", len(spy.failures))
+	}
+	if got := spy.failures[0].Req.ModelServed; got != "" {
+		t.Errorf("model_served = %q on a stream that never received a model from the "+
+			"provider; the routed name leaked into a field that attests what the "+
+			"provider returned", got)
+	}
+	// And the counts stay absent, since no usage block arrived.
+	if spy.failures[0].Req.TotalTokens != nil {
+		t.Error("total_tokens was sealed although the provider reported no usage")
+	}
+}

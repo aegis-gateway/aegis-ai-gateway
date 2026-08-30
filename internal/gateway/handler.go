@@ -441,7 +441,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				failureReason = audit.ReasonProviderError
 			}
 			h.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerStatus, failureReason))
 		}
 		return
@@ -473,7 +475,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// otherwise be erased.
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
 		}
 		return
@@ -590,6 +594,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// Measured again, after delivery. totalDuration above stops before the
+	// response is encoded and flushed, which is the right boundary for the
+	// provider-latency metric and the wrong one for a record of how long the
+	// request took: a slow client, or a flush that blocks before failing, can
+	// add most of the wall time, and the streaming path's duration already
+	// includes its chunk writes. The usage row and the audit event use this one
+	// so the sealed and unsealed records agree.
+	deliveredDuration := time.Since(receivedAt)
+
 	// Record usage asynchronously (non-blocking).
 	//
 	// Unconditional: the provider did the work and the spend happened whether
@@ -613,7 +626,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			CacheWrite5mTokens: aegisResp.Usage.CacheWrite5mTokens(),
 			CacheWrite1hTokens: aegisResp.Usage.CacheWrite1hTokens(),
 			EstimatedCostUSD:   aegisResp.EstimatedCostUSD,
-			DurationMs:         totalDuration.Milliseconds(),
+			DurationMs:         deliveredDuration.Milliseconds(),
 			StatusCode:         http.StatusOK,
 			Project:            aegisReq.Project,
 			Stream:             false,
@@ -635,7 +648,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// part way through the body still went out as a 200. What changes is the
 	// event, not the status.
 	if h.auditLogger != nil {
-		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false)
+		rec := withOutcome(
+			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false),
+			aegisResp.Model,
+			aegisResp.UsageReported,
+			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,
+			aegisResp.Usage.TotalTokens, deliveredDuration)
 		if deliveryErr != nil {
 			h.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
 		} else {

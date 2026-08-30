@@ -61,6 +61,116 @@ const HashSchemaVersion1 int32 = 1
 // the set of columns the leaf hash covers differs.
 const HashSchemaVersion2 int32 = 2
 
+// HashSchemaVersion3 binds the predecessor's identity into the checkpoint hash
+// and extends the leaf field set, defined in docs/AUDIT-INTEGRITY.md sections 3
+// and 5.1 and cut by migration 016.
+//
+// Two changes, one version, because a version number is expensive: every bump
+// costs a verifier that can compute another field set, so the queued work rides
+// together rather than separately. ADR 0006 (issue #38) asked for
+// prev_checkpoint_id in the hash; ADR 0011 asked for tool names in the leaf and
+// said explicitly they should ride the next bump rather than cause one; the
+// allow event gained the outcome fields that made a permitted request's
+// attestation say what actually ran.
+//
+// Unlike versions 1 and 2, this one CHANGES THE CHECKPOINT HASH CONSTRUCTION.
+// The input is 104 bytes rather than 96, with int64_le(prev_checkpoint_id)
+// appended. A version-2 checkpoint and a version-3 checkpoint over identical
+// inputs therefore hash differently, which is the point: the version scalar was
+// always in the input precisely so that a construction change could not be
+// mistaken for tampering.
+const HashSchemaVersion3 int32 = 3
+
+// CheckpointHashInputLenV3 is the length of the version-3 checkpoint hash
+// input: the 96 bytes of [CheckpointHashInputLen] plus 8 for the predecessor's
+// identity.
+const CheckpointHashInputLenV3 = CheckpointHashInputLen + 8
+
+// GenesisPrevCheckpointID is the prev_checkpoint_id a genesis checkpoint binds,
+// standing for "no predecessor".
+//
+// Zero rather than NULL for the same reason [GenesisPrevHashBytes] is 32 zero
+// bytes rather than an empty slice: the hash input is a fixed width, and an
+// absent value has to have a defined encoding or the first checkpoint in a
+// chain has no reproducible digest.
+const GenesisPrevCheckpointID int64 = 0
+
+// CheckpointHashInputV3 returns the exact bytes hashed to produce a version-3
+// checkpoint hash, per docs/AUDIT-INTEGRITY.md section 3:
+//
+//	merkle_root                     (32 bytes)
+//	|| prev_checkpoint_hash         (32 bytes)
+//	|| uint64_le(range_start)        (8)
+//	|| uint64_le(range_end)          (8)
+//	|| uint32_le(event_count)        (4)
+//	|| uint32_le(hash_schema_version)(4)
+//	|| int64_le(sealed_at_unix_micros)(8)
+//	|| int64_le(prev_checkpoint_id)  (8)
+//
+// The first seven fields are byte-identical to [CheckpointHashInput], so a
+// reader implementing both versions shares everything but the tail.
+//
+// Binding the identity narrows the gap ADR 0006 records, and it is worth being
+// exact about how far. With only the predecessor's HASH in the input,
+// prev_checkpoint_id could be altered while every digest in the chain, INCLUDING
+// one held by an anchoring party, continued to verify: it was the one structural
+// field an external commitment did not reach. Inside the digest, it is covered
+// by whatever that party holds.
+//
+// This does NOT make a rewritten chain detectable offline. The construction is
+// unkeyed, so an attacker with write access to the checkpoint table recomputes
+// any digest and every successor, at version 3 exactly as at version 2.
+// Detection still requires digests obtained independently of the database.
+//
+// It is a separate function rather than a version switch inside
+// [CheckpointHashInput] because that function's output is a shipped contract:
+// an external verifier reproduces those 96 bytes, and adding a branch to it
+// risks changing them.
+func CheckpointHashInputV3(
+	merkleRoot, prevCheckpointHash []byte,
+	rangeStart, rangeEnd int64,
+	eventCount, hashSchemaVersion int32,
+	sealedAt time.Time,
+	prevCheckpointID int64,
+) ([]byte, error) {
+	base, err := CheckpointHashInput(
+		merkleRoot, prevCheckpointHash, rangeStart, rangeEnd,
+		eventCount, hashSchemaVersion, sealedAt)
+	if err != nil {
+		return nil, err
+	}
+	if prevCheckpointID < 0 {
+		return nil, fmt.Errorf("prev_checkpoint_id must not be negative, got %d; "+
+			"the genesis checkpoint passes %d", prevCheckpointID, GenesisPrevCheckpointID)
+	}
+
+	buf := make([]byte, 0, CheckpointHashInputLenV3)
+	buf = append(buf, base...)
+	var tail [8]byte
+	binary.LittleEndian.PutUint64(tail[:], uint64(prevCheckpointID))
+	buf = append(buf, tail[:]...)
+
+	return buf, nil
+}
+
+// ComputeCheckpointHashV3 returns SHA-256 over [CheckpointHashInputV3].
+func ComputeCheckpointHashV3(
+	merkleRoot, prevCheckpointHash []byte,
+	rangeStart, rangeEnd int64,
+	eventCount, hashSchemaVersion int32,
+	sealedAt time.Time,
+	prevCheckpointID int64,
+) ([]byte, error) {
+	input, err := CheckpointHashInputV3(
+		merkleRoot, prevCheckpointHash, rangeStart, rangeEnd,
+		eventCount, hashSchemaVersion, sealedAt, prevCheckpointID)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(input)
+	return sum[:], nil
+}
+
 // CheckpointHashInput returns the exact bytes hashed to produce a checkpoint
 // hash, per docs/AUDIT-INTEGRITY.md section 3:
 //
@@ -173,9 +283,39 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 		return fmt.Errorf("checkpoint %d: prev_checkpoint_hash: %w", sub.CheckpointID, err)
 	}
 
-	recomputed, err := ComputeCheckpointHash(
-		merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
-		sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
+	// The construction differs by version and the submission states which one
+	// sealed it. Recomputing a version-3 checkpoint with the version-2 input
+	// yields a mismatch from intact data, which this function reports as a
+	// checkpoint that does not hash to its stated value: a false accusation
+	// against a gateway whose chain is sound, and one that would stop every
+	// version-3 checkpoint at submission.
+	var recomputed []byte
+	switch sub.HashSchemaVersion {
+	case HashSchemaVersion1, HashSchemaVersion2:
+		recomputed, err = ComputeCheckpointHash(
+			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
+			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
+	case HashSchemaVersion3:
+		prevID := GenesisPrevCheckpointID
+		if sub.PrevCheckpointID != nil {
+			prevID = *sub.PrevCheckpointID
+		}
+		recomputed, err = ComputeCheckpointHashV3(
+			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
+			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time, prevID)
+	default:
+		// Refuse rather than guess. The version now selects the construction,
+		// so falling back to the 96-byte input for an unknown version would
+		// recompute a version-4 checkpoint with version-2 rules; if the two
+		// happened to agree this function would return success, reporting a
+		// digest as verified that it never checked. An unverifiable checkpoint
+		// and a verified one must not be the same answer.
+		return fmt.Errorf(
+			"cannot verify checkpoint %d: hash_schema_version %d is not supported by this build, "+
+				"which verifies versions %d, %d and %d",
+			sub.CheckpointID, sub.HashSchemaVersion,
+			HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3)
+	}
 	if err != nil {
 		return fmt.Errorf("checkpoint %d: %w", sub.CheckpointID, err)
 	}

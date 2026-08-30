@@ -70,6 +70,15 @@ type StreamMetrics struct {
 	EstimatedCostUSD   float64
 	Provider           string
 	Model              string
+	// ReportedModel is the model the PROVIDER named, empty until a chunk
+	// carries one. Model above falls back to the routed name so the usage row
+	// keeps its attribution on an early return; that fallback must not reach
+	// audit_events.model_served, which attests what the provider returned.
+	ReportedModel string
+	// UsageReported records that a usage block arrived, as distinct from one
+	// arriving with zeros in it. A provider may report completion_tokens: 0
+	// alongside a nonzero prompt count, and that zero is a measurement.
+	UsageReported bool
 	// ToolCallNames are the tool names reconstructed from the stream's tool
 	// call deltas, in index order. Names only, never arguments.
 	ToolCallNames []string
@@ -167,7 +176,19 @@ func (sh *StreamingHandler) HandleStream(
 	authInfo *auth.AuthInfo,
 	aegisReq *types.AegisRequest,
 ) {
-	receivedAt := time.Now()
+	// Measured from the OUTER request entry, not from here. The buffered path
+	// records its duration from handler.go's receivedAt, taken before
+	// validation, filtering, routing and request transformation; a streaming
+	// duration that started after all of that would mean something different in
+	// the same column, and would under-report by exactly the preprocessing time
+	// on the requests where preprocessing is slow.
+	//
+	// Falls back only if the field is unset, which the request path does not do:
+	// handler.go sets it before either branch is chosen.
+	receivedAt := aegisReq.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
 
 	// Create context with total timeout
 	ctx, cancel := context.WithTimeout(r.Context(), sh.config.TotalTimeout)
@@ -194,7 +215,9 @@ func (sh *StreamingHandler) HandleStream(
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+					time.Since(receivedAt)),
 				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
 		}
 		return
@@ -230,7 +253,9 @@ func (sh *StreamingHandler) HandleStream(
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
-				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+				withDuration(
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+					time.Since(receivedAt)),
 				// Not providerFailureReason: this branch runs only when the
 				// provider returned a non-200, so its failure is already
 				// established and a concurrent disconnect merely interrupted
@@ -350,8 +375,25 @@ func (sh *StreamingHandler) HandleStream(
 	// would be inventing a response that was never sent. The event type and
 	// reason carry the outcome instead.
 	if sh.handler.auditLogger != nil {
-		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey,
-			clientStatusFor(metrics.Outcome), true)
+		// A stream that ended early still reports what it managed: the counts
+		// are whatever the provider sent before it stopped, and zero where it
+		// sent none, which the logger writes as NULL rather than as a
+		// measurement. Duration is measured to here rather than to the last
+		// chunk, because that is how long the request occupied the gateway.
+		rec := withOutcome(
+			completedRequest(reqID, authInfo, r, originalModel, providerKey,
+				clientStatusFor(metrics.Outcome), true),
+			// ReportedModel, not Model: the latter falls back to the routed name
+			// so an early return still attributes the usage row, and sealing
+			// that would attest a model the provider never named.
+			metrics.ReportedModel,
+			metrics.UsageReported,
+			metrics.PromptTokens, metrics.CompletionTokens, metrics.TotalTokens,
+			// totalDuration, not time.Since(metrics.StartTime): StartTime is
+			// taken after SendRequest returns, so it excludes connection and
+			// response-header latency and would disagree with the usage row and
+			// the metrics for exactly the slow providers worth investigating.
+			totalDuration)
 		switch metrics.Outcome {
 		case StreamOutcomeUnset:
 			// A path out of the monitoring loop set no outcome. The event is
@@ -925,10 +967,12 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 	// served something else. The routed value is a fallback, not a floor.
 	if chunkData.Model != "" {
 		metrics.Model = chunkData.Model
+		metrics.ReportedModel = chunkData.Model
 	}
 
 	// Update token counts if present
 	if chunkData.Usage != nil {
+		metrics.UsageReported = true
 		metrics.PromptTokens = chunkData.Usage.PromptTokens
 		metrics.CompletionTokens = chunkData.Usage.CompletionTokens
 		metrics.TotalTokens = chunkData.Usage.TotalTokens

@@ -74,6 +74,18 @@ type Event struct {
 	Mode           *string
 	Operation      *string
 	ErrorDetail    *string
+
+	// Added by migration 016 and covered by the leaf hash at
+	// hash_schema_version=3. Every one is gateway- or provider-derived: the
+	// model the provider actually served, the tier on the presenting key, the
+	// provider's token counts and the gateway's own measurement. None carries
+	// caller text, which is why they can be sealed at all.
+	ModelServed      *string
+	Classification   *string
+	PromptTokens     *int64
+	CompletionTokens *int64
+	TotalTokens      *int64
+	DurationMs       *int64
 }
 
 func strPtr(s string) *string {
@@ -213,6 +225,10 @@ func (l *Logger) writeEvent(event Event) {
 	event.Mode = clipPtr(event.Mode, MaxMode)
 	event.Operation = clipPtr(event.Operation, MaxOperation)
 	event.ErrorDetail = clipPtr(event.ErrorDetail, MaxErrorDetail)
+	// model_served is a provider-supplied name rather than a configured alias,
+	// so it is bounded like the rest even though no caller chooses it.
+	event.ModelServed = clipPtr(event.ModelServed, MaxModel)
+	event.Classification = clipPtr(event.Classification, MaxMode)
 
 	query := `
 		INSERT INTO audit_events (
@@ -220,10 +236,13 @@ func (l *Logger) writeEvent(event Event) {
 			api_key_id, ip_address, user_agent, endpoint, method, status_code,
 			error_message,
 			api_key_prefix, limit_dimension, limit_value, spent_cents, limit_cents,
-			filter_type, reason, provider, model, mode, operation, error_detail
+			filter_type, reason, provider, model, mode, operation, error_detail,
+			model_served, classification, prompt_tokens, completion_tokens,
+			total_tokens, duration_ms
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+			$14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+			$26, $27, $28, $29, $30, $31
 		)
 	`
 
@@ -253,6 +272,12 @@ func (l *Logger) writeEvent(event Event) {
 		event.Mode,
 		event.Operation,
 		event.ErrorDetail,
+		event.ModelServed,
+		event.Classification,
+		event.PromptTokens,
+		event.CompletionTokens,
+		event.TotalTokens,
+		event.DurationMs,
 	)
 
 	if err != nil {
@@ -447,6 +472,29 @@ type CompletedRequest struct {
 	StatusCode  int
 	IPAddress   string
 	Stream      bool
+
+	// The outcome fields sealed at hash_schema_version=3. Zero means "not
+	// known here" rather than "zero": a streamed response whose usage the
+	// provider never reported has no token count, and recording 0 would attest
+	// a measurement nobody made. LogRequestComplete converts zero to NULL.
+	ModelServed    string
+	Classification string
+
+	// Pointers, so that a provider reporting completion_tokens: 0 alongside a
+	// nonzero prompt count seals the zero it reported rather than a NULL
+	// meaning "none reported". Absence and a measured zero are different facts
+	// and audit_events must not conflate them.
+	PromptTokens     *int64
+	CompletionTokens *int64
+	TotalTokens      *int64
+
+	// A pointer where the token counts are plain, because zero means different
+	// things for the two. A provider that reported no usage gives zero tokens,
+	// and attesting "0 tokens" would claim a measurement nobody took. A request
+	// that completed in under a millisecond genuinely took zero milliseconds,
+	// and nulling that would discard a measurement the gateway did take. So
+	// absence is nil here and zero is a value.
+	DurationMs *int64
 }
 
 // LogRequestComplete records that a request passed every gate and completed.
@@ -492,6 +540,15 @@ func (l *Logger) LogRequestComplete(req CompletedRequest) {
 		// two take different code paths with different usage accounting, and
 		// an assessor reading the trail cannot otherwise tell them apart.
 		Mode: strPtr(streamMode(req.Stream)),
+
+		// What actually ran, rather than what was asked for. model above is the
+		// alias from models.yaml; ModelServed is what the provider returned.
+		ModelServed:      strPtr(req.ModelServed),
+		Classification:   strPtr(req.Classification),
+		PromptTokens:     req.PromptTokens,
+		CompletionTokens: req.CompletionTokens,
+		TotalTokens:      req.TotalTokens,
+		DurationMs:       req.DurationMs,
 	})
 }
 
@@ -526,6 +583,16 @@ func (l *Logger) LogProviderFailure(req CompletedRequest, reason string) {
 		Model:          strPtr(req.RequestedModel),
 		Mode:           strPtr(streamMode(req.Stream)),
 		Reason:         strPtr(reason),
+
+		// A failure that reached the provider still consumed time, and may have
+		// consumed tokens before it failed. Sealing them keeps the failure row
+		// answerable to the same questions as the success row.
+		ModelServed:      strPtr(req.ModelServed),
+		Classification:   strPtr(req.Classification),
+		PromptTokens:     req.PromptTokens,
+		CompletionTokens: req.CompletionTokens,
+		TotalTokens:      req.TotalTokens,
+		DurationMs:       req.DurationMs,
 	})
 }
 
