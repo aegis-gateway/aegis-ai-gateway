@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/audittest"
 )
 
 // An allowlist denial must be its own event type, not an auth_failure.
@@ -47,7 +48,19 @@ func TestLogModelDenied_WritesItsOwnEventType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connecting: %v", err)
 	}
-	defer pool.Close()
+	// Registered BEFORE Serialise and never as a defer, which the lock's own
+	// documentation spells out: deferred calls run before cleanups, so
+	// `defer pool.Close()` would wait on the connection the lock holds and the
+	// test would hang until the go test timeout instead of failing. LIFO
+	// ordering here releases the lock first.
+	t.Cleanup(pool.Close)
+
+	// The checkpoint and emitter packages truncate and seal audit_events, and
+	// go test runs package binaries in parallel against one database. Without
+	// this the row can vanish between the write and the read, and the DELETE at
+	// the end can open an id gap that stalls a concurrent sealer. Sibling
+	// integration tests take the same lock.
+	audittest.Serialise(t, pool)
 
 	reqID := "req_md_" + time.Now().UTC().Format("20060102150405.000000")
 	logger := audit.NewLogger(pool)
