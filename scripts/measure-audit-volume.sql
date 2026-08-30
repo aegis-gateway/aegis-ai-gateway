@@ -6,10 +6,13 @@
 -- count. This file exists so that a later measurement compares against the
 -- earlier one instead of against a different corpus.
 --
--- The generated row populates exactly the columns audit.Logger.LogRequestComplete
--- sets, leaving user_agent, error_message, reason, error_detail and the limit_*
--- columns NULL as production does. Verified against a gateway-written row:
--- 231 bytes real, 238 bytes generated.
+-- The generated row matches what audit.Logger.LogRequestComplete actually
+-- stores, which is not the same as the columns it sets. Event.UserAgent and
+-- Event.ErrorMessage are plain Go strings rather than pointers
+-- (internal/audit/logger.go:56,60), so writeEvent passes "" straight through
+-- and PostgreSQL stores '' rather than NULL. Every other column the event does
+-- not set is a *string and really is NULL. Confirmed against a gateway-written
+-- row: user_agent and error_message hold '', reason and error_detail hold NULL.
 --
 --   psql "$DATABASE_URL" -f scripts/measure-audit-volume.sql
 --   psql "$DATABASE_URL" -c "select reset_audit_volume_corpus()"
@@ -33,8 +36,8 @@
 -- indexes on audit_events are ordered by timestamp DESC
 -- (migrations/005_create_audit_events.up.sql:27-32), so whether rows arrive
 -- oldest-first or newest-first changes how btree pages split, and with it the
--- index size. Seeding in descending order measures 542.5 bytes per row where
--- ascending measures 609.2, on byte-identical heap data. Production appends in
+-- index size. Seeding in descending order measures 549.8 bytes per row where
+-- ascending measures 616.5, on byte-identical heap data. Production appends in
 -- real time, so ascending is the representative order. This one detail accounts
 -- for most of the disagreement between the two earlier ad hoc measurements.
 
@@ -92,8 +95,8 @@ BEGIN
 
   INSERT INTO audit_events (
     request_id, timestamp, event_type, organization_id, team_id, user_id,
-    api_key_id, api_key_prefix, ip_address, endpoint, method, status_code,
-    provider, model, mode
+    api_key_id, api_key_prefix, ip_address, user_agent, endpoint, method,
+    status_code, error_message, provider, model, mode
   )
   SELECT
     'req_' || lpad(g::text, 13, '0') || '_' || md5(g::text)::varchar(16),
@@ -105,9 +108,11 @@ BEGIN
     md5((g % key_pool)::text)::uuid,
     'aegis-prod-' || substr(md5((g % key_pool)::text), 1, 8),
     '203.0.113.' || (g % 254),
+    '',   -- not NULL: Event.UserAgent is a string, so "" reaches the column
     '/v1/chat/completions',
     'POST',
     CASE WHEN g % 50 = 0 THEN 503 ELSE 200 END,
+    '',   -- likewise Event.ErrorMessage
     (ARRAY['anthropic','openai','azure_openai'])[1 + g % 3],
     (ARRAY['aegis-fast','aegis-smart','aegis-balanced'])[1 + g % 3],
     CASE WHEN g % 3 = 0 THEN 'stream' ELSE 'buffered' END
