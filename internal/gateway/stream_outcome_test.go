@@ -979,14 +979,18 @@ func TestStream_ProviderReportedModelOverridesTheRoutedOne(t *testing.T) {
 
 // decodeFailingAdapter answers with 200 and then fails while the body is being
 // read, which is what a caller disconnecting mid-decode looks like from here.
-type decodeFailingAdapter struct{}
+type decodeFailingAdapter struct{ status int }
 
 func (decodeFailingAdapter) Name() string { return "stub-provider" }
 func (decodeFailingAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
 	return http.NewRequestWithContext(ctx, http.MethodPost, "http://provider.invalid/v1/chat/completions", nil)
 }
-func (decodeFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
+func (d decodeFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
+	status := d.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 }
 func (decodeFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
 	return nil, context.Canceled
@@ -1001,11 +1005,20 @@ func (decodeFailingAdapter) SupportsTools() bool                           { ret
 // operator uses to judge provider reliability.
 func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.T) {
 	tests := map[string]struct {
+		status int
 		cancel bool
 		want   string
 	}{
-		"caller cancelled":  {true, audit.ReasonClientDisconnected},
-		"provider at fault": {false, audit.ReasonProviderError},
+		// 200 that will not decode: the cause is genuinely unknown, so a
+		// cancelled caller is the explanation.
+		"cancelled mid-decode of a 200": {http.StatusOK, true, audit.ReasonClientDisconnected},
+		"undecodable 200, live caller":  {http.StatusOK, false, audit.ReasonProviderError},
+
+		// A non-200 means the provider already failed. A concurrent disconnect
+		// only interrupted reading its error body and must not erase a real
+		// provider failure from the reliability record.
+		"non-200, caller also gone": {http.StatusBadGateway, true, audit.ReasonProviderError},
+		"non-200, live caller":      {http.StatusBadGateway, false, audit.ReasonProviderError},
 	}
 
 	for name, tt := range tests {
@@ -1013,7 +1026,7 @@ func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.
 			spy := &outcomeSpy{}
 			h := newAllowlistTestHandler(spy)
 			reg := router.NewRegistry()
-			reg.Register("stub-provider", decodeFailingAdapter{})
+			reg.Register("stub-provider", decodeFailingAdapter{status: tt.status})
 			h.registry = reg
 
 			ctx, cancel := context.WithCancel(context.Background())

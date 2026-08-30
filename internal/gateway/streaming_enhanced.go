@@ -230,7 +230,11 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
-				providerFailureReason(r, audit.ReasonProviderError))
+				// Not providerFailureReason: this branch runs only when the
+				// provider returned a non-200, so its failure is already
+				// established and a concurrent disconnect merely interrupted
+				// reading the error body.
+				audit.ReasonProviderError)
 		}
 		return
 	}

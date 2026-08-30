@@ -23,19 +23,21 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 )
 
-// providerFailureReason picks the reason for a request that failed before a
-// response was produced.
+// providerFailureReason picks the reason for a request whose failure has NO
+// established cause.
 //
 // A caller cancelling mid-request lands on the same error paths as a provider
-// that failed. It surfaces as an error from the send when the provider was
-// never reached, and as an error from the body read when the provider had
-// answered and the caller went away while the response was being decoded.
-// Sealing a provider reason for either attributes routine client disconnects to
-// a provider fault, permanently, in the record an operator would use to judge
-// provider reliability.
+// that failed: an error from the send when the provider was never reached, and
+// an error from the body read when the provider answered and the caller went
+// away mid-decode. Sealing a provider reason for those attributes routine
+// disconnects to a provider fault, permanently, in the record an operator uses
+// to judge provider reliability. The request context distinguishes them.
 //
-// The request context distinguishes them. It is cancelled when the client goes
-// away, and untouched when the provider simply failed.
+// USE THIS ONLY WHERE THE CAUSE IS GENUINELY UNKNOWN. Once a non-200 status is
+// in hand the provider has already failed, and a disconnect during the read of
+// its error body does not erase that: calling this there would delete a real
+// provider failure from the reliability record. Check the status first and pass
+// the provider reason straight through when it is established.
 func providerFailureReason(r *http.Request, providerReason string) string {
 	if errors.Is(r.Context().Err(), context.Canceled) {
 		return audit.ReasonClientDisconnected
