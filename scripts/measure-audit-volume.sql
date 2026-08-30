@@ -16,6 +16,10 @@
 --   psql "$DATABASE_URL" -c "select seed_audit_events(540500)"
 --   psql "$DATABASE_URL" -c "select * from audit_volume_report"
 --
+-- Point it at a scratch database. seed_audit_events locks audit_events against
+-- all other writers for the duration of the seed, so running it against a
+-- database a gateway is using will block that gateway's audit writes.
+--
 -- seed_audit_events refuses to run against a non-empty audit_events, because
 -- audit_volume_report divides whole-table size by whole-table count: appending
 -- to an existing corpus silently reports a figure for neither the rows you asked
@@ -32,6 +36,14 @@
 -- on byte-identical heap data. Production appends in real time, so ascending is
 -- the representative order. This one detail accounts for most of the
 -- disagreement between the two earlier ad hoc measurements.
+-- Dropped by explicit signature first. CREATE OR REPLACE cannot change a
+-- function's argument list, so re-running an updated copy of this file over an
+-- older one leaves both versions registered, and a call that relies on defaults
+-- then fails as ambiguous rather than picking the newer one.
+DROP FUNCTION IF EXISTS seed_audit_events(bigint);
+DROP FUNCTION IF EXISTS seed_audit_events(bigint, int);
+DROP FUNCTION IF EXISTS seed_audit_events(bigint, int, int);
+
 -- key_pool bounds how many distinct API keys the corpus uses. It matters:
 -- idx_audit_events_api_key is (api_key_id, timestamp DESC), so a fresh random
 -- uuid per event both makes the page layout nondeterministic between runs and
@@ -49,6 +61,14 @@ RETURNS void AS $$
 DECLARE
   existing bigint;
 BEGIN
+  -- Held to the end of this function's transaction. Without it the emptiness
+  -- test below is only a snapshot: a gateway writing to the same database can
+  -- commit an event between the check and the bulk insert, or while it runs,
+  -- and the corpus is silently mixed while the guard reports success. Taking
+  -- the lock also states the requirement, since a harness that has to exclude
+  -- the application wants an isolated database.
+  LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE;
+
   SELECT count(*) INTO existing FROM audit_events;
   IF existing > 0 THEN
     RAISE EXCEPTION
