@@ -1287,3 +1287,46 @@ func TestStream_NotStartedIsCountedAsAFailure(t *testing.T) {
 		t.Errorf("500 counter moved by %v, want 1; error-rate dashboards read this", got)
 	}
 }
+
+// The gateway's own deadline ending a stream is not the caller leaving, even
+// though the write that fails afterwards looks identical to a disconnect.
+//
+// Corroborating clientGone with any non-nil context error made the timeout
+// branch unreachable for exactly this failure, so a stream the gateway itself
+// cut short was sealed as client_disconnected and reported disconnect metrics.
+func TestStream_DeadlineWinsOverASocketShapedError(t *testing.T) {
+	h := newAllowlistTestHandler(&outcomeSpy{})
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    40 * time.Millisecond,
+		PerChunkTimeout: 5 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+
+	// The chunk write fails the way a dead socket fails, and it does so after
+	// the total deadline has elapsed.
+	adapter := &scriptedStreamAdapter{
+		body:         "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
+		transformErr: fmt.Errorf("write chunk: %w", syscall.EPIPE),
+		onTransform:  func() { time.Sleep(80 * time.Millisecond) },
+	}
+	resp, err := adapter.SendRequest(nil)
+	if err != nil {
+		t.Fatalf("sending: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	got := sh.streamWithMonitoring(ctx, httptest.NewRecorder(), "req-deadline-epipe",
+		resp, adapter, "anthropic", "claude-test",
+		&auth.AuthInfo{OrganizationID: "org-test"})
+
+	if got.Outcome == StreamClientDisconnected {
+		t.Error("a stream ended by the gateway's own deadline was sealed as a client " +
+			"disconnect because the failing write looked like a dead socket")
+	}
+	if got.Outcome != StreamTotalTimeout {
+		t.Errorf("outcome = %q, want %q", got.Outcome, StreamTotalTimeout)
+	}
+}

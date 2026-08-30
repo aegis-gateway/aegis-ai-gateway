@@ -655,3 +655,33 @@ a 401, not observing the database row.
 
 Closing this properly needs a design decision, an invalidation channel or a short-lived
 version counter checked on every hit, and is deliberately not attempted here.
+
+---
+
+### 2.16 `keygen` mints keys that are denied every model
+
+`cmd/keygen` writes `allowed_models` as an empty JSON array
+(`cmd/keygen/main.go:96-105`) and offers no flag to populate it. Before the allowlist was
+enforced, `[]` was inert: the field was a display filter and the routing layer served every
+model the key's classification allowed.
+
+Phase 1 made `[]` meaningful. `modelAllowed` treats an empty allowlist as *no model is
+permitted*, so `internal/gateway/handler.go:200` refuses the request and the sealed event
+carries `audit.UnconfiguredModel`. The refusal is correct: an unconfigured key should not
+silently inherit the whole catalogue. The consequence is that **every key `keygen` issues
+is now inert until its `allowed_models` is populated**, and the only way to populate it is
+a direct `UPDATE` against `api_keys`:
+
+```sql
+UPDATE api_keys SET allowed_models = '["aegis-fast"]'::jsonb
+ WHERE key_prefix = 'aegis-prod-xxxxxxxx';
+```
+
+The value must be a JSON array of strings. Migration `015` adds a `CHECK` that rejects
+anything else, and `parseAllowedModels` fails closed on a value it cannot read, so a
+malformed edit revokes the key rather than widening it.
+
+This is recorded rather than fixed because giving `keygen` an allowlist flag is a change to
+the issuing tool, which this work order does not cover. Whoever picks it up should decide
+whether the flag is required or defaults to a named starter set, since a default that is
+convenient is also a default that quietly grants models.

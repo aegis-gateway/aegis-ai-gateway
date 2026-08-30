@@ -690,12 +690,19 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				// clientGone as well as cancellation: a disconnect during a
 				// chunk write surfaces as EPIPE or ECONNRESET, which is the
 				// commonest form and wraps nothing cancellation-shaped.
-				if (errors.Is(err, context.Canceled) || clientGone(err)) &&
-					ctx.Err() != nil {
-					metrics.Outcome = StreamClientDisconnected
-				} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				switch {
+				case errors.Is(ctx.Err(), context.DeadlineExceeded):
+					// The gateway's OWN deadline ended the stream. The write
+					// then failing with a socket error is a consequence of
+					// that, not the cause, and the caller did not leave. This
+					// case is first because the previous version corroborated
+					// clientGone with any non-nil context error, which made
+					// this branch unreachable for exactly that failure.
 					metrics.Outcome = StreamTotalTimeout
-				} else {
+				case (errors.Is(err, context.Canceled) || clientGone(err)) &&
+					errors.Is(ctx.Err(), context.Canceled):
+					metrics.Outcome = StreamClientDisconnected
+				default:
 					metrics.Outcome = StreamChunkError
 				}
 				return metrics
