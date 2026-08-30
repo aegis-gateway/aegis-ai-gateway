@@ -31,20 +31,26 @@
 -- golang-migrate marks version 17 dirty on a refusal, as it did for 13: the
 -- flag records a migration that did not run, not one that ran halfway. Clear it
 -- with UPDATE schema_migrations SET version=16, dirty=false.
+-- Resolved once, unqualified, so the guard and the DROP cannot name different
+-- relations. An earlier draft checked public.audit_logs while counting and
+-- dropping the unqualified name: under a non-default search_path, migration 002
+-- created the table in whatever schema was active, so the guard could inspect one
+-- relation and the DROP remove another, or the guard could find nothing and exit
+-- while the DROP still went ahead.
 DO $$
 DECLARE
-  n bigint;
+  rel regclass := to_regclass('audit_logs');
+  n   bigint;
 BEGIN
-  IF to_regclass('public.audit_logs') IS NULL THEN
-    RAISE NOTICE 'audit_logs does not exist; nothing to drop';
+  IF rel IS NULL THEN
+    RAISE NOTICE 'audit_logs does not exist on the current search_path; nothing to drop';
     RETURN;
   END IF;
-  EXECUTE 'SELECT count(*) FROM audit_logs' INTO n;
+  EXECUTE format('SELECT count(*) FROM %s', rel) INTO n;
   IF n > 0 THEN
     RAISE EXCEPTION
-      'refusing to drop audit_logs: it holds % row(s). Nothing in this repository writes that table, so something else did. Export or verify those rows before dropping.',
-      n;
+      'refusing to drop %: it holds % row(s). Nothing in this repository writes that table, so something else did. Export or verify those rows before dropping.',
+      rel, n;
   END IF;
+  EXECUTE format('DROP TABLE %s', rel);
 END $$;
-
-DROP TABLE IF EXISTS audit_logs;

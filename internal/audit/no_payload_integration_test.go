@@ -189,7 +189,11 @@ func TestNoPayload_CanaryEndToEnd(t *testing.T) {
 
 	// 3. Now the absence check is meaningful: the audit path demonstrably ran
 	//    for this request, and the payload still must not be in it.
-	for _, table := range []string{"audit_logs", "audit_events"} {
+	// audit_events only: migration 017 dropped audit_logs, which nothing ever
+	// wrote. Querying a table that no longer exists fails the canary with
+	// undefined_table, which would read as a retention failure rather than as a
+	// removed table.
+	for _, table := range []string{"audit_events"} {
 		assertCanaryAbsent(ctx, t, pool, table, canaryValue)
 	}
 
