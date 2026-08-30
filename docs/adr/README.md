@@ -42,9 +42,10 @@ What this costs, and what it forecloses.
 | [0003](0003-no-schema-validator-in-the-gateway.md) | No JSON Schema validator in the gateway | Accepted |
 | [0004](0004-reserved-fields-must-not-be-populated.md) | Undecided protocol fields are reserved, not optional | Accepted |
 | [0005](0005-covered-time-range-is-required.md) | The covered time range is required in v1 | Accepted |
-| [0006](0006-predecessor-identity-is-not-hash-bound.md) | Predecessor identity is not bound into the checkpoint hash | Proposed |
+| [0006](0006-predecessor-identity-is-not-hash-bound.md) | Predecessor identity is not bound into the checkpoint hash | Partly addressed in `hash_schema_version=3` |
 | [0007](0007-hash-construction-belongs-to-the-protocol.md) | The hash construction belongs to the protocol package | Accepted |
 | [0008](0008-seal-status-is-gateway-declared.md) | Sealing status is three states, judged against a gateway-declared window | Accepted |
 | [0009](0009-indexless-tool-call-deltas-are-dropped.md) | An indexless streaming tool call delta is dropped, not merged | Accepted |
 | [0010](0010-nested-request-fields-are-allowlisted.md) | Unknown fields are refused at every level of the request | Accepted |
-| [0011](0011-tool-names-wait-for-a-hash-schema-bump.md) | Tool names wait for a hash schema bump rather than causing one | Accepted |
+| [0011](0011-tool-names-wait-for-a-hash-schema-bump.md) | Tool names wait for a hash schema bump rather than causing one | Superseded by its own amendment |
+| [0012](0012-an-allowlist-refusal-is-403-not-503.md) | A per-key model refusal is 403, not 503 | Accepted |
