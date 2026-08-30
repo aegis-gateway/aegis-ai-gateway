@@ -68,3 +68,42 @@ func TestTransformResponse_DistinguishesAbsentUsageFromReportedZeros(t *testing.
 		})
 	}
 }
+
+// An Anthropic message_delta reporting an all-zero usage object is a
+// measurement. Gating the relayed usage on a positive count dropped it, which
+// left metrics.UsageReported false downstream and sealed three NULLs meaning
+// "the provider reported nothing".
+func TestAnthropicStream_AllZeroUsageIsStillReported(t *testing.T) {
+	tr := &anthropicStreamTransformer{toolOrdinal: map[int]int{}}
+
+	start := `{"type":"message_start","message":{"model":"claude-test","usage":{"input_tokens":0}}}`
+	if _, err := tr.Transform([]byte(start)); err != nil {
+		t.Fatalf("message_start: %v", err)
+	}
+	delta := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`
+	out, err := tr.Transform([]byte(delta))
+	if err != nil {
+		t.Fatalf("message_delta: %v", err)
+	}
+	if !strings.Contains(string(out), `"usage"`) {
+		t.Errorf("an all-zero usage object was dropped from the relayed chunk, so the "+
+			"sealed row records no measurement where the provider reported zeros; got %s",
+			string(out))
+	}
+}
+
+// The converse: a stream that never reports usage must not gain one.
+func TestAnthropicStream_NoUsageObjectStaysAbsent(t *testing.T) {
+	tr := &anthropicStreamTransformer{toolOrdinal: map[int]int{}}
+
+	if _, err := tr.Transform([]byte(`{"type":"message_start","message":{"model":"claude-test"}}`)); err != nil {
+		t.Fatalf("message_start: %v", err)
+	}
+	out, err := tr.Transform([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	if err != nil {
+		t.Fatalf("message_delta: %v", err)
+	}
+	if strings.Contains(string(out), `"usage"`) {
+		t.Errorf("a stream that reported no usage gained a usage object: %s", string(out))
+	}
+}

@@ -157,7 +157,7 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 	}
 	toolCalls := fromAnthropicToolUse(antResp.Content)
 
-	return &types.AegisResponse{
+	out := &types.AegisResponse{
 		Model:    antResp.Model,
 		Provider: "anthropic",
 		Choices: []types.Choice{
@@ -171,11 +171,12 @@ func (a *AnthropicAdapter) TransformResponse(ctx context.Context, resp *http.Res
 				FinishReason: mapStopReason(antResp.StopReason),
 			},
 		},
-		// Anthropic always returns a usage object on a successful message, so
-		// the counts are always a reported measurement rather than an absence.
-		Usage:         anthropicUsageToCanonical(antResp.Usage),
-		UsageReported: true,
-	}, nil
+	}
+	if antResp.Usage != nil {
+		out.UsageReported = true
+		out.Usage = anthropicUsageToCanonical(*antResp.Usage)
+	}
+	return out, nil
 }
 
 // TransformStreamChunk converts an Anthropic SSE data payload to OpenAI streaming format.
@@ -324,7 +325,12 @@ type anthropicResponseBody struct {
 	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
-	Usage      anthropicUsage          `json:"usage"`
+	// A pointer for the reason the OpenAI body uses one: an absent usage object
+	// and one carrying zeros are different facts, and audit_events seals the
+	// counts. Anthropic does return usage on a successful message, so this is
+	// belt and braces rather than a known case, but asserting it unconditionally
+	// would seal three zeros as measured for any response that did not.
+	Usage *anthropicUsage `json:"usage"`
 }
 
 // anthropicUsageToCanonical converts Anthropic's token counts to the canonical
