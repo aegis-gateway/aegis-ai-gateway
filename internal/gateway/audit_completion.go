@@ -64,7 +64,29 @@ func callerWentAway(r *http.Request, err error) bool {
 	if !errors.Is(r.Context().Err(), context.Canceled) {
 		return false
 	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, retry.ErrContextCancelled)
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, retry.ErrContextCancelled) {
+		return false
+	}
+	// A cancellation that arrived on top of a provider failure is not a clean
+	// disconnect. retry.Executor joins the last attempt's error when a caller
+	// leaves during backoff, precisely so that fault is still visible here, and
+	// treating the request as a disconnect would discard it.
+	return !errors.Is(err, retry.ErrMaxRetriesExceeded) && !hasProviderFault(err)
+}
+
+// hasProviderFault reports whether a provider error is present alongside a
+// cancellation. errors.Join produces a tree, so the whole chain is walked.
+func hasProviderFault(err error) bool {
+	var joined interface{ Unwrap() []error }
+	if !errors.As(err, &joined) {
+		return false
+	}
+	for _, e := range joined.Unwrap() {
+		if !errors.Is(e, context.Canceled) && !errors.Is(e, retry.ErrContextCancelled) {
+			return true
+		}
+	}
+	return false
 }
 
 // completedRequest builds the attested record of a request that passed every

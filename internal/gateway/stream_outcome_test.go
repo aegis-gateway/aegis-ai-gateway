@@ -57,6 +57,13 @@ func (o *outcomeSpy) LogProviderFailure(req audit.CompletedRequest, reason strin
 // scriptedStreamAdapter replays a fixed SSE body with HTTP 200.
 type scriptedStreamAdapter struct {
 	body string
+	// transformErr makes chunk transformation fail for a provider reason.
+	transformErr error
+	// onTransform runs during chunk transformation, which is how a test can
+	// cancel at the exact moment the chunk is being processed. Cancelling
+	// beforehand is useless: the loop's ctx.Done() case wins immediately and
+	// the branches under test are never reached.
+	onTransform func()
 	// anthropicStyle makes TransformStreamChunk render the provider's
 	// message_stop as [DONE], which is what the real Anthropic transformer
 	// does. The raw line never contains [DONE] in that case.
@@ -78,6 +85,12 @@ func (a *scriptedStreamAdapter) TransformResponse(ctx context.Context, resp *htt
 	return nil, nil
 }
 func (a *scriptedStreamAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
+	if a.onTransform != nil {
+		a.onTransform()
+	}
+	if a.transformErr != nil {
+		return nil, a.transformErr
+	}
 	if a.anthropicStyle && strings.Contains(string(chunk), "message_stop") {
 		return []byte("[DONE]"), nil
 	}
@@ -1079,4 +1092,88 @@ func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.
 			}
 		})
 	}
+}
+
+// A caller closing promptly after receiving [DONE] is the normal end of a
+// streamed request. terminatorSeen is set only after the marker is written AND
+// flushed without error, so the full response demonstrably went out; cancelling
+// the context afterwards does not undo that. Sealing it as a disconnect would
+// deny a completion that happened.
+func TestStream_CloseAfterTerminatorIsStillACompletion(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The Anthropic form routes the marker through Transform, so cancelling
+	// there lands the disconnect exactly as the terminator is processed, which
+	// is what a client closing on receipt of [DONE] looks like.
+	adapter := &scriptedStreamAdapter{
+		anthropicStyle: true,
+		body:           "data: {\"type\":\"message_stop\"}\n\n",
+		onTransform:    cancel,
+	}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	resp, err := adapter.SendRequest(nil)
+	if err != nil {
+		t.Fatalf("sending: %v", err)
+	}
+
+	got := sh.streamWithMonitoring(ctx, httptest.NewRecorder(), "req-close-after-done",
+		resp, adapter, "anthropic", "claude-test", info)
+
+	if got.Outcome != StreamCompleted {
+		t.Errorf("outcome = %q, want %q: the terminator was written and flushed, so the "+
+			"response went out and a prompt client close does not undo it",
+			got.Outcome, StreamCompleted)
+	}
+	_ = spy
+}
+
+// A provider sending an untransformable chunk fails on the same branch a
+// disconnect does. A cancellation arriving alongside it must not relabel a
+// provider fault as a client disconnect.
+func TestStream_ChunkErrorIsNotRelabelledByACoincidentCancellation(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The provider fails the chunk AND the caller leaves at the same moment.
+	// Cancelling before the run instead would be useless: the loop's ctx.Done()
+	// case wins immediately and this branch is never reached, which is how an
+	// earlier version of this test passed against correct code.
+	adapter := &scriptedStreamAdapter{
+		body:         "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
+		transformErr: errors.New("untransformable chunk from provider"),
+		onTransform:  cancel,
+	}
+
+	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
+	resp, err := adapter.SendRequest(nil)
+	if err != nil {
+		t.Fatalf("sending: %v", err)
+	}
+
+	got := sh.streamWithMonitoring(ctx, httptest.NewRecorder(), "req-chunk-err",
+		resp, adapter, "anthropic", "claude-test", info)
+
+	if got.Outcome == StreamClientDisconnected {
+		t.Error("a provider chunk failure was relabelled as a client disconnect because " +
+			"the context happened to be cancelled")
+	}
+	_ = spy
 }

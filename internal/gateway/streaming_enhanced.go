@@ -675,13 +675,17 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
 				}
-				// A chunk failing to write is the usual way a caller hanging up
-				// first becomes visible, so the cause is consulted here for the
-				// same reason the terminator path consults it: otherwise a
-				// disconnect is sealed as a provider interruption, and the two
-				// are different facts about who caused the request to end.
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					metrics.Outcome = outcomeForContext(ctxErr)
+				// The RETURNED ERROR is the evidence, and the context only
+				// corroborates. A chunk failing to write is the usual way a
+				// caller hanging up becomes visible, but a provider sending an
+				// untransformable chunk fails here too, and a cancellation that
+				// merely arrived alongside it must not relabel that as a
+				// disconnect. This branch used to read the context alone,
+				// which is the same mistake providerFailureReason was carrying.
+				if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+					metrics.Outcome = StreamClientDisconnected
+				} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					metrics.Outcome = StreamTotalTimeout
 				} else {
 					metrics.Outcome = StreamChunkError
 				}
@@ -699,16 +703,20 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			// from the scanner-finished case above. Missing it is what once
 			// left a completed stream carrying the zero-value outcome.
 			if metrics.terminatorSeen {
-				// select chooses at random between ready cases, so the
-				// terminator can be processed on the very tick the caller goes
-				// away or the deadline lands. Delivering the marker into a dead
-				// connection is not a completed response, so the context is
-				// consulted before claiming one.
-				if err := ctx.Err(); err != nil {
-					metrics.Outcome = outcomeForContext(err)
-					slog.Info("stream ended as its terminator arrived; not attesting completion",
+				// terminatorSeen is set only after the marker has been written
+				// AND flushed without error, so reaching here means the full
+				// response went out. A caller closing the connection promptly
+				// afterwards, which is the normal end of a streamed request,
+				// cancels the context but does not undo that: sealing it as a
+				// disconnect would deny a completion that demonstrably happened.
+				//
+				// Only a DEADLINE still overrides, because a stream that ran out
+				// of time and produced a terminator on the same tick did not
+				// complete within the budget the operator set.
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					metrics.Outcome = StreamTotalTimeout
+					slog.Info("stream deadline elapsed as its terminator arrived; not attesting completion",
 						"request_id", reqID,
-						"outcome", string(metrics.Outcome),
 						"chunks_sent", metrics.ChunkCount,
 					)
 					return metrics

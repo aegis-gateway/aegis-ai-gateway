@@ -157,7 +157,16 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			if e.metrics != nil {
 				e.metrics.RecordCancellation(provider, "during_backoff")
 			}
-			return nil, fmt.Errorf("%w during backoff: %v", ErrContextCancelled, ctx.Err())
+			// lastErr is joined rather than dropped. The attempt that provoked
+			// this backoff failed for a reason, and a caller who leaves while
+			// waiting does not undo it. Returning only the cancellation makes a
+			// provider fault indistinguishable from a clean disconnect, and the
+			// audit trail then attributes the request to the caller.
+			cancelled := fmt.Errorf("%w during backoff: %v", ErrContextCancelled, ctx.Err())
+			if lastErr != nil {
+				return nil, errors.Join(cancelled, lastErr)
+			}
+			return nil, cancelled
 		case <-time.After(backoff):
 			// Continue to next retry
 		}
