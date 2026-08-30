@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -618,13 +619,26 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 		// permitted request now writes an event, any caller could trigger that
 		// with one long header.
 		//
-		// An over-long id is replaced rather than truncated. Truncating could
-		// collide with another caller's id, and rejecting the request with a
-		// 400 would turn a header the gateway can simply handle into a new
-		// failure mode for traffic that works today. The caller still learns
-		// which id was used, because it is echoed in the response header.
+		// An unusable id is replaced rather than truncated or repaired.
+		// Truncating could collide with another caller's id, and rejecting the
+		// request with a 400 would turn a header the gateway can simply handle
+		// into a new failure mode for traffic that works today. The caller still
+		// learns which id was used, because it is echoed in the response header.
+		//
+		// Two ways an id is unusable, and both must be caught here so that every
+		// sink uses the same value.
+		//
+		// Too long: audit_events.request_id is VARCHAR(50) and PostgreSQL
+		// rejects an over-long value rather than truncating it.
+		//
+		// Not valid UTF-8: Go accepts an obs-text byte such as 0xff in an HTTP/1
+		// header, and the two sinks then diverge. The audit path clips, and clip
+		// replaces invalid bytes with U+FFFD, so the sealed row would carry a
+		// different id from the one returned to the caller and the two could not
+		// be correlated. The usage path does not clip at all, and PostgreSQL
+		// refuses the byte sequence outright, so the spend record is lost.
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" || len(reqID) > audit.MaxRequestID {
+		if reqID == "" || len(reqID) > audit.MaxRequestID || !utf8.ValidString(reqID) {
 			reqID = generateRequestID()
 		}
 		w.Header().Set("X-Request-ID", reqID)

@@ -16,11 +16,13 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
@@ -219,4 +221,62 @@ func healthWithRegistry(t *testing.T, registry *router.Registry) healthResponse 
 		t.Fatal("health response carries no providers block")
 	}
 	return resp
+}
+
+// requestIDMiddleware must replace an id the downstream sinks cannot store, and
+// the two failure modes are different.
+//
+// Too long: audit_events.request_id is VARCHAR(50) and PostgreSQL rejects an
+// over-long value rather than truncating, so the permitted request leaves no
+// attested record.
+//
+// Not valid UTF-8: Go accepts an obs-text byte such as 0xff in an HTTP/1 header.
+// The audit path clips, and clip replaces invalid bytes with U+FFFD, so the
+// sealed row would carry a different id from the one returned to the caller.
+// The usage path does not clip, and PostgreSQL refuses the byte sequence, so the
+// spend record is lost outright.
+func TestRequestIDMiddleware_ReplacesUnusableIDs(t *testing.T) {
+	tests := map[string]struct {
+		given   string
+		replace bool
+	}{
+		"ordinary id":       {"req-abc-123", false},
+		"exactly the limit": {strings.Repeat("a", 50), false},
+		"one over":          {strings.Repeat("a", 51), true},
+		"invalid utf-8":     {"req-\xff-123", true},
+		"short invalid":     {"\xff", true},
+		"absent":            {"", true},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var seen string
+			h := requestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen = w.Header().Get("X-Request-ID")
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tt.given != "" {
+				req.Header.Set("X-Request-ID", tt.given)
+			}
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			if seen == "" {
+				t.Fatal("no request id was set")
+			}
+			if !utf8.ValidString(seen) {
+				t.Errorf("request id %q is not valid UTF-8; PostgreSQL will refuse it", seen)
+			}
+			if len(seen) > audit.MaxRequestID {
+				t.Errorf("request id is %d bytes, over the %d the column holds", len(seen), audit.MaxRequestID)
+			}
+			if tt.replace && seen == tt.given {
+				t.Errorf("unusable id %q was passed through unchanged", tt.given)
+			}
+			if !tt.replace && seen != tt.given {
+				t.Errorf("usable id %q was replaced with %q; the caller's correlation id must survive",
+					tt.given, seen)
+			}
+		})
+	}
 }
