@@ -609,6 +609,14 @@ sample, using `scripts/measure-audit-volume.sql` on PostgreSQL 16.14 with `fsync
 day** of `audit_events` growth and plan retention accordingly. The measured range is 581 to
 612 MB a day; the larger corpus confirms the original figure rather than revising it.
 
+The seed inserts in strict timestamp order, which the gateway does not: `Logger.Log` starts
+a goroutine per event (`internal/audit/logger.go:139-149`), so rows carry ascending
+timestamps but reach the indexes in whatever order the pool schedules them. That reordering
+is local rather than wholesale, and it costs slightly less rather than more. Permuting
+within windows of 64 and 256 rows measures 640.1 and 636.0 bytes per row against 642.1 in
+strict order, about 1 per cent. The default is the strict order because it is the
+conservative end of that range; `jitter_window` reproduces the others.
+
 Sealing and full verification are **linear**: 100,000 events seal in 2.22 s and 400,000 in
 8.73 s, four times the corpus for 3.93 times the work, at roughly 45,000 events per second.
 Verifying all 540,500 with `verify-chain --full` takes 11.75 s. A checkpoint row is

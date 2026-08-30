@@ -38,7 +38,13 @@
 -- models a deployment where every request carries its own credential, which
 -- inflates that index against any real one. A bounded pool reproduces the real
 -- pattern, one credential appending many timestamp-ordered rows.
-CREATE OR REPLACE FUNCTION seed_audit_events(n bigint, key_pool int DEFAULT 500)
+-- jitter_window models how audit.Logger.Log actually inserts. It starts one
+-- goroutine per event (internal/audit/logger.go:139-149), so rows carry
+-- ascending timestamps but reach the indexes in whatever order the pool
+-- schedules them. 0 inserts in strict timestamp order, the idealisation; W > 0
+-- permutes deterministically within each window of W rows.
+CREATE OR REPLACE FUNCTION seed_audit_events(n bigint, key_pool int DEFAULT 500,
+                                             jitter_window int DEFAULT 0)
 RETURNS void AS $$
 DECLARE
   existing bigint;
@@ -71,7 +77,13 @@ BEGIN
     (ARRAY['anthropic','openai','azure_openai'])[1 + g % 3],
     (ARRAY['aegis-fast','aegis-smart','aegis-balanced'])[1 + g % 3],
     CASE WHEN g % 3 = 0 THEN 'stream' ELSE 'buffered' END
-  FROM generate_series(1, n) g;
+  FROM generate_series(1, n) g
+  ORDER BY CASE
+             WHEN jitter_window <= 1 THEN g
+             -- 7919 is coprime with the windows used, so this is a permutation
+             -- within each window rather than a partial reordering.
+             ELSE (g / jitter_window) * jitter_window + ((g * 7919) % jitter_window)
+           END;
 END;
 $$ LANGUAGE plpgsql;
 
