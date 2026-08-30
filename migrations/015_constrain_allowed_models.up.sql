@@ -47,16 +47,23 @@
 -- five minutes and re-validates nothing on a cache hit, so a key revoked here
 -- keeps authenticating until its entry expires. There is no invalidation hook.
 --
--- Flush EVERY cache generation, not just the current one:
+-- To make the revocations effective, STOP THE PRE-MIGRATION GATEWAYS FIRST, then
+-- flush every cache generation:
 --
 --     redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL
 --
--- The prefix is versioned, and gateways from before this change use the
--- unversioned 'aegis:key:' namespace. During a rolling upgrade those instances
--- are still running while this migration executes, so flushing only the newest
--- namespace deletes entries that may not exist yet and leaves the old ones
--- authenticating the keys just revoked. Stopping the pre-migration gateways
--- first has the same effect.
+-- Both halves matter, and neither is sufficient alone.
+--
+-- Every generation, because the prefix is versioned and gateways from before
+-- this change use the unversioned 'aegis:key:' namespace. Flushing only the
+-- newest one deletes entries that may not exist yet.
+--
+-- Stop them first, because a flush concurrent with a running instance is racy:
+-- Lookup reads PostgreSQL and writes Redis afterwards, so a request that read
+-- an affected key before this migration committed can repopulate a namespace
+-- that has already been cleared, and that entry then authenticates the revoked
+-- key for another five minutes. Draining the pre-migration instances and
+-- flushing again afterwards closes the same window.
 --
 -- This is a pre-existing property of the cache rather than something this
 -- migration introduces, and it is recorded in

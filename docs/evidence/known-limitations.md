@@ -620,17 +620,27 @@ There is no invalidation hook. `cost.Calculator.InvalidateCache` exists for pric
 no counterpart here, so an operator revoking a credential during an incident cannot make it
 take effect immediately except by flushing the cache or running without Redis.
 
-**Flush every generation, not just the current one.** The prefix is versioned, and it has
-changed twice: `aegis:key:` before 2026-08-30, then `aegis:key:v2:`, now `aegis:key:v3:`.
-During a rolling upgrade, instances running older code are still reading and writing the
-older namespace, so clearing only the newest one deletes entries that may not exist yet
-while the old instances keep serving the credential.
+**Stop the cache writers first, then flush every generation.** Both halves are required.
+
+*Every generation*, because the prefix is versioned and has changed twice: `aegis:key:`
+before 2026-08-30, then `aegis:key:v2:`, now `aegis:key:v3:`. During a rolling upgrade,
+instances running older code read and write the older namespace, so clearing only the
+newest deletes entries that may not exist yet while the old instances keep serving the
+credential.
+
+*Writers stopped*, because a flush concurrent with a running instance is racy. `Lookup`
+reads PostgreSQL and writes Redis **afterwards**, so a request that read the key before it
+was revoked can repopulate a namespace the flush has already cleared, and that entry
+authenticates the revoked key for another five minutes. Draining the instances and
+flushing again once they are gone closes the same window.
 
 ```
+# after the pre-upgrade instances have stopped or drained
 redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL
 ```
 
-Stopping the pre-upgrade instances before relying on a revocation has the same effect.
+A single flush against a live fleet reduces the exposure but does not end it. Verifying a
+revocation still means observing a 401, not observing the flush.
 
 This is long-standing behaviour rather than anything introduced recently, but two things
 now depend on it being understood. Migration `015` revokes keys whose `allowed_models`
