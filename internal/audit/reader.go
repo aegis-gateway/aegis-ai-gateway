@@ -133,31 +133,6 @@ type EventRow struct {
 	DurationMs       *int64  `json:"duration_ms"`
 }
 
-// LogRow is one row of audit_logs as returned to a reader.
-type LogRow struct {
-	ID                 int64     `json:"id"`
-	RequestID          string    `json:"request_id"`
-	Timestamp          time.Time `json:"timestamp"`
-	DurationMs         int       `json:"duration_ms"`
-	GatewayOverheadMs  int       `json:"gateway_overhead_ms"`
-	StatusCode         int       `json:"status_code"`
-	OrganizationID     string    `json:"organization_id"`
-	TeamID             string    `json:"team_id"`
-	UserID             *string   `json:"user_id"`
-	ModelRequested     string    `json:"model_requested"`
-	ModelServed        string    `json:"model_served"`
-	Provider           string    `json:"provider"`
-	Endpoint           string    `json:"endpoint"`
-	Stream             bool      `json:"stream"`
-	Classification     string    `json:"classification"`
-	PromptTokens       int       `json:"prompt_tokens"`
-	CompletionTokens   int       `json:"completion_tokens"`
-	TotalTokens        int       `json:"total_tokens"`
-	EstimatedCostCents int       `json:"estimated_cost_cents"`
-	RoutingAttempts    int       `json:"routing_attempts"`
-	Failovers          int       `json:"failovers"`
-}
-
 // QueryEvents returns audit_events for one organization, newest first.
 func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([]EventRow, error) {
 	if orgID == "" {
@@ -217,60 +192,6 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 			return nil, fmt.Errorf("audit read: scanning event: %w", err)
 		}
 		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-// QueryLogs returns audit_logs for one organization, newest first.
-//
-// DEPRECATED and unreachable from the HTTP surface. Its only caller was
-// GET /aegis/v1/audit/logs, retired on 2026-08-29, and audit_logs has never
-// been written by anything, so this has only ever returned an empty slice.
-// Kept alongside the table it reads rather than removed separately; both go
-// together when the table does. See docs/evidence/known-limitations.md 2.11.
-func (r *Reader) QueryLogs(ctx context.Context, orgID string, f ReadFilter) ([]LogRow, error) {
-	if orgID == "" {
-		return nil, fmt.Errorf("audit read: organization scope is required")
-	}
-	if orgID == UnattributedOrg {
-		return nil, errUnattributedScope
-	}
-
-	q := `
-		SELECT id, request_id, timestamp, duration_ms, gateway_overhead_ms, status_code,
-		       organization_id, team_id, user_id,
-		       model_requested, model_served, provider, endpoint, stream, classification,
-		       prompt_tokens, completion_tokens, total_tokens, estimated_cost_cents,
-		       routing_attempts, failovers
-		FROM audit_logs
-		WHERE organization_id = $1
-		  AND ($2::timestamptz IS NULL OR timestamp >= $2)
-		  AND ($3::timestamptz IS NULL OR timestamp < $3)
-		  AND ($4::text IS NULL OR request_id = $4)
-		  AND ($5::bigint IS NULL OR id < $5)
-		ORDER BY id DESC
-		LIMIT $6
-	`
-	rows, err := r.db.Query(ctx, q, orgID,
-		nullTime(f.From), nullTime(f.To), nullString(f.RequestID),
-		nullInt64(f.BeforeID), f.limit())
-	if err != nil {
-		return nil, fmt.Errorf("audit read: querying logs: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]LogRow, 0, f.limit())
-	for rows.Next() {
-		var l LogRow
-		if err := rows.Scan(&l.ID, &l.RequestID, &l.Timestamp, &l.DurationMs,
-			&l.GatewayOverheadMs, &l.StatusCode,
-			&l.OrganizationID, &l.TeamID, &l.UserID,
-			&l.ModelRequested, &l.ModelServed, &l.Provider, &l.Endpoint, &l.Stream,
-			&l.Classification, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
-			&l.EstimatedCostCents, &l.RoutingAttempts, &l.Failovers); err != nil {
-			return nil, fmt.Errorf("audit read: scanning log: %w", err)
-		}
-		out = append(out, l)
 	}
 	return out, rows.Err()
 }

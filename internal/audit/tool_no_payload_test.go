@@ -77,7 +77,6 @@ func TestNoPayload_AuditTypesCarryNoToolPayload(t *testing.T) {
 	}{
 		{"audit.Event", reflect.TypeOf(audit.Event{})},
 		{"audit.EventRow", reflect.TypeOf(audit.EventRow{})},
-		{"audit.LogRow", reflect.TypeOf(audit.LogRow{})},
 		{"storage.UsageRecord", reflect.TypeOf(storage.UsageRecord{})},
 	} {
 		assertNoToolPayloadFields(t, target.name, target.typ, map[reflect.Type]bool{})

@@ -147,14 +147,20 @@ default; a populated list is matched exactly against the alias in
 alias outside the list is refused with 403 before routing, and the refusal is
 written to `audit_events`.
 
-### `audit_logs`
+### `audit_logs`, removed
 
-**Created by migration 002 but never written.** No component in the codebase
-inserts into this table — a repository-wide search finds it only in the migration.
-The schema anticipates per-request records (duration, status code, identity, model
-requested vs. served, provider, tokens, cost, filter results, routing attempts),
-but nothing populates it, so it stays empty. Per-request data lives in
-`usage_records` instead.
+**Created by migration 002, never written, dropped by migration 017 on 2026-08-30.**
+No component in the codebase ever inserted into it. The schema anticipated
+per-request records (duration, status code, identity, model requested vs. served,
+provider, tokens, cost, filter results, routing attempts) and none of it was ever
+populated.
+
+Those facts now live in `audit_events`, sealed, since `hash_schema_version=3` added
+`model_served`, `classification`, the token counts and `duration_ms`. Cost stays in
+`usage_records`, which is not sealed.
+
+The retired `GET /aegis/v1/audit/logs` still returns 410 rather than 404, because the
+route existed and was documented.
 
 ### `audit_events`
 
@@ -186,7 +192,7 @@ guaranteed.
 
 Written by `storage.UsageRecorder` for every completed request. Stores per-request token counts, estimated cost in USD, provider, model requested vs. served, classification level, and project tag. Used for cost attribution and budgeting.
 
-There is also a `usage_daily` table (migration 003) intended for daily aggregate roll-ups by org/team/model/provider. Like `audit_logs`, **it has no writer in the codebase** and stays empty; roll-ups would have to be derived from `usage_records`.
+There is also a `usage_daily` table (migration 003) intended for daily aggregate roll-ups by org/team/model/provider. Like `audit_logs` before it was dropped, **it has no writer in the codebase** and stays empty; roll-ups would have to be derived from `usage_records`.
 
 ---
 

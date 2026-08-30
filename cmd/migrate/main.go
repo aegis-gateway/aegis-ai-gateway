@@ -304,13 +304,13 @@ func printProof(p *checkpoint.InclusionProofResult, asJSON bool) {
 }
 
 // runPurge handles 'aegis-migrate purge [flags]'.
-// It deletes audit_logs and/or audit_events rows older than --before and writes
+// It deletes audit_events rows older than --before and writes
 // an audit_purges record for every run (including dry runs).
 func runPurge(args []string) {
 	fs := flag.NewFlagSet("purge", flag.ExitOnError)
 	beforeStr := fs.String("before", "", "delete rows with timestamp < DATE (ISO 8601, required)")
 	dryRun := fs.Bool("dry-run", false, "print counts and ID ranges without deleting; writes dry_run=true row to audit_purges")
-	tableStr := fs.String("table", "both", "table(s) to purge: audit_logs | audit_events | both")
+	tableStr := fs.String("table", "both", "table(s) to purge: audit_events | both (audit_logs was dropped by migration 017)")
 	dbURL := fs.String("db-url", "", "database URL (overrides DATABASE_URL env)")
 	configDir := fs.String("config", "configs", "configuration directory (for audit.retention_days)")
 	fs.Usage = func() {
@@ -361,13 +361,15 @@ func runPurge(args []string) {
 	var tbl purge.Table
 	switch *tableStr {
 	case "audit_logs":
+		// Accepted so the refusal in purge.Run explains itself, rather than
+		// failing here as an unknown flag value.
 		tbl = purge.TableAuditLogs
 	case "audit_events":
 		tbl = purge.TableAuditEvents
 	case "both", "":
 		tbl = purge.TableBoth
 	default:
-		log.Fatalf("purge: invalid --table %q: use audit_logs, audit_events, or both", *tableStr)
+		log.Fatalf("purge: invalid --table %q: use audit_events or both", *tableStr)
 	}
 
 	dsn := resolveDSN(*dbURL)

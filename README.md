@@ -66,7 +66,9 @@ docker exec aegis-demo-postgres pg_dump -U aegis aegis | grep -c AKIAIOSFODNN7EX
 
 Integrity is at checkpoint granularity, not per row. A sealer computes an RFC 6962 Merkle root over a contiguous range of event IDs and writes a checkpoint into `audit_checkpoints`, each binding the previous checkpoint's hash. A per-row `prev_hash` chain was rejected deliberately: it would serialise every audit write on the request path. See [docs/AUDIT-INTEGRITY.md](docs/AUDIT-INTEGRITY.md).
 
-**Written.** Denials and failures go to `audit_events`, one row per refusal: request ID, timestamp, event type, HTTP status, which filter fired, the reason string, org and team, IP, and API key prefix. Per-request decisions go to `audit_logs`: latency, gateway overhead, model requested versus model served, provider, classification, token counts, cost, routing attempts, and failovers. Successful calls are additionally recorded in `usage_records` with tokens and cost (`internal/audit`, `internal/storage`).
+**Written.** Every request produces one `audit_events` row, permitted or refused: request ID, timestamp, event type, HTTP status, org and team, IP, API key prefix, and for a refusal which filter fired and the reason string. Since `hash_schema_version=3` a permitted request also carries the outcome, all of it inside the leaf hash: the model the provider served, the classification the request ran under, the token counts and the duration. Successful calls are additionally recorded in `usage_records` with tokens and cost, which is **not** sealed (`internal/audit`, `internal/storage`).
+
+`audit_logs` was created by migration 002 to hold this and never written by anything; it was dropped by migration 017.
 
 **Never written.** No prompt text. No response text. No matched substring from a filter hit, so a secrets block records that an AWS key pattern was detected and not the key. Rows carry the reason a decision was made and not the content it was made about.
 
@@ -107,7 +109,7 @@ Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an S
 | POST | `/v1/chat/completions` | Yes | Chat completions — an OpenAI-compatible **subset**, see below |
 | GET | `/v1/models` | Yes | List available models |
 | GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
-| GET | `/aegis/v1/audit/logs` | Yes | **Retired**, returns 410. `audit_logs` was never written; use `/aegis/v1/audit/events` |
+| GET | `/aegis/v1/audit/logs` | Yes | **Retired**, returns 410. `audit_logs` was never written and the table was dropped by migration 017; use `/aegis/v1/audit/events` |
 
 `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop` and `stream`
 are honoured, as is tool calling: `tools`, `tool_choice`, `parallel_tool_calls`,
