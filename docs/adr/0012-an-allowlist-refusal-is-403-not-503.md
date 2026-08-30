@@ -18,11 +18,31 @@ which a caller probing aliases could use to map the catalogue.
 
 403, unchanged.
 
-**The enumeration argument does not apply here.** `GET /v1/models` is already
-filtered by the same allowlist, so what a key can see and what it may use are the
-same set by construction. A caller learns the catalogue from the endpoint built
-to tell it. Returning 503 would hide nothing that is not already published to
-that caller, and would hide it only from the caller who asked politely.
+**The enumeration argument does not apply here, though not for the reason it
+first appears.** An earlier draft of this record said `GET /v1/models` publishes
+the catalogue, so 503 would hide nothing. That is wrong: for a key with a
+non-empty allowlist the endpoint lists only the permitted aliases, so the
+excluded ones are *not* published to that caller.
+
+The property that actually holds is stronger. The allowlist check runs **before
+route resolution**, so a configured-but-excluded alias and an alias that does not
+exist produce the same response. Measured against a key allowlisted for
+`aegis-fast` alone:
+
+| requested | status | code |
+|---|---|---|
+| `aegis-fast` | 200 | |
+| `aegis-balanced` (configured, excluded) | 403 | `model_not_allowed` |
+| `totally-made-up-model` (does not exist) | 403 | `model_not_allowed` |
+
+A restricted caller cannot tell the two apart, so there is nothing for 503 to
+conceal. `GET /v1/models` returns `["aegis-fast"]` for that key, which is
+consistent: it publishes what the key may use, not what exists.
+
+For an **unrestricted** key the two are distinguishable, because an empty
+allowlist permits everything and an unknown alias reaches `ResolveRoute` and
+returns 503 `service_unavailable`. That is not a leak worth closing: a key that
+may use every configured model has nothing withheld from it to enumerate.
 
 **503 is a false statement about the system.** The service is available; the
 request was understood and refused on authorisation grounds. An audit trail whose
@@ -44,13 +64,17 @@ of its own change.
 
 ## Consequences
 
-A caller holding a key with a restricted allowlist can distinguish "not permitted
-for you" from "not a model", for models that appear in its own `/v1/models`
-listing. That is accepted, because the listing already tells it.
+A restricted caller cannot distinguish "not permitted for you" from "not a
+model", which is the position this decision leaves in place rather than one it
+had to argue for. The pre-routing order of the check is what provides it, so
+moving the allowlist check after `ResolveRoute` would introduce an enumeration
+channel that does not exist today. Anyone reordering that path should treat this
+as a constraint.
 
-If a deployment ever needs the refusal to be indistinguishable from absence, the
-change is not the status code alone: `/v1/models` filtering, the error code
-`model_not_allowed`, and the message would all have to be reconsidered together,
-and the audit record would need a way to say what really happened while the
-caller is told something else. That is a different decision from this one and
-should be recorded separately.
+The refusal is already indistinguishable from absence for the caller it matters
+for. What a 403 does still reveal is that *some* restriction applies, as against
+a deployment that wanted refusals to look like ordinary unavailability. Changing
+that is not the status code alone: the error code `model_not_allowed` and the
+message name the reason, and the audit record would need a way to say what really
+happened while the caller is told something else. That is a different decision
+and should be recorded separately.
