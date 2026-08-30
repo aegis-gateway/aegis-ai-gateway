@@ -21,10 +21,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,15 +34,14 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
-	"github.com/aegis-gateway/aegis-ai-gateway/internal/ratelimit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
-	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/validation"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -53,6 +54,14 @@ type TestEnv struct {
 	Handler      *Handler
 	Metrics      *telemetry.Metrics
 	Cleanup      func()
+
+	// OrgID is unique per environment; use it as the organization on auth
+	// contexts so usage rows can be attributed back to this test.
+	OrgID string
+
+	// KeyID is the seeded api_keys row. Auth contexts must carry it: usage
+	// records reference it by foreign key.
+	KeyID string
 }
 
 // MockProviderServer mocks an LLM provider API.
@@ -146,6 +155,12 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 	if err != nil {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
+	// pgxpool.New is lazy: it does not open a connection. Without this ping a
+	// missing database would show up only as a usage-write error inside a
+	// goroutine, and every assertion below would still pass.
+	if err := db.Ping(context.Background()); err != nil {
+		t.Fatalf("Failed to reach test database at %s: %v", dbURL, err)
+	}
 
 	// Setup Redis (use testcontainers or local instance)
 	redisURL := os.Getenv("TEST_REDIS_URL")
@@ -161,50 +176,69 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 		t.Fatalf("Failed to connect to test Redis: %v", err)
 	}
 
+	// Each env gets its own organization id so that a usage-row lookup matches
+	// only this test's writes, even against a database other runs have used.
+	orgID := fmt.Sprintf("test-org-%d", time.Now().UnixNano())
+
+	// Seed the API key the requests authenticate as. usage_records.api_key_id
+	// is a uuid with a foreign key onto api_keys, so the old fixture's
+	// KeyID: "test-key" could never have produced a usage row — the insert
+	// failed inside RecordUsage's goroutine where nothing was watching.
+	var keyID string
+	err = db.QueryRow(context.Background(), `
+		INSERT INTO api_keys (key_hash, key_prefix, organization_id, team_id, user_id,
+		                      name, max_classification, allowed_models, expires_at)
+		VALUES ($1, 'aegis-test', $2, 'test-team', 'test-user',
+		        'gateway integration test', 'INTERNAL', '["gpt-4"]', now() + interval '1 hour')
+		RETURNING id`,
+		fmt.Sprintf("%064x", time.Now().UnixNano()), orgID,
+	).Scan(&keyID)
+	if err != nil {
+		t.Fatalf("Failed to seed test API key: %v", err)
+	}
+
 	// Setup mock provider
 	mockProvider := NewMockProviderServer()
 
-	// Setup configuration
+	// Setup configuration.
+	//
+	// This block previously named config.RateLimitConfig, config.RetryConfig
+	// and config.ValidationConfig, none of which exist. Retry and validation
+	// limits are not part of config.Config: retry takes a retry.Config and
+	// validation takes validation.Limits. The file had been written against an
+	// earlier shape and never rebuilt under the integration tag, so it stopped
+	// compiling silently.
 	cfg := &config.Config{
-		Server: config.ServerConfig{
-			Port: 8080,
-		},
-		RateLimit: config.RateLimitConfig{
-			DefaultRequestsPerMinute: 100,
-		},
-		Retry: config.RetryConfig{
-			MaxAttempts:       3,
-			InitialBackoff:    100 * time.Millisecond,
-			MaxBackoff:        5 * time.Second,
-			BackoffMultiplier: 2.0,
-			Jitter:            0.1,
-		},
-		Validation: config.ValidationConfig{
-			MaxModelLength:        100,
-			MaxMessagesCount:      1000,
-			MaxMessageLength:      50000,
-			MaxTemperature:        2.0,
-			MinTemperature:        0.0,
-			MaxTopP:               1.0,
-			MinTopP:               0.0,
-			MaxTokens:             100000,
-			MaxStopSequences:      4,
-			MaxStopSequenceLength: 100,
-		},
+		Server: config.ServerConfig{Port: 8080},
 	}
 
 	modelsCfg := &config.ModelsConfig{
 		Models: map[string]config.ModelMapping{
 			"gpt-4": {
-				Provider: "openai",
-				Model:    "gpt-4",
+				Primary: config.ProviderRoute{
+					Provider:              "openai",
+					Model:                 "gpt-4",
+					ClassificationCeiling: "RESTRICTED",
+				},
 			},
 		},
 	}
 
-	// Setup components
-	metrics := telemetry.NewMetrics()
-	costCalc := cost.NewCalculator(modelsCfg)
+	pricingCfg := &config.PricingConfig{
+		Providers: map[string]config.ProviderPricing{
+			"openai": {Models: map[string]config.PriceEntry{
+				"gpt-4": {Input: 30, Output: 60},
+			}},
+		},
+	}
+
+	// Setup components.
+	//
+	// getTestMetrics() rather than telemetry.NewMetrics(): the metrics are
+	// registered on the default Prometheus registry, so a second SetupTestEnv
+	// in the same binary panics with "duplicate metrics collector registration".
+	metrics := getTestMetrics()
+	costCalc := cost.NewCalculator(func() *config.PricingConfig { return pricingCfg })
 	usageRecorder := storage.NewUsageRecorder(db)
 
 	// Setup providers registry with mock provider
@@ -216,11 +250,17 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 	}
 	registry.Register("openai", mockAdapter)
 
-	healthTracker := router.NewHealthTracker()
+	healthTracker := router.NewHealthTracker(5, 15*time.Second)
 	filterChain := filter.NewChain()
-	retryExecutor := retry.NewExecutor(cfg.Retry, metrics)
+	retryExecutor := retry.NewExecutor(retry.Config{
+		MaxRetries:        3,
+		InitialBackoff:    100 * time.Millisecond,
+		MaxBackoff:        5 * time.Second,
+		BackoffMultiplier: 2.0,
+		JitterFraction:    0.1,
+	}, metrics)
 	contextMonitor := retry.NewContextMonitor(metrics)
-	validator := validation.NewValidator(cfg.Validation, metrics)
+	validator := validation.NewValidator(validation.DefaultLimits(), metrics)
 
 	// Create handler
 	handler := NewHandler(
@@ -240,18 +280,64 @@ func SetupTestEnv(t *testing.T) *TestEnv {
 	)
 
 	cleanup := func() {
+		// Usage recording is fire-and-forget (storage.RecordUsage spawns a
+		// goroutine), so a write may still be in flight here and lose the race
+		// with db.Close(). Tests that care call WaitForUsageRecord first; the
+		// rest may log "closed pool", which is the recorder behaving as
+		// designed rather than a failure.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// usage_records cascades from api_keys, so this clears both.
+		if _, err := db.Exec(ctx, "DELETE FROM api_keys WHERE id = $1", keyID); err != nil {
+			t.Logf("could not clean up seeded API key %s: %v", keyID, err)
+		}
+		cancel()
 		db.Close()
 		redisClient.Close()
 		mockProvider.Server.Close()
 	}
 
 	return &TestEnv{
+		OrgID:        orgID,
+		KeyID:        keyID,
 		DB:           db,
 		Redis:        redisClient,
 		MockProvider: mockProvider,
 		Handler:      handler,
 		Metrics:      metrics,
 		Cleanup:      cleanup,
+	}
+}
+
+// WaitForUsageRecord blocks until a usage row exists for this env's org, or
+// the deadline passes. RecordUsage returns before the row is written, so
+// asserting immediately after the handler returns would be a coin flip.
+func (e *TestEnv) WaitForUsageRecord(t *testing.T) storage.UsageRecord {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var rec storage.UsageRecord
+		err := e.DB.QueryRow(context.Background(), `
+			SELECT model_requested, model_served, provider,
+			       prompt_tokens, completion_tokens, total_tokens,
+			       estimated_cost_usd, status_code, stream
+			  FROM usage_records
+			 WHERE organization_id = $1`, e.OrgID).Scan(
+			&rec.ModelRequested, &rec.ModelServed, &rec.Provider,
+			&rec.PromptTokens, &rec.CompletionTokens, &rec.TotalTokens,
+			&rec.EstimatedCostUSD, &rec.StatusCode, &rec.Stream,
+		)
+		if err == nil {
+			rec.OrganizationID = e.OrgID
+			return rec
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("querying usage_records: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no usage row was written within 5s")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -290,6 +376,19 @@ func (m *mockProviderAdapter) TransformStreamChunk(chunk []byte) ([]byte, error)
 	return chunk, nil
 }
 
+// SupportsStreaming reports true: TestStreamingRequest drives the streaming
+// path through this adapter, and the handler consults this before taking it.
+func (m *mockProviderAdapter) SupportsStreaming() bool {
+	return true
+}
+
+// SupportsTools reports false: none of these scenarios send tool definitions,
+// and claiming tool support the mock does not implement would let a
+// tool-stripping regression pass here unnoticed.
+func (m *mockProviderAdapter) SupportsTools() bool {
+	return false
+}
+
 // TestFullRequestLifecycle tests the complete request flow.
 func TestFullRequestLifecycle(t *testing.T) {
 	env := SetupTestEnv(t)
@@ -310,14 +409,14 @@ func TestFullRequestLifecycle(t *testing.T) {
 
 	// Set auth context
 	authInfo := &auth.AuthInfo{
-		OrganizationID:    "test-org",
+		OrganizationID:    env.OrgID,
 		TeamID:            "test-team",
 		UserID:            "test-user",
-		KeyID:             "test-key",
-		MaxClassification: auth.ClassificationPublic,
+		KeyID:             env.KeyID,
+		MaxClassification: types.ClassPublic,
 		AllowedModels:     []string{"gpt-4"},
 	}
-	ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+	ctx := auth.ContextWithAuth(req.Context(), authInfo)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -356,6 +455,29 @@ func TestFullRequestLifecycle(t *testing.T) {
 	if len(env.MockProvider.Requests) != 1 {
 		t.Errorf("Expected 1 provider request, got %d", len(env.MockProvider.Requests))
 	}
+
+	// The usage row is the reason this test needs a database at all. Without
+	// this assertion the whole harness could run against a dead Postgres and
+	// still report success, which is how it went unnoticed that the file had
+	// stopped compiling.
+	rec := env.WaitForUsageRecord(t)
+	if rec.ModelServed != "gpt-4" || rec.Provider != "openai" {
+		t.Errorf("usage row recorded %s/%s, want gpt-4/openai", rec.Provider, rec.ModelServed)
+	}
+	if rec.TotalTokens != response.Usage.TotalTokens {
+		t.Errorf("usage row has %d total tokens, response reported %d",
+			rec.TotalTokens, response.Usage.TotalTokens)
+	}
+	if rec.EstimatedCostUSD != response.EstimatedCostUSD {
+		t.Errorf("usage row has cost %v, response reported %v",
+			rec.EstimatedCostUSD, response.EstimatedCostUSD)
+	}
+	if rec.StatusCode != http.StatusOK {
+		t.Errorf("usage row has status %d, want 200", rec.StatusCode)
+	}
+	if rec.Stream {
+		t.Error("usage row marked as streaming for a non-streaming request")
+	}
 }
 
 // TestStreamingRequest tests streaming functionality.
@@ -384,11 +506,11 @@ func TestStreamingRequest(t *testing.T) {
 	req.Header.Set("X-Request-ID", "test-stream-123")
 
 	authInfo := &auth.AuthInfo{
-		OrganizationID: "test-org",
+		OrganizationID: env.OrgID,
 		TeamID:         "test-team",
-		KeyID:          "test-key",
+		KeyID:          env.KeyID,
 	}
-	ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+	ctx := auth.ContextWithAuth(req.Context(), authInfo)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -407,11 +529,11 @@ func TestStreamingRequest(t *testing.T) {
 	}
 
 	// Verify streaming chunks were sent
-	body = w.Body.String()
-	if !bytes.Contains([]byte(body), []byte("Hello")) {
+	streamed := w.Body.String()
+	if !strings.Contains(streamed, "Hello") {
 		t.Error("Expected streaming response to contain 'Hello'")
 	}
-	if !bytes.Contains([]byte(body), []byte("[DONE]")) {
+	if !strings.Contains(streamed, "[DONE]") {
 		t.Error("Expected streaming response to end with [DONE]")
 	}
 }
@@ -436,9 +558,9 @@ func TestProviderFailure(t *testing.T) {
 	req.Header.Set("X-Request-ID", "test-fail-123")
 
 	authInfo := &auth.AuthInfo{
-		OrganizationID: "test-org",
+		OrganizationID: env.OrgID,
 	}
-	ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+	ctx := auth.ContextWithAuth(req.Context(), authInfo)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -499,9 +621,9 @@ func TestValidationFailure(t *testing.T) {
 			req.Header.Set("X-Request-ID", "test-validation-"+tt.name)
 
 			authInfo := &auth.AuthInfo{
-				OrganizationID: "test-org",
+				OrganizationID: env.OrgID,
 			}
-			ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+			ctx := auth.ContextWithAuth(req.Context(), authInfo)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
@@ -536,9 +658,9 @@ func TestConcurrentRequests(t *testing.T) {
 			req.Header.Set("X-Request-ID", fmt.Sprintf("concurrent-%d", id))
 
 			authInfo := &auth.AuthInfo{
-				OrganizationID: "test-org",
+				OrganizationID: env.OrgID,
 			}
-			ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+			ctx := auth.ContextWithAuth(req.Context(), authInfo)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
@@ -602,9 +724,9 @@ func TestRetryLogic(t *testing.T) {
 	req.Header.Set("X-Request-ID", "test-retry-123")
 
 	authInfo := &auth.AuthInfo{
-		OrganizationID: "test-org",
+		OrganizationID: env.OrgID,
 	}
-	ctx := auth.NewContextWithAuth(req.Context(), authInfo)
+	ctx := auth.ContextWithAuth(req.Context(), authInfo)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()

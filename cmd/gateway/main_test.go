@@ -165,8 +165,11 @@ func TestMakeHealthHandler_ContentType(t *testing.T) {
 func TestMakeHealthHandler_ReportsMockProvider(t *testing.T) {
 	provCfg := &config.ProvidersConfig{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1"},
-			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1"},
+			// Keys are required: BuildFromConfig leaves an uncredentialed
+			// provider unregistered, since it cannot serve a request and being
+			// registered only made it eligible for routing.
+			"anthropic": {Type: "anthropic", BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key"},
+			"openai":    {Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "test-key"},
 		},
 	}
 

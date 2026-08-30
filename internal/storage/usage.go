@@ -36,11 +36,23 @@ type UsageRecord struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
-	EstimatedCostUSD float64
-	DurationMs       int64
-	StatusCode       int
-	Project          string
-	Stream           bool
+
+	// Cache breakdown, all subsets of PromptTokens. CachedTokens is what the
+	// provider served from cache; the two write counts are what this request
+	// wrote into it, disjoint from CachedTokens and from each other.
+	//
+	// These are persisted so that estimated_cost_usd can be recomputed from the
+	// row that recorded it. Without them a mispriced cache read or write is
+	// unrecoverable once the request is over, which is what happened to the
+	// rows written before the fixes in #59 and #60.
+	CachedTokens       int
+	CacheWrite5mTokens int
+	CacheWrite1hTokens int
+	EstimatedCostUSD   float64
+	DurationMs         int64
+	StatusCode         int
+	Project            string
+	Stream             bool
 }
 
 // UsageRecorder handles writing usage records to the database.
@@ -79,6 +91,7 @@ func (r *UsageRecorder) recordSync(ctx context.Context, record UsageRecord) erro
 			request_id, organization_id, team_id, user_id, api_key_id,
 			model_requested, model_served, provider, classification,
 			prompt_tokens, completion_tokens, total_tokens,
+			cached_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
 			estimated_cost_usd, duration_ms, status_code,
 			project, stream
 		) VALUES (
@@ -86,7 +99,8 @@ func (r *UsageRecorder) recordSync(ctx context.Context, record UsageRecord) erro
 			$6, $7, $8, $9,
 			$10, $11, $12,
 			$13, $14, $15,
-			$16, $17
+			$16, $17, $18,
+			$19, $20
 		)
 	`
 
@@ -94,6 +108,7 @@ func (r *UsageRecorder) recordSync(ctx context.Context, record UsageRecord) erro
 		record.RequestID, record.OrganizationID, record.TeamID, record.UserID, record.APIKeyID,
 		record.ModelRequested, record.ModelServed, record.Provider, record.Classification,
 		record.PromptTokens, record.CompletionTokens, record.TotalTokens,
+		record.CachedTokens, record.CacheWrite5mTokens, record.CacheWrite1hTokens,
 		record.EstimatedCostUSD, record.DurationMs, record.StatusCode,
 		record.Project, record.Stream,
 	)

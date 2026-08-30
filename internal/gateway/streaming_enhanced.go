@@ -388,23 +388,31 @@ func (sh *StreamingHandler) HandleStream(
 	// Record usage asynchronously
 	if sh.handler.usageRecorder != nil {
 		sh.handler.usageRecorder.RecordUsage(storage.UsageRecord{
-			RequestID:        reqID,
-			OrganizationID:   authInfo.OrganizationID,
-			TeamID:           authInfo.TeamID,
-			UserID:           authInfo.UserID,
-			APIKeyID:         authInfo.KeyID,
-			ModelRequested:   originalModel,
-			ModelServed:      metrics.Model,
-			Provider:         metrics.Provider,
-			Classification:   string(authInfo.MaxClassification),
-			PromptTokens:     metrics.PromptTokens,
-			CompletionTokens: metrics.CompletionTokens,
-			TotalTokens:      metrics.TotalTokens,
-			EstimatedCostUSD: metrics.EstimatedCostUSD,
-			DurationMs:       totalDuration.Milliseconds(),
-			StatusCode:       streamStatus,
-			Project:          aegisReq.Project,
-			Stream:           true,
+			RequestID:          reqID,
+			OrganizationID:     authInfo.OrganizationID,
+			TeamID:             authInfo.TeamID,
+			UserID:             authInfo.UserID,
+			APIKeyID:           authInfo.KeyID,
+			ModelRequested:     originalModel,
+			ModelServed:        metrics.Model,
+			Provider:           metrics.Provider,
+			Classification:     string(authInfo.MaxClassification),
+			PromptTokens:       metrics.PromptTokens,
+			CompletionTokens:   metrics.CompletionTokens,
+			TotalTokens:        metrics.TotalTokens,
+			CachedTokens:       metrics.CachedTokens,
+			CacheWrite5mTokens: metrics.CacheWrite5mTokens,
+			CacheWrite1hTokens: metrics.CacheWrite1hTokens,
+			EstimatedCostUSD:   metrics.EstimatedCostUSD,
+			DurationMs:         totalDuration.Milliseconds(),
+			// Not http.StatusOK. A stream that stalled, hit a read error, or
+			// lost its client is not a success, and recording one here while
+			// the audit event records 504, 502 or 499 makes the two tables
+			// disagree about the same request_id. streamStatus is the single
+			// mapping all three sinks read; see StreamOutcome.HTTPStatus.
+			StatusCode: streamStatus,
+			Project:    aegisReq.Project,
+			Stream:     true,
 		})
 	}
 }

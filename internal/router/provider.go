@@ -122,6 +122,32 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 			continue
 		}
 
+		// A provider with no credential cannot serve a request, but leaving it
+		// registered made it *eligible*: ResolveRoute selects the primary route
+		// if the provider is registered, classification-permitted and healthy —
+		// it has no notion of credentials. The request then reached the
+		// provider, came back 401, and surfaced as a 500, while the configured
+		// fallback was never tried, because failover happens at route selection
+		// and not on an upstream auth error.
+		//
+		// The practical effect was that OPENAI_API_KEY alone drove nothing:
+		// every alias is Anthropic-primary, so every request died on an
+		// Anthropic 401 with a perfectly good OpenAI fallback sitting unused.
+		// That produced review findings on four separate PRs, each answered by
+		// documenting the behaviour rather than fixing it.
+		//
+		// Unregistered is the honest state, and it is what the mock-type branch
+		// below already does: the alias falls through to its next route, or
+		// fails closed with "no eligible provider" if there is none. A provider
+		// that genuinely needs no credential says so explicitly — see
+		// internal_vllm's api_key: "not-needed" in configs/providers.yaml.
+		if cfg.APIKey == "" {
+			slog.Warn("provider has no api_key configured; leaving it unregistered so routes fall through to their fallback",
+				"provider", name,
+				"hint", "set its key, or give it a placeholder if the provider needs none")
+			continue
+		}
+
 		client := &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
