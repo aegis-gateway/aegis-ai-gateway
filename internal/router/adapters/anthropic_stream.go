@@ -109,6 +109,11 @@ type anthropicStreamTransformer struct {
 	// a different fact from the counts in it being non-zero. An all-zero usage
 	// block is a measurement; no usage block is not.
 	usageSeen bool
+	// usageInvalid records that some usage object carried a negative counter.
+	// Sticky for the life of the stream: once a provider has reported nonsense
+	// the reconstructed total is not trustworthy, and a later well-formed event
+	// does not repair the components the bad one was meant to supply.
+	usageInvalid bool
 
 	// model is the model the provider actually served, taken from
 	// message_start. The gateway reads it off a relayed chunk and uses it to
@@ -244,7 +249,7 @@ func (t *anthropicStreamTransformer) Transform(chunk []byte) ([]byte, error) {
 		// positive. A message_delta reporting all zeros is a measurement, and
 		// dropping it here made metrics.UsageReported false downstream, which
 		// sealed three NULLs meaning "the provider reported nothing".
-		if t.usageSeen {
+		if t.usageSeen && !t.usageInvalid {
 			chunk.Usage = &openAIUsage{
 				PromptTokens:     t.promptTokens(),
 				CompletionTokens: t.outputTokens,
@@ -310,6 +315,18 @@ type openAIPromptTokensDetails struct {
 // leaves that component alone rather than erasing it.
 func (t *anthropicStreamTransformer) absorbUsage(u anthropicUsage) {
 	t.usageSeen = true
+
+	// A negative counter is not a measurement, and it has to be caught HERE.
+	// The assignments below take a value only when it is positive, so a
+	// negative one is silently discarded and leaves the component at zero;
+	// downstream the block would then look like a valid all-zero measurement
+	// and the gateway's negative-count guard would never see it. Recording the
+	// whole block as invalid keeps a malformed usage object out of the sealed
+	// row rather than laundering it into an explicit zero.
+	if anthropicUsageHasNegative(u) {
+		t.usageInvalid = true
+	}
+
 	if u.InputTokens > 0 {
 		t.uncachedInputTokens = u.InputTokens
 	}

@@ -107,3 +107,49 @@ func TestAnthropicStream_NoUsageObjectStaysAbsent(t *testing.T) {
 		t.Errorf("a stream that reported no usage gained a usage object: %s", string(out))
 	}
 }
+
+// A negative counter is not a measurement, and absorbUsage's positive-only
+// assignments would otherwise discard it and leave a component at zero, so the
+// block reached the sealed row looking like a valid all-zero measurement.
+func TestAnthropicStream_NegativeUsageIsNotLaunderedIntoZero(t *testing.T) {
+	tr := &anthropicStreamTransformer{toolOrdinal: map[int]int{}}
+
+	start := `{"type":"message_start","message":{"model":"claude-test","usage":{"input_tokens":10}}}`
+	if _, err := tr.Transform([]byte(start)); err != nil {
+		t.Fatalf("message_start: %v", err)
+	}
+	delta := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":-5}}`
+	out, err := tr.Transform([]byte(delta))
+	if err != nil {
+		t.Fatalf("message_delta: %v", err)
+	}
+	if strings.Contains(string(out), `"usage"`) {
+		t.Errorf("a usage block carrying a negative counter was relayed as valid usage, "+
+			"so the sealed row records a measurement the provider never made; got %s",
+			string(out))
+	}
+}
+
+// The buffered path launders differently from the stream: it SUMS the three
+// prompt components, so a negative one can cancel a positive one and leave a
+// plausible total that the downstream guard cannot object to.
+func TestAnthropicBuffered_NegativeComponentCancellingToZeroIsRejected(t *testing.T) {
+	a := &AnthropicAdapter{}
+	body := `{"model":"claude-test","stop_reason":"end_turn",` +
+		`"content":[{"type":"text","text":"hi"}],` +
+		`"usage":{"input_tokens":10,"cache_read_input_tokens":-10,"output_tokens":3}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+	out, err := a.TransformResponse(context.Background(), resp)
+	if err != nil {
+		t.Fatalf("transforming: %v", err)
+	}
+	if out.UsageReported {
+		t.Errorf("a usage object with a negative component was reported as measured; "+
+			"the components sum to prompt=%d, which looks valid downstream",
+			out.Usage.PromptTokens)
+	}
+}
