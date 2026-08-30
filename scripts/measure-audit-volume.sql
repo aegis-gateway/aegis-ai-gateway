@@ -67,6 +67,17 @@ BEGIN
   -- and the corpus is silently mixed while the guard reports success. Taking
   -- the lock also states the requirement, since a harness that has to exclude
   -- the application wants an isolated database.
+  -- 7919 is prime, so (g * 7919) % jitter_window enumerates the window exactly
+  -- once when the two are coprime, and degenerates when the window is a
+  -- multiple of it: at jitter_window = 7919 every row in a window takes the
+  -- same sort key and PostgreSQL is free to insert them in any order, which
+  -- silently costs the reproducibility the window exists to provide.
+  IF jitter_window > 1 AND jitter_window % 7919 = 0 THEN
+    RAISE EXCEPTION
+      'jitter_window % is a multiple of the 7919 multiplier, so the within-window ordering collapses instead of permuting. Choose a window coprime with 7919.',
+      jitter_window;
+  END IF;
+
   LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE;
 
   SELECT count(*) INTO existing FROM audit_events;
@@ -100,8 +111,8 @@ BEGIN
   FROM generate_series(1, n) g
   ORDER BY CASE
              WHEN jitter_window <= 1 THEN g
-             -- 7919 is coprime with the windows used, so this is a permutation
-             -- within each window rather than a partial reordering.
+             -- A permutation within each window, given the coprimality
+             -- checked above.
              ELSE (g / jitter_window) * jitter_window + ((g * 7919) % jitter_window)
            END;
 END;
