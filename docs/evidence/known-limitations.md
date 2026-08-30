@@ -601,36 +601,37 @@ sample, using `scripts/measure-audit-volume.sql` on PostgreSQL 16.14 with `fsync
 
 | | 50,000 events | 540,500 events |
 |---|---|---|
-| Heap per row | 255.8 B | 255.7 B |
-| Total per row, with indexes | 616.5 B | 649.6 B |
-| Table size | 29 MB | 335 MB |
+| Heap per row | 257.2 B | 257.2 B |
+| Total per row, with indexes | 617.8 B | 651.1 B |
+| Table size | 29 MB | 336 MB |
 
 **A deployment serving a million requests a day should budget in the region of 600 MB a
-day** of `audit_events` growth and plan retention accordingly. The measured range is 588 to
-620 MB a day; the larger corpus confirms the original figure rather than revising it.
+day** of `audit_events` growth and plan retention accordingly. The measured range is 589 to
+621 MB a day; the larger corpus confirms the original figure rather than revising it.
 
 The seed inserts in strict timestamp order, which the gateway does not: `Logger.Log` starts
 a goroutine per event (`internal/audit/logger.go:139-149`), so rows carry ascending
 timestamps but reach the indexes in whatever order the pool schedules them. That reordering
 is local rather than wholesale, and it costs slightly less rather than more. Permuting
-within windows of 64 and 256 rows measures 647.2 and 641.6 bytes per row against 649.6 in
+within windows of 64 and 256 rows measures 648.7 and 645.4 bytes per row against 651.1 in
 strict order, about 1 per cent. The default is the strict order because it is the
 conservative end of that range; `jitter_window` reproduces the others.
 
-Sealing and full verification are **linear**: 100,000 events seal in 2.23 s and 400,000 in
-8.81 s, four times the corpus for 3.95 times the work, at roughly 45,000 events per second.
-Verifying all 540,500 with `verify-chain --full` takes 11.79 s. A checkpoint row is
+Sealing and full verification are **linear**: 100,000 events seal in 2.20 s and 400,000 in
+8.78 s, four times the corpus for 3.99 times the work, at roughly 45,000 events per second.
+Verifying all 540,500 with `verify-chain --full` takes 11.87 s. A checkpoint row is
 215.0 bytes and stays that size at every corpus size, because it holds digests rather than
 content; 55 checkpoints occupy 112 kB.
 
 **Two figures behave differently and should not be quoted interchangeably.** Heap per row
-is a property of the event and is invariant: 256 bytes across an eleven-fold change in row
-count, and a real gateway-written row measures 231 bytes against this seed's 241. The
+is a property of the event and is invariant: 257 bytes across an eleven-fold change in row
+count. A real gateway-written completion measures 231 bytes against this seed's 246, the
+seed carrying longer request and organisation identifiers, so it errs high. The
 with-indexes figure is not a property of the event at all. It depends on the width of the
 indexed values, on how many distinct API keys the traffic uses, and on insertion order,
 since five of the seven indexes on `audit_events` are ordered by `timestamp DESC`
 (`migrations/005_create_audit_events.up.sql:27-32`). Seeding 50,000 events in descending
-timestamp order measures 549.8 bytes per row where ascending measures 616.5, on
+timestamp order measures 552.1 bytes per row where ascending measures 617.8, on
 byte-identical heap data.
 
 That sensitivity is why two earlier ad hoc measurements of this quantity disagreed by a

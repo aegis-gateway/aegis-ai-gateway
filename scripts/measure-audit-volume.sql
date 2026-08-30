@@ -14,6 +14,12 @@
 -- not set is a *string and really is NULL. Confirmed against a gateway-written
 -- row: user_agent and error_message hold '', reason and error_detail hold NULL.
 --
+-- Every 50th event is a provider_failure rather than a request_complete, which
+-- is the only shape a non-200 audit row takes: handler.go:638 passes
+-- http.StatusOK literally to the completion call and routes failures to
+-- LogProviderFailure, which sets a reason and a non-empty error_message. That
+-- row is wider, 286 bytes against 246.
+--
 --   psql "$DATABASE_URL" -f scripts/measure-audit-volume.sql
 --   psql "$DATABASE_URL" -c "select reset_audit_volume_corpus()"
 --   psql "$DATABASE_URL" -c "select seed_audit_events(540500)"
@@ -36,8 +42,8 @@
 -- indexes on audit_events are ordered by timestamp DESC
 -- (migrations/005_create_audit_events.up.sql:27-32), so whether rows arrive
 -- oldest-first or newest-first changes how btree pages split, and with it the
--- index size. Seeding in descending order measures 549.8 bytes per row where
--- ascending measures 616.5, on byte-identical heap data. Production appends in
+-- index size. Seeding in descending order measures 552.1 bytes per row where
+-- ascending measures 617.8, on byte-identical heap data. Production appends in
 -- real time, so ascending is the representative order. This one detail accounts
 -- for most of the disagreement between the two earlier ad hoc measurements.
 
@@ -96,26 +102,40 @@ BEGIN
   INSERT INTO audit_events (
     request_id, timestamp, event_type, organization_id, team_id, user_id,
     api_key_id, api_key_prefix, ip_address, user_agent, endpoint, method,
-    status_code, error_message, provider, model, mode
+    status_code, error_message, provider, model, mode, reason
   )
   SELECT
     'req_' || lpad(g::text, 13, '0') || '_' || md5(g::text)::varchar(16),
     now() - interval '2 days' + (g || ' milliseconds')::interval,
-    'request_complete',
+    -- request_complete is emitted only with 200; handler.go:638 passes
+    -- http.StatusOK literally and routes every failure to LogProviderFailure,
+    -- so a non-200 request_complete row cannot occur. Every 50th event is
+    -- therefore a provider_failure, which is a wider row: it carries a reason
+    -- and a non-empty error_message.
+    CASE WHEN g % 50 = 0 THEN 'provider_failure' ELSE 'request_complete' END,
     'org-' || (g % 40),
     'team-' || (g % 120),
     CASE WHEN g % 4 = 0 THEN NULL ELSE 'user-' || (g % 900) END,
     md5((g % key_pool)::text)::uuid,
     'aegis-prod-' || substr(md5((g % key_pool)::text), 1, 8),
-    '203.0.113.' || (g % 254),
+    -- completedRequest copies r.RemoteAddr unchanged
+    -- (internal/gateway/audit_completion.go:149), so the column holds host:port
+    -- rather than a bare address. A gateway-written row reads [::1]:59682.
+    '203.0.113.' || (g % 254) || ':' || (30000 + (g % 35000)),
     '',   -- not NULL: Event.UserAgent is a string, so "" reaches the column
     '/v1/chat/completions',
     'POST',
     CASE WHEN g % 50 = 0 THEN 503 ELSE 200 END,
-    '',   -- likewise Event.ErrorMessage
+    -- LogProviderFailure sets this literal; LogRequestComplete leaves it "".
+    CASE WHEN g % 50 = 0 THEN 'Provider request failed' ELSE '' END,
     (ARRAY['anthropic','openai','azure_openai'])[1 + g % 3],
     (ARRAY['aegis-fast','aegis-smart','aegis-balanced'])[1 + g % 3],
-    CASE WHEN g % 3 = 0 THEN 'stream' ELSE 'buffered' END
+    CASE WHEN g % 3 = 0 THEN 'stream' ELSE 'buffered' END,
+    -- Non-null only on failures, matching LogProviderFailure's strPtr(reason).
+    CASE WHEN g % 50 = 0
+         THEN (ARRAY['provider_unreachable','provider_error','stream_interrupted',
+                     'stream_truncated','response_not_delivered'])[1 + (g / 50) % 5]
+    END
   FROM generate_series(1, n) g
   ORDER BY CASE
              WHEN jitter_window <= 1 THEN g
