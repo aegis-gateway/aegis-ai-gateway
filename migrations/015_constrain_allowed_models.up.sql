@@ -42,22 +42,53 @@
 --
 -- keygen has always written this column, so on a deployment whose keys were all
 -- issued normally this affects no rows at all.
+--
+-- WHERE THE WARNINGS BELOW APPEAR. They are RAISE WARNING, so PostgreSQL emits
+-- them to the server log and to psql. cmd/migrate does not surface server
+-- notices, so running the migration through it will NOT print them. On a
+-- deployment where these rows might exist, run this file through psql or check
+-- the PostgreSQL log, and afterwards query for the revoked_reason this
+-- migration writes.
 DO $$
 DECLARE
     affected INTEGER;
+    filled   INTEGER;
 BEGIN
-    -- Only an ACTIVE key is revoked here. A key that is already revoked or
-    -- expired carries lifecycle evidence, a compromise response or a departure,
-    -- in revoked_at and revoked_reason. Overwriting those with this migration's
-    -- timestamp and generic message would destroy security-relevant history
-    -- irreversibly, and it would do so merely to prepare a column for NOT NULL.
-    -- Such rows get the allowed_models fill and nothing else; they already deny.
+    -- Only a key that is active AND UNEXPIRED is revoked here.
+    --
+    -- A revoked key carries lifecycle evidence in revoked_at and revoked_reason,
+    -- a compromise response or a departure, and overwriting that with this
+    -- migration's timestamp and generic message would destroy security-relevant
+    -- history irreversibly, merely to prepare a column for NOT NULL.
+    --
+    -- An expired key needs the same protection for a less obvious reason.
+    -- Expiry is expressed by expires_at, not by status: lookupDB filters on
+    -- expires_at > NOW() and nothing ever transitions a row to an expired
+    -- status, so an expired credential normally still reads status = 'active'.
+    -- Revoking it would relabel an expiry as a revocation in the permanent
+    -- record, and would foreclose the ordinary remedy of extending expires_at
+    -- once the allowlist is repaired.
+    --
+    -- Neither kind can authenticate, so neither needs revoking to fail closed.
+    -- Both get the allowed_models fill and nothing else.
     UPDATE api_keys
        SET allowed_models = '[]'::jsonb
      WHERE (allowed_models IS NULL
               OR jsonb_typeof(allowed_models) <> 'array'
               OR jsonb_path_exists(allowed_models, '$[*] ? (@.type() != "string")'))
-       AND status <> 'active';
+       AND (status <> 'active' OR expires_at <= NOW());
+
+    -- Reported, because the fill leaves these rows unrestricted on paper.
+    -- Neither an expired nor a revoked key can authenticate, so nothing is open
+    -- now; but '[]' means "every model permitted", so extending expires_at or
+    -- reactivating one of these without first setting an explicit allowlist
+    -- would silently produce an unrestricted key. The migration cannot know the
+    -- intended allowlist, and revoking an expired key would relabel its
+    -- lifecycle, so the operator is told instead.
+    GET DIAGNOSTICS filled = ROW_COUNT;
+    IF filled > 0 THEN
+        RAISE WARNING 'migration 015 filled allowed_models on % revoked or expired API key(s) whose value was malformed. They cannot authenticate as they stand, but the fill reads as unrestricted: set an explicit allowed_models before extending expiry or reactivating any of them.', filled;
+    END IF;
 
     UPDATE api_keys
        SET status         = 'revoked',
@@ -67,7 +98,8 @@ BEGIN
      WHERE (allowed_models IS NULL
               OR jsonb_typeof(allowed_models) <> 'array'
               OR jsonb_path_exists(allowed_models, '$[*] ? (@.type() != "string")'))
-       AND status = 'active';
+       AND status = 'active'
+       AND expires_at > NOW();
 
     GET DIAGNOSTICS affected = ROW_COUNT;
     IF affected > 0 THEN
