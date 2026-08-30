@@ -417,13 +417,24 @@ func (sh *StreamingHandler) HandleStream(
 //
 // ctx is context.WithTimeout(r.Context(), TotalTimeout), so the deadline
 // elapsing yields DeadlineExceeded while the caller hanging up cancels the
-// parent and yields Canceled. Both callers use this so the two endings cannot
-// be told apart differently in two places.
+// parent and yields Canceled. The ctx.Done() branch and the scanner-error race
+// both use this, so the two endings cannot be told apart differently in two
+// places.
 func outcomeForContext(err error) StreamOutcome {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return StreamTotalTimeout
 	}
 	return StreamClientDisconnected
+}
+
+// streamErrorLabel is the RecordStreamingError label for an outcome reached by
+// way of outcomeForContext, so the ctx.Done() branch and the scanner-error race
+// report the same label for the same ending.
+func streamErrorLabel(o StreamOutcome) string {
+	if o == StreamTotalTimeout {
+		return "total_timeout"
+	}
+	return "client_disconnect"
 }
 
 // firstTokenMsForLog renders the first-token latency for the completion log
@@ -637,20 +648,45 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			// one. Only the terminator establishes completion.
 			switch {
 			case scanner.Err() != nil:
-				// A caller going away cancels the provider request, so the
-				// scanner reports a cancellation and scanChan closes at the
-				// same moment ctx.Done() becomes ready. select picks between
-				// them, so this branch has to recognise the disconnect too or
-				// the outcome depends on which case it happened to choose.
-				if errors.Is(scanner.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
-					slog.Info("client disconnected during streaming",
-						"request_id", reqID,
-						"chunks_sent", metrics.ChunkCount,
-					)
-					if sh.handler.metrics != nil {
-						sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
+				// Ending the stream context cancels the provider request, so
+				// the scanner reports that cancellation and scanChan closes at
+				// the same moment ctx.Done() becomes ready. select picks
+				// between them, so this branch has to reach the same verdict
+				// the ctx.Done() branch would, or the outcome depends on which
+				// case it happened to choose.
+				//
+				// Both endings race here, not just the caller hanging up: the
+				// total deadline expiring while scanner.Scan is blocked yields
+				// a scanner error wrapping DeadlineExceeded. Handling only
+				// Canceled sealed that as a provider read failure and logged it
+				// against the provider, when the deadline was ours.
+				//
+				// Requiring the scanner error to wrap ctx.Err() keeps a genuine
+				// read failure that merely coincides with cancellation out of
+				// this branch; such an error falls through and is still
+				// reported as StreamReadError.
+				if ctx.Err() != nil && errors.Is(scanner.Err(), ctx.Err()) {
+					outcome := outcomeForContext(ctx.Err())
+					if outcome == StreamTotalTimeout {
+						slog.Warn("stream total timeout exceeded",
+							"request_id", reqID,
+							"chunks_sent", metrics.ChunkCount,
+						)
+						// Same frame the ctx.Done() branch sends. The caller is
+						// still connected on a timeout, and which branch the
+						// race picks must not change what they receive.
+						_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+						flusher.Flush()
+					} else {
+						slog.Info("client disconnected during streaming",
+							"request_id", reqID,
+							"chunks_sent", metrics.ChunkCount,
+						)
 					}
-					metrics.Outcome = StreamClientDisconnected
+					if sh.handler.metrics != nil {
+						sh.handler.metrics.RecordStreamingError(adapter.Name(), streamErrorLabel(outcome))
+					}
+					metrics.Outcome = outcome
 					return metrics
 				}
 				slog.Error("error reading stream", "error", scanner.Err(), "provider", adapter.Name())

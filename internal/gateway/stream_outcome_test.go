@@ -1330,3 +1330,120 @@ func TestStream_DeadlineWinsOverASocketShapedError(t *testing.T) {
 		t.Errorf("outcome = %q, want %q", got.Outcome, StreamTotalTimeout)
 	}
 }
+
+// liveStreamAdapter reaches a real HTTP server so the body read fails the way
+// net/http actually fails it. A hand-written body returning ctx.Err() would
+// only prove the fake behaves as written; this proves the error a cancelled
+// provider read really produces wraps the context cause.
+type liveStreamAdapter struct {
+	url string
+	// transformDelay holds the main loop inside chunk processing while the
+	// deadline fires, and applies only to the chunk carrying slowMarker.
+	//
+	// Both halves are needed to reach the branch under test. Without a delay
+	// the loop is parked in select when ctx.Done() becomes ready and takes that
+	// case every time. Delaying every chunk is just as useless: the scanner
+	// goroutine then blocks sending the next line, and its own ctx.Done case
+	// returns WITHOUT closing scanChan, so the case never becomes ready at all.
+	// Delaying only the final chunk leaves the goroutine blocked in
+	// scanner.Scan, which is the state that produces a scanner error.
+	transformDelay time.Duration
+	slowMarker     string
+}
+
+func (a *liveStreamAdapter) Name() string { return "openai" }
+func (a *liveStreamAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodGet, a.url, nil)
+}
+func (a *liveStreamAdapter) SendRequest(req *http.Request) (*http.Response, error) {
+	return http.DefaultClient.Do(req)
+}
+func (a *liveStreamAdapter) TransformResponse(ctx context.Context, resp *http.Response) (*types.AegisResponse, error) {
+	return nil, nil
+}
+func (a *liveStreamAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
+	if a.transformDelay > 0 && a.slowMarker != "" && strings.Contains(string(chunk), a.slowMarker) {
+		time.Sleep(a.transformDelay)
+	}
+	return chunk, nil
+}
+func (a *liveStreamAdapter) SupportsStreaming() bool { return true }
+func (a *liveStreamAdapter) SupportsTools() bool     { return false }
+
+// When the total deadline expires while scanner.Scan is blocked, cancelling the
+// provider request makes the scanner report the deadline and closes scanChan at
+// the same moment ctx.Done() becomes ready. select picks between them at
+// random, so the outcome must not depend on which one it picks.
+//
+// Handling only context.Canceled in the scanner branch sealed the gateway's own
+// deadline as StreamReadError and logged it against the provider.
+func TestStream_DeadlineDuringBlockedReadIsATimeoutWhicheverBranchWins(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// A complete event, then a final line with no trailing blank. The
+		// scanner emits that last line and is then blocked in Scan on the
+		// network when the deadline arrives, which is what makes it report the
+		// deadline rather than simply stopping.
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"SLOWCHUNK\"}}]}\n")
+		w.(http.Flusher).Flush()
+		select { // block so the deadline fires while the scanner is reading
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	h := newAllowlistTestHandler(&outcomeSpy{})
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    150 * time.Millisecond,
+		PerChunkTimeout: 5 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+	// By the time this returns, the deadline has passed and the scanner's
+	// blocked read has failed and closed scanChan, so the loop re-enters select
+	// with both cases ready and picks between them at random.
+	adapter := &liveStreamAdapter{
+		url:            srv.URL,
+		transformDelay: 250 * time.Millisecond,
+		slowMarker:     "SLOWCHUNK",
+	}
+
+	// The select is uniformly random between two ready cases, so one run proves
+	// nothing. Repeat until both branches have almost certainly been taken.
+	const runs = 30
+	seen := map[StreamOutcome]int{}
+	for i := 0; i < runs; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		req, err := adapter.TransformRequest(ctx, nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("building request: %v", err)
+		}
+		resp, err := adapter.SendRequest(req)
+		if err != nil {
+			cancel()
+			t.Fatalf("run %d: sending: %v", i, err)
+		}
+		got := sh.streamWithMonitoring(ctx, httptest.NewRecorder(), "req-deadline-read",
+			resp, adapter, "openai", "claude-test",
+			&auth.AuthInfo{OrganizationID: "org-test"})
+		seen[got.Outcome]++
+		resp.Body.Close()
+		cancel()
+	}
+
+	if n := seen[StreamReadError]; n > 0 {
+		t.Errorf("%d/%d runs sealed the gateway's own deadline as %q and blamed the provider",
+			n, runs, StreamReadError)
+	}
+	if n := seen[StreamClientDisconnected]; n > 0 {
+		t.Errorf("%d/%d runs sealed a deadline expiry as %q; the caller never left",
+			n, runs, StreamClientDisconnected)
+	}
+	if seen[StreamTotalTimeout] != runs {
+		t.Errorf("outcomes = %v, want all %d runs %q", seen, runs, StreamTotalTimeout)
+	}
+}
