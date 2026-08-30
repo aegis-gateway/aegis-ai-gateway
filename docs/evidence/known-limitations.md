@@ -658,30 +658,35 @@ version counter checked on every hit, and is deliberately not attempted here.
 
 ---
 
-### 2.16 `keygen` mints keys that are denied every model
+### 2.16 `keygen` mints keys that may use every configured model
 
 `cmd/keygen` writes `allowed_models` as an empty JSON array
-(`cmd/keygen/main.go:96-105`) and offers no flag to populate it. Before the allowlist was
-enforced, `[]` was inert: the field was a display filter and the routing layer served every
-model the key's classification allowed.
+(`cmd/keygen/main.go:96-105`) and offers no flag to populate it. An empty allowlist
+**permits every configured model**: `modelAllowed` returns `true` when `len(allowed) == 0`
+(`internal/gateway/model_allowlist.go:43-46`). The allowlist is opt-in per key.
 
-Phase 1 made `[]` meaningful. `modelAllowed` treats an empty allowlist as *no model is
-permitted*, so `internal/gateway/handler.go:200` refuses the request and the sealed event
-carries `audit.UnconfiguredModel`. The refusal is correct: an unconfigured key should not
-silently inherit the whole catalogue. The consequence is that **every key `keygen` issues
-is now inert until its `allowed_models` is populated**, and the only way to populate it is
-a direct `UPDATE` against `api_keys`:
+So every key `keygen` issues is unrestricted, and the only way to restrict one is a direct
+`UPDATE` against `api_keys`:
 
 ```sql
 UPDATE api_keys SET allowed_models = '["aegis-fast"]'::jsonb
  WHERE key_prefix = 'aegis-prod-xxxxxxxx';
 ```
 
-The value must be a JSON array of strings. Migration `015` adds a `CHECK` that rejects
-anything else, and `parseAllowedModels` fails closed on a value it cannot read, so a
-malformed edit revokes the key rather than widening it.
+The value must be a JSON array of strings; migration `015` adds a `CHECK` that rejects
+anything else. That rejection **leaves the existing row untouched and still active**, so a
+malformed edit is a failed restriction, not a revocation: the key keeps the permissions it
+had. On a database that predates the constraint, an unreadable value instead makes
+`parseAllowedModels` fail closed, which denies the request at lookup while `status` stays
+`active`. Neither path revokes anything. Verifying that a restriction took hold means
+re-reading the row, not assuming the `UPDATE` succeeded.
+
+Phase 1 did not change any of this; it changed what the field is *for*. The column was
+previously a display filter, and it is now an enforced access control, so the grant-all
+default carries a consequence it did not carry before: a key issued and forgotten is a key
+that may reach every model in `configs/models.yaml`, including any added later.
 
 This is recorded rather than fixed because giving `keygen` an allowlist flag is a change to
 the issuing tool, which this work order does not cover. Whoever picks it up should decide
-whether the flag is required or defaults to a named starter set, since a default that is
-convenient is also a default that quietly grants models.
+whether the flag is required rather than defaulted, since the safe default and the
+convenient default point in opposite directions here.

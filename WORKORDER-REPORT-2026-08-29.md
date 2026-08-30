@@ -349,12 +349,21 @@ control, and both latent until enforcement made them matter:
   The fix then had to be applied twice, because the Redis path returns before the database
   read and I fixed only the database read first.
 
-**`keygen` now issues keys that are denied every model.** It writes `allowed_models` as
-`[]`, which was inert while the allowlist was a display filter and means deny-all now that
-Phase 1 enforces it. Found by running the canaries against a freshly minted key rather than
-by review. Recorded in known-limitations 2.16 rather than fixed, because changing the
-issuing tool is outside the work order, and because whether the flag should be mandatory or
-default to a starter set is a decision about who is allowed to grant models.
+**`keygen` issues keys that may use every configured model.** It writes `allowed_models`
+as `[]`, and an empty allowlist permits everything: `modelAllowed` returns true on a
+zero-length list. The allowlist is opt-in per key, and there is no flag to set it. Phase 1
+did not change that default; it changed what the field is for, from a display filter to an
+enforced access control, so a key issued and forgotten now reaches every configured model
+rather than merely displaying them. Recorded in known-limitations 2.16 rather than fixed,
+because changing the issuing tool is outside the work order.
+
+I first wrote that section backwards, claiming `[]` denied everything and that fresh keys
+were inert. Review caught it. The claim was wrong in the direction that matters: an
+operator following it would have believed a new key had no access when it had all of it,
+and `COMPLIANCE-MAPPING.md` already documented the correct semantics, so the error was
+contradicting the repository rather than describing it. I had read `handler.go` and
+inferred the behaviour instead of reading `modelAllowed` or probing a key, which is the
+same shortcut that produced the `(unconfigured)` retention defect earlier in this PR.
 
 **Migration 015 was the single most defect-dense artefact here.** It is the only schema
 change on the PR, the work order preferred none, and it drew five findings across four
