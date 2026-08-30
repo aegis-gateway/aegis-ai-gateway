@@ -27,6 +27,7 @@ import (
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
@@ -1033,8 +1034,21 @@ func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.
 		"cancelled mid-decode":            {http.StatusOK, context.Canceled, true, audit.ReasonClientDisconnected},
 		"undecodable 200, live caller":    {http.StatusOK, nil, false, audit.ReasonProviderError},
 		"non-200, live caller":            {http.StatusBadGateway, nil, false, audit.ReasonProviderError},
-		"non-200, caller also gone":       {http.StatusBadGateway, nil, true, audit.ReasonProviderError},
 		"malformed 200, caller also gone": {http.StatusOK, nil, true, audit.ReasonProviderError},
+
+		// The adapters read the body before inspecting the status, so a caller
+		// leaving during a non-200 body read produces a cancellation and the
+		// status error is never built. Classifying on the error alone erased
+		// the provider fault here, which is why the status is consulted first.
+		"non-200, caller also gone":           {http.StatusBadGateway, nil, true, audit.ReasonProviderError},
+		"non-200, cancelled during body read": {http.StatusBadGateway, context.Canceled, true, audit.ReasonProviderError},
+
+		// The buffered path runs through retry.Executor, which wraps its own
+		// sentinel and formats ctx.Err() with %v, so context.Canceled is not in
+		// the chain. Testing for it alone sealed real disconnects as outages.
+		"retry-wrapped cancellation": {http.StatusOK,
+			fmt.Errorf("%w: %v", retry.ErrContextCancelled, context.Canceled), true,
+			audit.ReasonClientDisconnected},
 	}
 
 	for name, tt := range tests {

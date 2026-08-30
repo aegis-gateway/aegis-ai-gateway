@@ -21,28 +21,50 @@ import (
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 )
 
 // providerFailureReason decides whether a failed request was the caller leaving
 // or the provider failing.
 //
-// The ERROR must say cancellation. An earlier version consulted only
-// r.Context().Err(), which is a snapshot at the moment of classification, so a
-// genuine provider failure followed a moment later by the caller hanging up was
-// sealed as client_disconnected and a real fault vanished from the record an
-// operator uses to judge provider reliability. The error is the evidence of what
-// actually went wrong; the context is corroboration that the caller is the one
-// who went away.
+// Three signals, and all three are needed. Two earlier versions used one each
+// and both misclassified real traffic.
 //
-// This also removes the need for callers to special-case a non-200. A provider
-// that answers with an error status produces an ordinary error from the decode,
-// not a cancellation, so its fault is preserved without anyone having to
-// remember to check the status first.
-func providerFailureReason(r *http.Request, err error, providerReason string) string {
-	if errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled) {
-		return audit.ReasonClientDisconnected
+// providerStatus first, because an established fault wins. A non-200 means the
+// provider has already failed, and every adapter calls io.ReadAll BEFORE it
+// inspects the status, so a caller who leaves during that read produces a
+// cancellation error and the status error is never built at all. Classifying on
+// the error alone therefore erased genuine provider failures. Pass 0 where no
+// response exists, as on a send failure.
+func providerFailureReason(r *http.Request, err error, providerStatus int, providerReason string) string {
+	if providerStatus != 0 && providerStatus != http.StatusOK {
+		return providerReason
 	}
-	return providerReason
+	if !callerWentAway(r, err) {
+		return providerReason
+	}
+	return audit.ReasonClientDisconnected
+}
+
+// callerWentAway reports whether a failure was the caller going away.
+//
+// The error is the evidence of WHAT failed. Consulting only r.Context().Err()
+// classified on a snapshot taken when the event was written, so a provider fault
+// that merely coincided with a later cancellation was recorded as a disconnect.
+//
+// The context is corroboration of WHO left, and rules out an unrelated
+// cancellation deeper in the stack.
+//
+// retry.ErrContextCancelled is checked alongside context.Canceled because the
+// buffered path always runs through retry.Executor, which wraps its own sentinel
+// with %w and formats ctx.Err() with %v. context.Canceled is therefore not in
+// the unwrap chain, and testing for it alone meant a real disconnect on the
+// production path was sealed as a provider outage.
+func callerWentAway(r *http.Request, err error) bool {
+	if !errors.Is(r.Context().Err(), context.Canceled) {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, retry.ErrContextCancelled)
 }
 
 // completedRequest builds the attested record of a request that passed every

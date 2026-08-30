@@ -194,7 +194,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
-				providerFailureReason(r, err, audit.ReasonProviderUnreachable))
+				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
 		}
 		return
 	}
@@ -632,6 +632,22 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			// one. Only the terminator establishes completion.
 			switch {
 			case scanner.Err() != nil:
+				// A caller going away cancels the provider request, so the
+				// scanner reports a cancellation and scanChan closes at the
+				// same moment ctx.Done() becomes ready. select picks between
+				// them, so this branch has to recognise the disconnect too or
+				// the outcome depends on which case it happened to choose.
+				if errors.Is(scanner.Err(), context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+					slog.Info("client disconnected during streaming",
+						"request_id", reqID,
+						"chunks_sent", metrics.ChunkCount,
+					)
+					if sh.handler.metrics != nil {
+						sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
+					}
+					metrics.Outcome = StreamClientDisconnected
+					return metrics
+				}
 				slog.Error("error reading stream", "error", scanner.Err(), "provider", adapter.Name())
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "scanner_error")
