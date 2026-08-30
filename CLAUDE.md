@@ -35,6 +35,18 @@ go test ./internal/router/... -run TestResolveRoute -v
 go test ./internal/gateway -run TestChatCompletions -race
 ```
 
+The database-gated tests are a second, larger set and are *not* behind a build tag:
+`internal/audit/...`, `internal/audit/checkpoint`, `internal/audit/emitter` and
+`internal/purge` all read `TEST_DATABASE_URL` and skip without it. A skip reads as a
+pass, so `.github/workflows/ci.yml` fails the build if anything in `internal/audit/...`
+skips. In a Claude Code on the web session `.claude/hooks/session-start.sh` provides
+that infrastructure: it starts dockerd, brings up the `postgres` and `redis` services
+from `deploy/docker-compose.yaml` (not `aegis-filter-nlp`, which is built rather than
+pulled and which no test needs), runs the migrations, and exports `TEST_DATABASE_URL`,
+`REDIS_URL` and `AEGIS_KEY_PEPPER`. It is registered in `.claude/settings.json`, runs
+only when `CLAUDE_CODE_REMOTE=true`, and is idempotent. If Docker cannot start it says
+so and lets the session continue, in which case those tests skip again.
+
 Integration tests are guarded by the `integration` build tag and live in
 `internal/gateway/integration_test.go` (they need Postgres + Redis running):
 
