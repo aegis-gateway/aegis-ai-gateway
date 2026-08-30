@@ -1431,7 +1431,7 @@ func TestStream_DeadlineDuringBlockedReadIsATimeoutWhicheverBranchWins(t *testin
 			resp, adapter, "openai", "claude-test",
 			&auth.AuthInfo{OrganizationID: "org-test"})
 		seen[got.Outcome]++
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 	}
 

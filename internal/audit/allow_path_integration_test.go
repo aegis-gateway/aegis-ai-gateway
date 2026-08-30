@@ -127,7 +127,7 @@ func runAllowCanary(t *testing.T, stream bool) {
 		t.Fatalf("send request: %v", err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// 1. The request must have been ALLOWED. A refusal would exercise the path
 	//    the sibling test already covers and would prove nothing about allows.
