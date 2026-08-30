@@ -239,6 +239,24 @@ constraint. I changed no defaults.
 request rather than one per refusal. A deployment serving a million requests a day should
 budget roughly **600 MB/day** of growth and set retention accordingly.
 
+**Re-measured 2026-08-30 at ten times the corpus, and the figure holds.** 540,500 events
+occupy 336 MB with indexes, 651 bytes per row against the 608 recorded above, so the
+600 MB/day budget stands. Sealing is linear: 100,000 events in 2.20 s and 400,000 in
+8.78 s, four times the corpus for 3.99 times the work. The 215-byte checkpoint row is
+exact and constant at every size.
+
+The table above and this re-measurement were taken from different ad hoc corpora, and a
+third measurement made elsewhere reported 429 bytes per row, which would have cut the
+retention budget by a quarter had anyone adopted it. The cause was not scale. Heap per row
+is invariant at 257 bytes. The with-indexes figure moves with the width of the indexed
+values, with how many distinct API keys the traffic uses, and with insertion order, because
+five of the seven indexes on `audit_events` are ordered by `timestamp DESC`: seeding 50,000
+events in descending timestamp order measures 552.1 bytes per row where ascending measures
+617.8, on identical heap data.
+The seed is now committed as `scripts/measure-audit-volume.sql` so that the next
+measurement of this quantity compares against these numbers rather than against a
+different corpus. See `docs/evidence/known-limitations.md` 2.14.
+
 ### The defect the canary caught
 
 Threading `StreamOutcome` through the monitoring loop, I found five exits and missed a
