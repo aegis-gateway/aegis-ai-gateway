@@ -387,10 +387,10 @@ arrived at. Recorded in the amendment to
 [ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md). Doing it now costs a
 `hash_schema_version=4`.
 
-### 2.11 `audit_logs` still exists and is still never written
+### 2.11 `audit_logs` was never written, and has been removed
 
-`audit_logs` is created by migration `002_create_audit_logs` and **nothing has ever
-inserted into it**. A repository-wide search finds the table in that migration, in
+`audit_logs` was created by migration `002_create_audit_logs` and **nothing ever
+inserted into it**. A repository-wide search found the table in that migration, in
 `internal/audit/reader.go`, and in the purge code, and nowhere else. The per-request
 decision record lives in `audit_events`, which is the table the sealer covers.
 
@@ -405,14 +405,29 @@ The endpoint still authenticates and still refuses an unscoped or sentinel-organ
 key, unchanged. Nothing behind it reads a row, so scoping has nothing left to protect,
 but the access check was kept rather than dropped as a side effect of the deprecation.
 
-**Removal is pending and is not scheduled here.** The table stays because purge, the
-schema guard and migration history all reference it, and dropping it is a separate change
-with its own risk. `Reader.QueryLogs` and the `LogRow` type stay with it; they are
-unreachable from the HTTP surface and are marked deprecated in place rather than deleted
-piecemeal, so that the table and its reader are removed together or not at all.
+**Removed on 2026-08-30 by migration `017_drop_audit_logs`**, together with
+`Reader.QueryLogs` and the `LogRow` type, which is how this section said it should be done:
+the table and its reader go together or not at all.
 
-What a reader should take from this: the absence of rows in `audit_logs` is not evidence
-about traffic. It has never held anything.
+The migration refuses to drop a non-empty table. Nothing in this repository can have filled
+it, but "provably empty" is a claim about this repository and not about whatever else may
+have been pointed at the database, so it checks rather than asserts. A refusal leaves the
+schema untouched because golang-migrate runs the migration in a transaction, and marks
+version 17 dirty exactly as a refused migration 013 marked 13; clear it with
+`UPDATE schema_migrations SET version=16, dirty=false`. Running the file through `psql`
+directly does **not** give that protection, because psql commits each statement separately
+and the `DROP` would still run after the exception.
+
+`purge --table audit_logs` now refuses with a message naming `audit_events`, rather than
+reporting a successful purge of zero rows. That would have been the same failure the
+retired endpoint had, where an empty result read as "no activity" instead of "this does not
+exist". `--table both` means `audit_events`, which is all it can now mean.
+
+The endpoint stays at 410. It was retired on 2026-08-29 and the table went a day later, so
+a client that has not been updated still gets an explanation rather than a 404.
+
+What a reader should take from this, for any export made before the removal: the absence of
+rows in `audit_logs` was never evidence about traffic. It never held anything.
 
 ### 2.12 Provider error bodies reach the process log, bounded
 

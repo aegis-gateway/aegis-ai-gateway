@@ -222,7 +222,6 @@ func TestNoPayload_AuditReadAPIStructs(t *testing.T) {
 
 	visited := make(map[reflect.Type]bool)
 	assertNoPayloadFields(t, reflect.TypeOf(audit.EventRow{}), visited)
-	assertNoPayloadFields(t, reflect.TypeOf(audit.LogRow{}), visited)
 
 	t.Logf("audit read API row structs carry no payload-holding field names")
 }

@@ -367,7 +367,7 @@ audit:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `audit.retention_days` | int | `365` | Minimum number of days to keep rows in `audit_logs` and `audit_events`. The `aegis-migrate purge` subcommand respects this floor when computing the `--before` date. |
+| `audit.retention_days` | int | `365` | Minimum number of days to keep rows in `audit_events`. The `aegis-migrate purge` subcommand respects this floor when computing the `--before` date. |
 
 The default of 365 days comfortably exceeds a six-month regulatory floor. Adjust upwards to meet longer data-retention obligations; do not set below 180 without reviewing applicable compliance requirements.
 

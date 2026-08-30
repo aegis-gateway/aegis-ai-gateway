@@ -107,7 +107,7 @@ that pattern or they will hold stale config forever.
 ### Data model
 
 `migrations/` (golang-migrate, run by `cmd/migrate`): `api_keys` (hash + permissions +
-limits), `audit_logs`, `usage_daily` (aggregates), `usage_records` (per-request detail),
+limits), `usage_daily` (aggregates), `usage_records` (per-request detail),
 `audit_events`. The `classification_tier` enum mirrors `types.Classification`
 (PUBLIC < INTERNAL < CONFIDENTIAL < RESTRICTED).
 

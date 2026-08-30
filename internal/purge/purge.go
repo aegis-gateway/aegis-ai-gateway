@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package purge implements auditable deletion of audit_logs and audit_events
+// Package purge implements auditable deletion of audit_events
 // rows that fall outside the configured retention window.
 package purge
 
@@ -31,6 +31,9 @@ import (
 type Table string
 
 const (
+	// TableAuditLogs is retained so that a stored config or a script naming it
+	// gets a clear refusal rather than a confusing one. Migration 017 dropped
+	// the table; nothing ever wrote it.
 	TableAuditLogs   Table = "audit_logs"
 	TableAuditEvents Table = "audit_events"
 	TableBoth        Table = "both"
@@ -77,16 +80,24 @@ func Run(ctx context.Context, pool *pgxpool.Pool, opts Options) (*Result, error)
 		DryRun:      opts.DryRun,
 	}
 
+	// Refuse the table migration 017 dropped, rather than reporting a purge of
+	// zero rows. A caller asking to purge audit_logs believes it holds the
+	// decision record; answering "0 deleted" confirms that belief and is the
+	// same failure the retired endpoint had, where an empty result read as "no
+	// activity" instead of "this does not exist".
+	if opts.Table == TableAuditLogs {
+		return nil, fmt.Errorf(
+			"purge: audit_logs was dropped by migration 017 and nothing ever wrote it; " +
+				"the decision record is in audit_events, so purge --table audit_events")
+	}
+
 	// Advisory warning for unsealed events.
 	if msg := unsealedWarning(ctx, pool, opts.Before); msg != "" {
 		fmt.Println(msg)
 	}
 
-	// Choose the table used for ID-range tracking.
+	// audit_events is the only table left to purge.
 	rangeTable := "audit_events"
-	if opts.Table == TableAuditLogs {
-		rangeTable = "audit_logs"
-	}
 
 	idMin, idMax, err := queryIDRange(ctx, pool, rangeTable, opts.Before)
 	if err != nil {
@@ -100,16 +111,11 @@ func Run(ctx context.Context, pool *pgxpool.Pool, opts Options) (*Result, error)
 	// log id range into this lookup attributes arbitrary checkpoints — or none —
 	// to the purge, and that attribution is written permanently to audit_purges.
 	// Only look up checkpoints when audit_events rows are actually in scope.
-	if opts.Table == TableAuditEvents || opts.Table == TableBoth {
-		cids, err := overlappingCheckpoints(ctx, pool, idMin, idMax)
-		if err != nil {
-			return nil, fmt.Errorf("checkpoint lookup: %w", err)
-		}
-		res.CheckpointIDs = cids
-	} else {
-		// Explicitly empty: no checkpoint covers audit_logs.
-		res.CheckpointIDs = []int64{}
+	cids, err := overlappingCheckpoints(ctx, pool, idMin, idMax)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint lookup: %w", err)
 	}
+	res.CheckpointIDs = cids
 
 	if opts.DryRun {
 		count, err := countRows(ctx, pool, opts.Table, opts.Before)
@@ -207,15 +213,13 @@ func execBatchDelete(ctx context.Context, tx pgx.Tx, tbl Table, before time.Time
 	return total, nil
 }
 
+// tablesFor names the tables a purge touches.
+//
+// audit_events only, since migration 017 dropped audit_logs. TableBoth is kept
+// as the default so an existing invocation continues to work and means what it
+// now can mean.
 func tablesFor(tbl Table) []string {
-	switch tbl {
-	case TableAuditLogs:
-		return []string{"audit_logs"}
-	case TableAuditEvents:
-		return []string{"audit_events"}
-	default:
-		return []string{"audit_events", "audit_logs"}
-	}
+	return []string{"audit_events"}
 }
 
 func overlappingCheckpoints(ctx context.Context, pool *pgxpool.Pool, idMin, idMax int64) ([]int64, error) {

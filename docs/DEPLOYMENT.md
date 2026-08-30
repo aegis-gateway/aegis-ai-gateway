@@ -189,8 +189,8 @@ docker compose -f deploy/docker-compose.yaml exec gateway ./migrate up
 
 ## Audit log retention and purge
 
-AEGIS accumulates rows in `audit_logs` and `audit_events` indefinitely until an
-operator explicitly purges old data. The `aegis-migrate purge` subcommand
+AEGIS accumulates rows in `audit_events` indefinitely until an operator explicitly
+purges old data. The `aegis-migrate purge` subcommand
 provides a safe, auditable way to delete rows outside the retention window.
 
 ### Retention policy
@@ -211,7 +211,8 @@ Flags:
   --before DATE      (required) delete rows with created_at < DATE (ISO 8601)
   --dry-run          print counts and ID ranges without deleting; writes a
                      dry_run=true row to audit_purges for traceability
-  --table TABLE      audit_logs | audit_events | both (default: both)
+  --table TABLE      audit_events | both (default: both). audit_logs was dropped
+                     by migration 017; naming it is refused with an explanation
   --db-url URL       database URL (overrides DATABASE_URL env)
 ```
 
