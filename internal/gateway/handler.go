@@ -639,9 +639,18 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// part way through the body still went out as a 200. What changes is the
 	// event, not the status.
 	if h.auditLogger != nil {
+		// AegisResponse.Usage is a value rather than a pointer, so presence is
+		// inferred: a provider that reported nothing leaves all three at zero.
+		// A provider reporting a zero among nonzero counts is therefore
+		// preserved, which is the case that matters; an all-zero usage block is
+		// indistinguishable from none and is treated as none.
+		usageReported := aegisResp.Usage.PromptTokens != 0 ||
+			aegisResp.Usage.CompletionTokens != 0 ||
+			aegisResp.Usage.TotalTokens != 0
 		rec := withOutcome(
 			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false),
 			aegisResp.Model,
+			usageReported,
 			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,
 			aegisResp.Usage.TotalTokens, totalDuration)
 		if deliveryErr != nil {

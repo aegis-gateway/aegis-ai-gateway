@@ -477,11 +477,16 @@ type CompletedRequest struct {
 	// known here" rather than "zero": a streamed response whose usage the
 	// provider never reported has no token count, and recording 0 would attest
 	// a measurement nobody made. LogRequestComplete converts zero to NULL.
-	ModelServed      string
-	Classification   string
-	PromptTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
+	ModelServed    string
+	Classification string
+
+	// Pointers, so that a provider reporting completion_tokens: 0 alongside a
+	// nonzero prompt count seals the zero it reported rather than a NULL
+	// meaning "none reported". Absence and a measured zero are different facts
+	// and audit_events must not conflate them.
+	PromptTokens     *int64
+	CompletionTokens *int64
+	TotalTokens      *int64
 
 	// A pointer where the token counts are plain, because zero means different
 	// things for the two. A provider that reported no usage gives zero tokens,
@@ -490,20 +495,6 @@ type CompletedRequest struct {
 	// and nulling that would discard a measurement the gateway did take. So
 	// absence is nil here and zero is a value.
 	DurationMs *int64
-}
-
-// int64PtrOrNil renders an outcome measurement for the audit row, mapping the
-// zero value to NULL.
-//
-// The distinction matters in the sealed record: a request whose provider
-// reported no usage did not use zero tokens, and a row claiming it did would be
-// a measurement the gateway never made. Same reasoning as strPtr, and as the
-// nullableInt64 the leaf hash uses.
-func int64PtrOrNil(v int64) *int64 {
-	if v == 0 {
-		return nil
-	}
-	return &v
 }
 
 // LogRequestComplete records that a request passed every gate and completed.
@@ -554,9 +545,9 @@ func (l *Logger) LogRequestComplete(req CompletedRequest) {
 		// alias from models.yaml; ModelServed is what the provider returned.
 		ModelServed:      strPtr(req.ModelServed),
 		Classification:   strPtr(req.Classification),
-		PromptTokens:     int64PtrOrNil(req.PromptTokens),
-		CompletionTokens: int64PtrOrNil(req.CompletionTokens),
-		TotalTokens:      int64PtrOrNil(req.TotalTokens),
+		PromptTokens:     req.PromptTokens,
+		CompletionTokens: req.CompletionTokens,
+		TotalTokens:      req.TotalTokens,
 		DurationMs:       req.DurationMs,
 	})
 }
@@ -598,9 +589,9 @@ func (l *Logger) LogProviderFailure(req CompletedRequest, reason string) {
 		// answerable to the same questions as the success row.
 		ModelServed:      strPtr(req.ModelServed),
 		Classification:   strPtr(req.Classification),
-		PromptTokens:     int64PtrOrNil(req.PromptTokens),
-		CompletionTokens: int64PtrOrNil(req.CompletionTokens),
-		TotalTokens:      int64PtrOrNil(req.TotalTokens),
+		PromptTokens:     req.PromptTokens,
+		CompletionTokens: req.CompletionTokens,
+		TotalTokens:      req.TotalTokens,
 		DurationMs:       req.DurationMs,
 	})
 }

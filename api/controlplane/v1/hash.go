@@ -285,6 +285,10 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 	// version-3 checkpoint at submission.
 	var recomputed []byte
 	switch sub.HashSchemaVersion {
+	case HashSchemaVersion1, HashSchemaVersion2:
+		recomputed, err = ComputeCheckpointHash(
+			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
+			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
 	case HashSchemaVersion3:
 		prevID := GenesisPrevCheckpointID
 		if sub.PrevCheckpointID != nil {
@@ -294,9 +298,17 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
 			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time, prevID)
 	default:
-		recomputed, err = ComputeCheckpointHash(
-			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
-			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
+		// Refuse rather than guess. The version now selects the construction,
+		// so falling back to the 96-byte input for an unknown version would
+		// recompute a version-4 checkpoint with version-2 rules; if the two
+		// happened to agree this function would return success, reporting a
+		// digest as verified that it never checked. An unverifiable checkpoint
+		// and a verified one must not be the same answer.
+		return fmt.Errorf(
+			"cannot verify checkpoint %d: hash_schema_version %d is not supported by this build, "+
+				"which verifies versions %d, %d and %d",
+			sub.CheckpointID, sub.HashSchemaVersion,
+			HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3)
 	}
 	if err != nil {
 		return fmt.Errorf("checkpoint %d: %w", sub.CheckpointID, err)

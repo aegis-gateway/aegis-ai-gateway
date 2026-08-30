@@ -184,13 +184,18 @@ func withDuration(rec audit.CompletedRequest, d time.Duration) audit.CompletedRe
 func withOutcome(
 	rec audit.CompletedRequest,
 	modelServed string,
+	usageReported bool,
 	promptTokens, completionTokens, totalTokens int,
 	d time.Duration,
 ) audit.CompletedRequest {
 	rec.ModelServed = modelServed
-	rec.PromptTokens = int64(promptTokens)
-	rec.CompletionTokens = int64(completionTokens)
-	rec.TotalTokens = int64(totalTokens)
+	// Only when a provider actually reported usage. A zero it reported is a
+	// measurement and is sealed as zero; the absence of a usage block is not a
+	// measurement and is sealed as NULL.
+	if usageReported {
+		p, c, t := int64(promptTokens), int64(completionTokens), int64(totalTokens)
+		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = &p, &c, &t
+	}
 	ms := d.Milliseconds()
 	rec.DurationMs = &ms
 	return rec

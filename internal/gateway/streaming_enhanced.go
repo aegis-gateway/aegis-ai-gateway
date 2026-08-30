@@ -70,6 +70,15 @@ type StreamMetrics struct {
 	EstimatedCostUSD   float64
 	Provider           string
 	Model              string
+	// ReportedModel is the model the PROVIDER named, empty until a chunk
+	// carries one. Model above falls back to the routed name so the usage row
+	// keeps its attribution on an early return; that fallback must not reach
+	// audit_events.model_served, which attests what the provider returned.
+	ReportedModel string
+	// UsageReported records that a usage block arrived, as distinct from one
+	// arriving with zeros in it. A provider may report completion_tokens: 0
+	// alongside a nonzero prompt count, and that zero is a measurement.
+	UsageReported bool
 	// ToolCallNames are the tool names reconstructed from the stream's tool
 	// call deltas, in index order. Names only, never arguments.
 	ToolCallNames []string
@@ -362,9 +371,17 @@ func (sh *StreamingHandler) HandleStream(
 		rec := withOutcome(
 			completedRequest(reqID, authInfo, r, originalModel, providerKey,
 				clientStatusFor(metrics.Outcome), true),
-			metrics.Model,
+			// ReportedModel, not Model: the latter falls back to the routed name
+			// so an early return still attributes the usage row, and sealing
+			// that would attest a model the provider never named.
+			metrics.ReportedModel,
+			metrics.UsageReported,
 			metrics.PromptTokens, metrics.CompletionTokens, metrics.TotalTokens,
-			time.Since(metrics.StartTime))
+			// totalDuration, not time.Since(metrics.StartTime): StartTime is
+			// taken after SendRequest returns, so it excludes connection and
+			// response-header latency and would disagree with the usage row and
+			// the metrics for exactly the slow providers worth investigating.
+			totalDuration)
 		switch metrics.Outcome {
 		case StreamOutcomeUnset:
 			// A path out of the monitoring loop set no outcome. The event is
@@ -938,10 +955,12 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 	// served something else. The routed value is a fallback, not a floor.
 	if chunkData.Model != "" {
 		metrics.Model = chunkData.Model
+		metrics.ReportedModel = chunkData.Model
 	}
 
 	// Update token counts if present
 	if chunkData.Usage != nil {
+		metrics.UsageReported = true
 		metrics.PromptTokens = chunkData.Usage.PromptTokens
 		metrics.CompletionTokens = chunkData.Usage.CompletionTokens
 		metrics.TotalTokens = chunkData.Usage.TotalTokens

@@ -560,7 +560,14 @@ row.
 
 `model_served` is the model the provider returned, as distinct from `model`, which remains
 the alias the caller requested. The two differ whenever an alias resolves, and only the
-first answers what actually ran.
+first answers what actually ran. It is `null` when the provider never named one, which a
+stream that ends before its first content chunk does: the routed model is known at that
+point and is deliberately not substituted, because this column attests what the provider
+reported rather than what the gateway intended to ask for.
+
+All six are readable through `GET /aegis/v1/audit/events`, in JSON and in the CSV export. A
+field that is attested but unreadable through the supported API cannot be checked by the
+tenant it is attested for, and a version-3 leaf cannot be reconstructed without them.
 
 Absent measurements are `null`, never `0`. A streamed response whose provider reported no
 usage did not consume zero tokens, and a row saying so would attest a measurement nobody

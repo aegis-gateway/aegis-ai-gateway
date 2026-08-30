@@ -84,7 +84,7 @@
         "null"
       ],
       "minimum": 1,
-      "description": "Checkpoint ID of the predecessor, or null for the first checkpoint in the chain. Sent alongside prev_checkpoint_hash because the checkpoint hash input does not cover the predecessor's identity, so a chain can be repointed with every hash still verifying."
+      "description": "Checkpoint ID of the predecessor, or null for the first checkpoint in the chain. At hash_schema_version 1 and 2 the checkpoint hash input does not cover the predecessor's identity, so a chain can be repointed with every hash still verifying and this field is the only record of the ordering. At version 3 it is also bound into checkpoint_hash as an int64_le tail, so a repointed chain fails verification on its own. A verifier still needs the field to check the ordering."
     },
     "prev_checkpoint_hash": {
       "$ref": "#/$defs/sha256Hex",
@@ -92,7 +92,7 @@
     },
     "checkpoint_hash": {
       "$ref": "#/$defs/sha256Hex",
-      "description": "SHA-256 over merkle_root || prev_checkpoint_hash || uint64_le(range_start) || uint64_le(range_end) || uint32_le(event_count) || uint32_le(hash_schema_version) || int64_le(sealed_at microseconds since the Unix epoch). 96 bytes of input at hash schema version 1."
+      "description": "SHA-256 over a byte string whose construction depends on hash_schema_version. Versions 1 and 2, 96 bytes: merkle_root || prev_checkpoint_hash || uint64_le(range_start) || uint64_le(range_end) || uint32_le(event_count) || uint32_le(hash_schema_version) || int64_le(sealed_at microseconds since the Unix epoch). Version 3, 104 bytes: the same 96 bytes followed by int64_le(prev_checkpoint_id), which is 0 for the first checkpoint in the chain. A verifier MUST select the construction from hash_schema_version; recomputing a version-3 checkpoint with the 96-byte input yields a mismatch from intact data."
     },
     "hash_algorithm": {
       "enum": [
@@ -103,7 +103,7 @@
     "hash_schema_version": {
       "type": "integer",
       "minimum": 1,
-      "description": "Which set of audit event columns the leaf hashes covered. An input to the checkpoint hash."
+      "description": "Which set of audit event columns the leaf hashes covered, and which checkpoint hash construction was used. An input to the checkpoint hash and a selector for how to recompute it: 1 and 2 use the 96-byte input, 3 uses the 104-byte input that appends prev_checkpoint_id."
     },
     "canonicalization_spec": {
       "$ref": "#/$defs/shortLabel",

@@ -34,7 +34,14 @@ import (
 //	    uint64_le(range_end)           ||
 //	    uint32_le(event_count)         ||
 //	    uint32_le(hash_schema_version) ||
-//	    int64_le(sealed_at_unix_micros))
+//	    int64_le(sealed_at_unix_micros)
+//	    [|| int64_le(prev_checkpoint_id)])  -- version 3 only
+//
+// The construction depends on HashSchemaVersion: 96 bytes at versions 1 and 2,
+// and 104 at version 3, which appends the predecessor's id (0 for genesis). A
+// verifier must select the construction from the stated version. Recomputing a
+// version-3 checkpoint with the 96-byte input produces a mismatch from intact
+// data, which reads as tampering.
 //
 // It contains no audit event. MerkleRoot attests a range of events; it does
 // not reveal one. Proving that a specific event falls under a specific root
