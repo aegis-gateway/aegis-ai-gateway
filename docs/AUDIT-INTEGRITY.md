@@ -106,7 +106,15 @@ Total input: **104 bytes for schema version 3**. The first 96 bytes are byte-ide
 
 `prev_checkpoint_id` is `0` for the genesis checkpoint, a normative constant in the same way the genesis `prev_checkpoint_hash` is 32 zero bytes: the input is fixed width, so "no predecessor" needs a defined encoding rather than an absent one.
 
-**Why version 3 binds the predecessor's identity.** Versions 1 and 2 covered the predecessor's *hash* but not *which row it was*. A checkpoint could therefore be repointed at an earlier one, and if `prev_checkpoint_hash` was updated to match, every digest still verified and the foreign key was still satisfied while the checkpoints in between were silently detached. Nothing in the cryptography objected; only a comparison of the stored ordering against itself could notice, and that ordering lives in the same table an attacker with write access would have altered. Binding the id makes the detachment change the digest, so an offline verifier detects it without needing to have witnessed the original ordering. This closes ADR 0006 and issue #38.
+**Why version 3 binds the predecessor's identity.** Versions 1 and 2 covered the predecessor's *hash* but not *which row it was*, so `prev_checkpoint_id` could be changed while every digest in the chain remained valid.
+
+Be precise about what this does and does not buy, because the obvious reading is wrong.
+
+The checkpoint hash is **unkeyed SHA-256 over fields the gateway stores**. An attacker with write access to `audit_checkpoints` can therefore recompute any digest, and every successor. **No version of this construction lets an offline verifier detect a rewritten chain on its own**, and version 3 does not change that. The structural limit ADR 0006 records is unchanged: only a party that holds checkpoint digests obtained independently of the database can detect a rewrite.
+
+What the chain does is reduce "detect any tampering" to "hold a small number of digests externally". Version 2 did not reduce `prev_checkpoint_id` to that. It was the one structural field an externally held digest did **not** commit to, so an attacker could alter the recorded ordering and leave every digest — including anchored ones — verifying. The gateway's own ordering check was the only thing that could notice, and it compares the stored ordering against itself.
+
+Version 3 brings that field inside the commitment. After it, everything a verifier reads about chain structure is covered by the digest an external party can hold. That is what closes ADR 0006 and issue #38: not offline detection, which remains impossible against an attacker who can recompute, but the removal of a field that anchoring did not reach.
 
 ---
 

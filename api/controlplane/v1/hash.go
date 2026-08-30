@@ -110,11 +110,17 @@ const GenesisPrevCheckpointID int64 = 0
 // The first seven fields are byte-identical to [CheckpointHashInput], so a
 // reader implementing both versions shares everything but the tail.
 //
-// Binding the identity closes the gap ADR 0006 records: with only the
-// predecessor's HASH in the input, a checkpoint could be repointed at an
-// earlier one, leaving every digest valid and the foreign key satisfied while
-// the intervening checkpoints were silently detached. An offline verifier could
-// not detect that, because it compared the stored ordering against itself.
+// Binding the identity narrows the gap ADR 0006 records, and it is worth being
+// exact about how far. With only the predecessor's HASH in the input,
+// prev_checkpoint_id could be altered while every digest in the chain, INCLUDING
+// one held by an anchoring party, continued to verify: it was the one structural
+// field an external commitment did not reach. Inside the digest, it is covered
+// by whatever that party holds.
+//
+// This does NOT make a rewritten chain detectable offline. The construction is
+// unkeyed, so an attacker with write access to the checkpoint table recomputes
+// any digest and every successor, at version 3 exactly as at version 2.
+// Detection still requires digests obtained independently of the database.
 //
 // It is a separate function rather than a version switch inside
 // [CheckpointHashInput] because that function's output is a shipped contract:

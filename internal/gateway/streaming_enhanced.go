@@ -176,7 +176,19 @@ func (sh *StreamingHandler) HandleStream(
 	authInfo *auth.AuthInfo,
 	aegisReq *types.AegisRequest,
 ) {
-	receivedAt := time.Now()
+	// Measured from the OUTER request entry, not from here. The buffered path
+	// records its duration from handler.go's receivedAt, taken before
+	// validation, filtering, routing and request transformation; a streaming
+	// duration that started after all of that would mean something different in
+	// the same column, and would under-report by exactly the preprocessing time
+	// on the requests where preprocessing is slow.
+	//
+	// Falls back only if the field is unset, which the request path does not do:
+	// handler.go sets it before either branch is chosen.
+	receivedAt := aegisReq.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
 
 	// Create context with total timeout
 	ctx, cancel := context.WithTimeout(r.Context(), sh.config.TotalTimeout)

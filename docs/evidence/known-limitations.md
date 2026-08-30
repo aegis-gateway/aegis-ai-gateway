@@ -587,10 +587,17 @@ sentinel on `model` records. That is also why tool names are **not** in version 
 caller-chosen text, and the decision is described in §2.10 and in the amendment to
 [ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md).
 
-The same bump bound `prev_checkpoint_id` into the checkpoint hash, closing
+The same bump bound `prev_checkpoint_id` into the checkpoint hash, addressing
 [ADR 0006](../adr/0006-predecessor-identity-is-not-hash-bound.md) and
 [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38). Doing both at once
 was deliberate: the bump is the expensive part, and doing it twice costs twice.
+
+That binding is narrower than it sounds and the ADR now says so explicitly. The checkpoint
+hash is unkeyed, so an attacker with write access recomputes any digest; **no version makes
+a rewritten chain detectable by a verifier working from the database alone**. What changed
+is that the recorded ordering is now covered by the digest an external party holds, where
+before it was the one structural field outside that commitment. External anchoring is still
+required, exactly as before.
 
 **A chain may hold version-2 and version-3 checkpoints together.** Migration 016 only adds
 columns, and the version-2 leaf covers an explicit field list rather than the whole row, so

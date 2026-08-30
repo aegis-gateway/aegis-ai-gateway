@@ -17,6 +17,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"syscall"
@@ -192,9 +193,28 @@ func withOutcome(
 	// Only when a provider actually reported usage. A zero it reported is a
 	// measurement and is sealed as zero; the absence of a usage block is not a
 	// measurement and is sealed as NULL.
+	//
+	// A negative count is neither. It is treated as no usage at all, and the
+	// reason is not fastidiousness: migration 016 puts a non-negative CHECK on
+	// these columns, the audit write is asynchronous and happens after the
+	// caller already has its response, and a rejected insert still consumes the
+	// BIGSERIAL id. So one malformed usage block from a provider would lose the
+	// event AND leave a permanent gap in audit_events.id, at which the sealer
+	// pauses and stops sealing everything after it. A provider that reports
+	// nonsense must not be able to stall the chain.
 	if usageReported {
-		p, c, t := int64(promptTokens), int64(completionTokens), int64(totalTokens)
-		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = &p, &c, &t
+		if promptTokens < 0 || completionTokens < 0 || totalTokens < 0 {
+			slog.Warn("provider reported a negative token count; recording no usage for this request",
+				"request_id", rec.RequestID,
+				"provider", rec.ProviderKey,
+				"prompt_tokens", promptTokens,
+				"completion_tokens", completionTokens,
+				"total_tokens", totalTokens,
+			)
+		} else {
+			p, c, t := int64(promptTokens), int64(completionTokens), int64(totalTokens)
+			rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = &p, &c, &t
+		}
 	}
 	ms := d.Milliseconds()
 	rec.DurationMs = &ms

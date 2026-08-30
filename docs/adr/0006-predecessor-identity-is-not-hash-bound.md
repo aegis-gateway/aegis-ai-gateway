@@ -1,6 +1,6 @@
 # 0006. Predecessor identity is not bound into the checkpoint hash
 
-Status:   Implemented in `hash_schema_version=3`, 2026-08-30
+Status:   Partly addressed in `hash_schema_version=3`, 2026-08-30; the structural limit stands
 Date:     2026-08-22
 Tracked:  https://github.com/aegis-gateway/aegis-ai-gateway/issues/38
 Decision: Record the gap. Bind `prev_checkpoint_id` into a future `hash_schema_version`.
@@ -11,19 +11,31 @@ Version 3 appends `int64_le(prev_checkpoint_id)` to the checkpoint hash input,
 making it 104 bytes where versions 1 and 2 are 96. See
 `docs/AUDIT-INTEGRITY.md` section 3.
 
-The structural limit this ADR describes is now version-dependent, and the
-distinction matters when reading an old chain:
+**The structural limit this ADR describes is NOT removed by version 3, and an
+earlier draft of this resolution claimed otherwise.** The checkpoint hash is
+unkeyed SHA-256 over stored fields, so an attacker with write access to
+`audit_checkpoints` recomputes any digest and every successor. No version lets an
+offline verifier detect a rewritten chain on its own. The sentence in this ADR's
+context section stands unaltered: only a party that witnessed the original
+ordering can.
 
-- **Version 3.** Repointing a checkpoint changes its digest. An offline verifier
-  detects the detachment without having witnessed the original ordering.
-- **Versions 1 and 2.** Unchanged, and unchangeable: those digests are sealed.
-  The verifier's ordering check is still the only defence, and it still reads
-  `prev_checkpoint_id` from the same table an attacker with write access would
-  have altered. A chain sealed under version 2 keeps that weakness for as long
-  as those checkpoints are the evidence.
+What version 3 changes is narrower and still worth having. The chain reduces
+"detect any tampering" to "hold a small number of digests externally".
+`prev_checkpoint_id` was the one structural field that reduction did not cover:
+under versions 1 and 2 it could be altered while every digest, including one held
+by an anchoring party, continued to verify. Only the gateway's own ordering check
+could notice, and that check compares the stored ordering against itself.
 
-So the gap is closed going forward and not retroactively, which is the nature of
-a hash bump rather than an oversight in the fix.
+- **Version 3.** The ordering is inside the digest, so it is covered by whatever
+  external party holds that digest. There is no longer a structural field outside
+  the commitment.
+- **Versions 1 and 2.** Unchanged and unchangeable; those digests are sealed. A
+  chain sealed under version 2 keeps the gap for as long as those checkpoints are
+  the evidence.
+
+Neither version removes the need for external anchoring. The gap is closed in the
+sense that anchoring now reaches the whole structure, not in the sense that a
+lone verifier can now detect a rewrite.
 
 ## Context
 
