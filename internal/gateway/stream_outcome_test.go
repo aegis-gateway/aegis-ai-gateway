@@ -31,6 +31,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // outcomeSpy records which audit event a streamed request produced.
@@ -1245,5 +1246,44 @@ func TestChatCompletions_ProviderResetIsNotAClientDisconnect(t *testing.T) {
 	if got := spy.failures[0].Reason; got == audit.ReasonClientDisconnected {
 		t.Errorf("a provider connection reset was sealed as %q; the same errno comes "+
 			"from either peer and this path only sees provider errors", got)
+	}
+}
+
+// The Prometheus request counter must agree with the audit event and the usage
+// row about the status.
+//
+// It was hard-coded to "200", so a stream that never started, which sends a 500,
+// was counted as a success and every error-rate dashboard built on
+// aegis_request_total under-reported it. Three sinks describe the same request;
+// two of them were corrected and this one was left behind.
+func TestStream_NotStartedIsCountedAsAFailure(t *testing.T) {
+	h := newAllowlistTestHandler(&outcomeSpy{})
+	h.metrics = getTestMetrics()
+	sh := NewStreamingHandler(h, StreamingConfig{TotalTimeout: 5 * time.Second})
+	adapter := &scriptedStreamAdapter{body: "data: [DONE]\n\n"}
+
+	info := &auth.AuthInfo{OrganizationID: "org-metrics", TeamID: "team-metrics", KeyID: "key-test"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(
+		auth.ContextWithAuth(context.Background(), info))
+	providerReq, err := adapter.TransformRequest(req.Context(), &types.AegisRequest{})
+	if err != nil {
+		t.Fatalf("building provider request: %v", err)
+	}
+
+	counted := func(status string) float64 {
+		return testutil.ToFloat64(h.metrics.RequestTotal.WithLabelValues(
+			"org-metrics", "team-metrics", "aegis-fast", "anthropic", status, ""))
+	}
+	before200, before500 := counted("200"), counted("500")
+
+	// nonFlusher cannot stream, so the handler sends 500 and never starts.
+	sh.HandleStream(&nonFlusher{}, req, "req-metrics", providerReq, adapter,
+		"anthropic", "aegis-fast", "claude-test", info, &types.AegisRequest{Model: "aegis-fast"})
+
+	if got := counted("200") - before200; got != 0 {
+		t.Errorf("a stream that never started added %v to the 200 counter", got)
+	}
+	if got := counted("500") - before500; got != 1 {
+		t.Errorf("500 counter moved by %v, want 1; error-rate dashboards read this", got)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,11 +300,15 @@ func (sh *StreamingHandler) HandleStream(
 	// Record Prometheus metrics
 	if sh.handler.metrics != nil {
 		sh.handler.metrics.RecordRequest(telemetry.RequestLabels{
-			Org:              authInfo.OrganizationID,
-			Team:             authInfo.TeamID,
-			Model:            originalModel,
-			Provider:         metrics.Provider,
-			Status:           "200",
+			Org:      authInfo.OrganizationID,
+			Team:     authInfo.TeamID,
+			Model:    originalModel,
+			Provider: metrics.Provider,
+			// The same status the audit event and the usage row record. This
+			// was hard-coded, so a stream that never started, which sends a
+			// 500, was counted as a successful request and every error-rate
+			// dashboard built on aegis_request_total under-reported it.
+			Status:           strconv.Itoa(clientStatusFor(metrics.Outcome)),
 			Classification:   string(authInfo.MaxClassification),
 			DurationMs:       float64(totalDuration.Milliseconds()),
 			OverheadMs:       float64(totalDuration.Milliseconds()),
