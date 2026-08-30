@@ -334,6 +334,27 @@ jobs:
       # This step exists so that stops being possible — a build error here fails
       # the job. It runs the whole package rather than a -run pattern, so it
       # cannot exit 0 by matching nothing.
+
+      # The event type an allowlist denial carries is a claim COMPLIANCE-MAPPING
+      # makes about evidence, and the test that pins it is behind the integration
+      # tag. The canary step above runs the only tagged audit invocation and
+      # restricts it to -run NoPayload, so without this the test is never
+      # compiled and reverting LogModelDenied to EventAuthFailure stays green.
+      #
+      # Checked by name for the same reason the canaries are: `go test -run`
+      # exits 0 when its pattern matches nothing.
+      - name: Audit event-type regression
+        run: |
+          set -euo pipefail
+          log=$(mktemp)
+          go test ./internal/audit/... -tags=integration -run LogModelDenied -v -count=1 -p 1 | tee "$log"
+          if ! grep -q -- "--- PASS: TestLogModelDenied_WritesItsOwnEventType" "$log"; then
+            echo "::error::TestLogModelDenied_WritesItsOwnEventType did not report PASS; the allowlist denial's event type is unevidenced by this run"
+            exit 1
+          fi
+          echo "allowlist denial event type verified by name"
+        env:
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
       - name: Gateway integration tests
         run: go test ./internal/gateway/... -tags=integration -v -count=1
         env:

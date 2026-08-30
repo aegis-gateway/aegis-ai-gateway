@@ -87,11 +87,19 @@ func TestAuditEventTypes(t *testing.T) {
 		EventRedisFailure,
 		EventProviderFailure,
 		EventRequestComplete,
+		EventModelDenied,
 	}
 
+	seen := map[EventType]bool{}
 	for _, et := range eventTypes {
 		if string(et) == "" {
 			t.Errorf("event type should not be empty")
 		}
+		if seen[et] {
+			t.Errorf("event type %q is declared twice; two kinds of refusal sharing a "+
+				"value is what made an allowlist denial indistinguishable from a "+
+				"credential failure", et)
+		}
+		seen[et] = true
 	}
 }

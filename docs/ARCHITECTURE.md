@@ -161,9 +161,14 @@ but nothing populates it, so it stays empty. Per-request data lives in
 Written by `audit.Logger`. Since 2026-08-29 the table records **both permitted and refused
 requests**.
 
-Emitted on refusal: `auth_failure` (which also carries the per-key model allowlist denial,
-distinguished by `reason = 'model_not_allowed'`), `rate_limit_violation`,
+Emitted on refusal: `auth_failure`, `model_denied`, `rate_limit_violation`,
 `budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`.
+
+`auth_failure` and `model_denied` are separate types deliberately. The first is a
+credential that did not verify; the second is a valid credential used outside its model
+grant. Until 2026-08-30 the allowlist denial was written as `auth_failure` with
+`reason = 'model_not_allowed'`, so a count of credential failures included policy
+outcomes. The reason string is unchanged, so a consumer filtering on it still works.
 
 Emitted on the allow path: `request_complete` when a request passes every gate and the
 response is written in full and flushed where the response writer supports on-demand

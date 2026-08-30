@@ -131,9 +131,13 @@ Two properties an assessor should know, because neither is the obvious default:
 
 A refused request returns 403 `permission_error` / `model_not_allowed` and writes
 an `audit_events` row before any provider is selected. That row carries event type
-`auth_failure` with `reason = 'model_not_allowed'`; it is an authorisation denial
-recorded under the authentication event type, so a count of credential failures
-must filter on `reason` to exclude it.
+`model_denied` with `reason = 'model_not_allowed'`.
+
+**It was `auth_failure` until 2026-08-30**, which mattered for evidence: an
+authorisation denial recorded under the authentication event type meant a count of
+credential failures silently included policy outcomes, and an assessor had to know
+to filter on `reason`. An evidence pull spanning that date should expect both
+shapes; the `reason` string is the same in each, so filtering on it covers both.
 
 **The model name on that row is a configured alias or the literal `(unconfigured)`, never
 the caller's string.** The allowlist check runs before `ResolveRoute`, and validation checks

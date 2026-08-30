@@ -40,7 +40,22 @@ const (
 	EventPricingDenied      EventType = "pricing_denied"
 	EventRedisFailure       EventType = "redis_failure"
 	EventProviderFailure    EventType = "provider_failure"
-	EventRequestComplete    EventType = "request_complete"
+	// EventModelDenied is a request refused because the presenting key's model
+	// allowlist does not include the requested alias.
+	//
+	// A type of its own rather than auth_failure with a reason, because the two
+	// answer different questions. An auth_failure is a credential that did not
+	// verify, which is a possible attack; a model_denied is a valid credential
+	// used outside its grant, which is a policy outcome and usually a
+	// misconfiguration. Conflating them means an alert on auth_failure volume
+	// pages on an allowlist typo, and a CC6.1 evidence pull for failed
+	// authentication has to know to filter on reason to exclude these.
+	//
+	// A new event_type VALUE costs nothing: event_type is one of the columns the
+	// leaf hash covers, so its set of values is not part of the schema and no
+	// hash_schema_version bump is required. audit_events has no CHECK on it.
+	EventModelDenied     EventType = "model_denied"
+	EventRequestComplete EventType = "request_complete"
 )
 
 // Event represents a security-relevant audit event.
@@ -385,13 +400,14 @@ const UnconfiguredModel = "(unconfigured)"
 // LogModelDenied records a request refused because the presenting API key's
 // model allowlist does not include the requested alias.
 //
-// This reuses EventAuthFailure rather than declaring a type of its own. The
-// distinction it loses is real: authentication succeeded here and authorisation
-// failed, whereas every other EventAuthFailure row is a credential that did not
-// verify. Reason carries "model_not_allowed" so the two can be told apart in an
-// export, and Model carries the alias that was refused. A dedicated event type
-// would be the better long-term shape for CC6.1 evidence and is left as a
-// follow-up rather than introduced here.
+// Written as EventModelDenied since 2026-08-30. It previously reused
+// EventAuthFailure with reason "model_not_allowed", which conflated a credential
+// that did not verify with a valid credential used outside its grant.
+//
+// Reason still carries "model_not_allowed", so a consumer that was filtering on
+// it keeps working and one that was filtering on event_type = 'auth_failure' now
+// sees these rows separately, which is the point. Model carries the alias that
+// was refused, or UnconfiguredModel.
 //
 // The caller MUST pass a configured alias or UnconfiguredModel. This value is
 // sealed, and an unknown model name here is caller-controlled text: validation
@@ -401,7 +417,7 @@ func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, mode
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
-		EventType:      EventAuthFailure,
+		EventType:      EventModelDenied,
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
