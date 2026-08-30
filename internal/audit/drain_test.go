@@ -108,3 +108,28 @@ func TestDrain_AlreadyCancelledContextWithNothingPendingIsNotALoss(t *testing.T)
 		}
 	}
 }
+
+// A logger built without WithMetrics must not panic when it reports a lost
+// write. NewLogger alone is a supported construction, and the write happens in a
+// goroutine, so a panic there would take the process down over a recoverable
+// database error.
+//
+// The safety comes from telemetry.Metrics.RecordAuditWriteFailure handling a nil
+// receiver, which is legal in Go: calling a pointer method on a nil pointer does
+// not dereference it. That is easy to remove by accident while tidying, so the
+// invariant is pinned here rather than left implicit in a comment.
+func TestLogger_ReportsLostWritesWithoutMetrics(t *testing.T) {
+	l := NewLogger(nil)
+	if l.metrics != nil {
+		t.Fatal("premise wrong: a logger built without WithMetrics should have no metrics")
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("reporting a lost write panicked without a metrics registry: %v; "+
+				"this runs in a goroutine, so it would take the process down", r)
+		}
+	}()
+
+	l.metrics.RecordAuditWriteFailure(string(EventRequestComplete))
+}

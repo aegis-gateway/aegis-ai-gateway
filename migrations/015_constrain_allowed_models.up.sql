@@ -11,7 +11,14 @@
 -- constraining makes the anomaly impossible rather than leaving the code to
 -- refuse it at every read.
 --
--- A NULL row is REVOKED, not backfilled to '[]'.
+-- Every row that is not a JSON array is repaired, not just the NULLs.
+--
+-- The CHECK below is validated against existing rows, so a single key holding
+-- {} or "aegis-fast" would abort the migration and block the whole gateway
+-- rollout. Those are the same malformed states the reader now refuses, so they
+-- must be handled here rather than left to stop an upgrade.
+--
+-- A NULL or malformed row is REVOKED, not silently backfilled to '[]'.
 --
 -- '[]' means unrestricted. Quietly writing it into a row whose restrictions are
 -- unknown would grant every model to exactly the keys this migration exists to
@@ -39,20 +46,20 @@ BEGIN
     -- Such rows get the allowed_models fill and nothing else; they already deny.
     UPDATE api_keys
        SET allowed_models = '[]'::jsonb
-     WHERE allowed_models IS NULL
+     WHERE (allowed_models IS NULL OR jsonb_typeof(allowed_models) <> 'array')
        AND status <> 'active';
 
     UPDATE api_keys
        SET status         = 'revoked',
            revoked_at     = NOW(),
-           revoked_reason = 'allowed_models was NULL at migration 015; restrictions unknown, revoked to fail closed',
+           revoked_reason = 'allowed_models was NULL or not a JSON array at migration 015; restrictions unknown, revoked to fail closed',
            allowed_models = '[]'::jsonb
-     WHERE allowed_models IS NULL
+     WHERE (allowed_models IS NULL OR jsonb_typeof(allowed_models) <> 'array')
        AND status = 'active';
 
     GET DIAGNOSTICS affected = ROW_COUNT;
     IF affected > 0 THEN
-        RAISE WARNING 'migration 015 revoked % API key(s) whose allowed_models was NULL. Their restrictions could not be determined, so they fail closed. Set an explicit allowed_models and reissue.', affected;
+        RAISE WARNING 'migration 015 revoked % API key(s) whose allowed_models was NULL or not a JSON array. Their restrictions could not be determined, so they fail closed. Set an explicit allowed_models and reissue.', affected;
     END IF;
 END $$;
 
