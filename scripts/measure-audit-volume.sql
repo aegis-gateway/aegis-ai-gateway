@@ -29,13 +29,15 @@
 -- window; seeding at now() leaves the sealer nothing to do and it exits
 -- reporting success.
 --
--- They also ASCEND with g, which matters and is not cosmetic. Three indexes are
--- ordered by timestamp DESC, so whether rows arrive oldest-first or newest-first
--- changes how btree pages split, and with it the index size. Seeding in
--- descending order measures 542.5 bytes per row where ascending measures 609.2,
--- on byte-identical heap data. Production appends in real time, so ascending is
--- the representative order. This one detail accounts for most of the
--- disagreement between the two earlier ad hoc measurements.
+-- They also ASCEND with g, which matters and is not cosmetic. Five of the seven
+-- indexes on audit_events are ordered by timestamp DESC
+-- (migrations/005_create_audit_events.up.sql:27-32), so whether rows arrive
+-- oldest-first or newest-first changes how btree pages split, and with it the
+-- index size. Seeding in descending order measures 542.5 bytes per row where
+-- ascending measures 609.2, on byte-identical heap data. Production appends in
+-- real time, so ascending is the representative order. This one detail accounts
+-- for most of the disagreement between the two earlier ad hoc measurements.
+
 -- Dropped by explicit signature first. CREATE OR REPLACE cannot change a
 -- function's argument list, so re-running an updated copy of this file over an
 -- older one leaves both versions registered, and a call that relies on defaults
@@ -53,7 +55,8 @@ DROP FUNCTION IF EXISTS seed_audit_events(bigint, int, int);
 -- jitter_window models how audit.Logger.Log actually inserts. It starts one
 -- goroutine per event (internal/audit/logger.go:139-149), so rows carry
 -- ascending timestamps but reach the indexes in whatever order the pool
--- schedules them. 0 inserts in strict timestamp order, the idealisation; W > 0
+-- schedules them. Five of the seven indexes on audit_events are ordered by
+-- timestamp DESC, which is why that order matters at all. 0 inserts in strict timestamp order, the idealisation; W > 0
 -- permutes deterministically within each window of W rows.
 CREATE OR REPLACE FUNCTION seed_audit_events(n bigint, key_pool int DEFAULT 500,
                                              jitter_window int DEFAULT 0)

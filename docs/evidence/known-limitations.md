@@ -628,7 +628,8 @@ is a property of the event and is invariant: 248 bytes across an eleven-fold cha
 count, and a real gateway-written row measures 231 bytes against this seed's 238. The
 with-indexes figure is not a property of the event at all. It depends on the width of the
 indexed values, on how many distinct API keys the traffic uses, and on insertion order,
-since three indexes are ordered by `timestamp DESC`. Seeding 50,000 events in descending
+since five of the seven indexes on `audit_events` are ordered by `timestamp DESC`
+(`migrations/005_create_audit_events.up.sql:27-32`). Seeding 50,000 events in descending
 timestamp order measures 542.5 bytes per row where ascending measures 609.2, on
 byte-identical heap data.
 
