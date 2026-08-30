@@ -519,6 +519,11 @@ directly.
 
 > **RESOLVED.** The endpoint was built: `GET /aegis/v1/audit/events` and
 > `GET /aegis/v1/audit/logs`, authenticated and organization-scoped, with `?format=csv`.
+>
+> **UPDATE 2026-08-29.** `/aegis/v1/audit/logs` is retired and returns 410 Gone. It read
+> `audit_logs`, which nothing has ever written, so it always returned an empty list. The
+> claim rests on `/aegis/v1/audit/events`, which is unchanged. See
+> [known limitations §2.11](docs/evidence/known-limitations.md).
 > See [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go)
 > and [`internal/gateway/audit_handler.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/gateway/audit_handler.go).
 > The `BUILD NOTE, BLOCKER` markers are removed and the claim now has code behind it.

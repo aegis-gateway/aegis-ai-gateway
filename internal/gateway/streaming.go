@@ -25,6 +25,19 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 )
 
+// DEPRECATED and unreachable. Nothing outside streaming_test.go calls this.
+//
+// The live streaming path is StreamingHandler.HandleStream in
+// streaming_enhanced.go, which cmd/gateway routes to. This function predates it
+// and has none of what that path acquired: it discards every write and flush
+// error, so it cannot tell a delivered response from an abandoned one, and it
+// emits no audit event at all, so a request served through it would leave no
+// attested record.
+//
+// Wiring it up would silently undo the delivery checking and the allow-path
+// attestation added across #66. If a second streaming implementation is ever
+// wanted, start from HandleStream rather than from here, and delete this.
+//
 // streamSSE reads SSE events from the provider response and forwards them to the client,
 // transforming each chunk through the adapter's TransformStreamChunk.
 func streamSSE(w http.ResponseWriter, reqID string, providerResp *http.Response, adapter adapters.ProviderAdapter) {

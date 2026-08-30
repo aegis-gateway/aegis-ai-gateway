@@ -74,6 +74,27 @@ type Metrics struct {
 	// A large value on a deployment with retention configured indicates a purge is overdue.
 	// Set to -1 when the table is empty.
 	AuditOldestEventAgeDays prometheus.Gauge
+
+	// AuditWriteFailureTotal counts audit events that were not persisted,
+	// labelled by event type.
+	//
+	// What a failure leaves behind depends on where it failed, and the
+	// difference matters operationally.
+	//
+	// Rejected BEFORE the id is allocated, such as an over-long value in a
+	// bounded column: the sequence does not advance, the ids stay contiguous,
+	// and this counter is the only signal that anything was lost.
+	//
+	// Failed AFTER the id is allocated, such as the insert timing out or the
+	// connection dropping: sequence increments are not rolled back, so the id
+	// is consumed permanently and the gap stalls the sealer, which refuses to
+	// seal past one.
+	//
+	// Any non-zero value means the trail has holes and the completeness claim
+	// does not hold for the affected window. Alert on any increase, and read it
+	// together with aegis_audit_last_seal_age_seconds: both rising is the
+	// stalled-chain case, not a sealer outage.
+	AuditWriteFailureTotal *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics.
@@ -224,7 +245,30 @@ func NewMetrics() *Metrics {
 				"A large value on a deployment with retention configured indicates a purge is overdue. " +
 				"Set to -1 when the table is empty.",
 		}),
+
+		AuditWriteFailureTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_audit_write_failure_total",
+			Help: "Audit events that could not be written, by event type. " +
+				"Any non-zero value means the decision record is incomplete " +
+				"for that window. A write rejected before its id is allocated " +
+				"leaves no trace but this counter; one that fails after " +
+				"allocation leaves a permanent id gap that stalls the sealer. " +
+				"Alert on any increase, and read alongside " +
+				"aegis_audit_last_seal_age_seconds.",
+		}, []string{"event_type"}),
 	}
+}
+
+// RecordAuditWriteFailure records an audit event that was not persisted.
+//
+// Nil-safe on the receiver: the audit logger is constructed in contexts that
+// have no metrics registry, and losing the counter must not also lose the write
+// attempt that was trying to report a loss.
+func (m *Metrics) RecordAuditWriteFailure(eventType string) {
+	if m == nil || m.AuditWriteFailureTotal == nil {
+		return
+	}
+	m.AuditWriteFailureTotal.WithLabelValues(eventType).Inc()
 }
 
 // RecordRequest records metrics for a completed request.
@@ -364,6 +408,17 @@ type StreamingLabels struct {
 	TimeToFirstTokenMs float64
 	TokensPerSecond    float64
 	StreamDurationMs   float64
+
+	// OmitTimeToFirstToken suppresses the time-to-first-token observation for a
+	// stream that never delivered a chunk.
+	//
+	// There is no such thing as a first-token latency for a stream that failed
+	// at the header, and a histogram has no way to express "not applicable":
+	// any value observed lands in _sum and skews every average computed from
+	// it. Skipping the observation records the absence honestly. The other
+	// streaming metrics are still recorded, because a failed stream's chunk
+	// count and duration are real measurements.
+	OmitTimeToFirstToken bool
 }
 
 // RecordStreamingMetrics records metrics for a completed streaming request.
@@ -372,9 +427,11 @@ func (m *Metrics) RecordStreamingMetrics(labels StreamingLabels) {
 		labels.Provider, labels.Model,
 	).Add(float64(labels.ChunkCount))
 
-	m.StreamingTimeToFirstToken.WithLabelValues(
-		labels.Provider, labels.Model,
-	).Observe(labels.TimeToFirstTokenMs)
+	if !labels.OmitTimeToFirstToken {
+		m.StreamingTimeToFirstToken.WithLabelValues(
+			labels.Provider, labels.Model,
+		).Observe(labels.TimeToFirstTokenMs)
+	}
 
 	m.StreamingTokensPerSecond.WithLabelValues(
 		labels.Provider, labels.Model,

@@ -26,7 +26,20 @@ const authContextKey contextKey = "aegis_auth"
 
 // AuthInfo holds authenticated identity information extracted from an API key.
 type AuthInfo struct {
-	KeyID                string
+	KeyID string
+
+	// KeyPrefix is api_keys.key_prefix, the display-safe value the operator was
+	// shown when the key was issued.
+	//
+	// Read from the row, NOT derived from the presented token. Deriving it
+	// looked cheaper and was wrong: KeyPrefix() returned the whole input for a
+	// key shorter than 16 bytes, so an imported or manually provisioned
+	// credential could be sealed into audit_events.api_key_prefix and served by
+	// the audit read API.
+	//
+	// It exists so an attested event can name the key in a form a human can
+	// match against a key list without holding the key itself.
+	KeyPrefix            string
 	OrganizationID       string
 	TeamID               string
 	UserID               string

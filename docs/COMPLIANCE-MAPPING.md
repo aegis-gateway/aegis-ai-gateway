@@ -29,8 +29,9 @@ for X.*
 | Artifact | Where it comes from | What it helps answer |
 |---|---|---|
 | Per-request decision record: identity, model, provider, classification, outcome, timing, tokens, cost | [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go), tables `audit_logs` and `audit_events` | Can you show what an automated system did, for a given request, after the fact |
-| Denial record for every refusal, with the reason string and the stage that produced it | `LogFilterBlock`, `LogRateLimitViolation`, `LogRedisFailure` in [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go) | Can you show that a control fired, and why |
-| Records readable and exportable as JSON or CSV, scoped to one organization | [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go), `GET /aegis/v1/audit/events`, `GET /aegis/v1/audit/logs` | Can you hand an assessor the record without giving them database access |
+| Denial record for every refusal, with the reason string and the stage that produced it | `LogFilterBlock`, `LogRateLimitViolation`, `LogRedisFailure`, `LogPricingDenied`, `LogModelDenied` in [`internal/audit/logger.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/logger.go) | Can you show that a control fired, and why |
+| Record of every **permitted** request, not only refusals | `LogRequestComplete` and `LogProviderFailure` in `internal/audit/logger.go`, written on both the streaming and non-streaming paths | Can you show what a key actually did, not only what it was stopped from doing |
+| Records readable and exportable as JSON or CSV, scoped to one organization | [`internal/audit/reader.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/reader.go), `GET /aegis/v1/audit/events` | Can you hand an assessor the record without giving them database access. `GET /aegis/v1/audit/logs` is retired and returns 410; `audit_logs` was never written |
 | Merkle checkpoints over event ranges, chained to their predecessor (RFC 6962) | [`internal/audit/checkpoint`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint) | Can you show a record has not been altered or deleted since it was sealed |
 | Inclusion proofs for a single event within a sealed range | [`checkpoint/verifier.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/audit/checkpoint/verifier.go) | Can you prove one specific decision was in the sealed set |
 | Policy evaluated as code, versioned in the repository | [`internal/filter/policy`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/filter/policy), [`configs/policies/`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/configs/policies) | Can you show the rule that was in force, and review changes to it |
@@ -72,10 +73,80 @@ AEGIS.
 
 | Criterion | Subject | Which artifacts above are relevant |
 |---|---|---|
-| CC6.1 | Logical access controls | API key authentication, per-key model allowlists ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)) |
+| CC6.1 | Logical access controls | API key authentication, per-key model allowlists ([`internal/auth`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/auth)), enforced on both the completions and model-listing paths. See "Model allowlist semantics" below |
 | CC7.2 | Monitoring for anomalies | Denial record, rate-limit and budget violations |
 | CC7.3 | Evaluation of security events | Denial record with reason and stage |
 | P4.2 | Retention and disposal of personal information | Purge, plus the absence of payload retention |
+
+### What the decision record covers, and at what assurance
+
+Since 2026-08-29 `audit_events` records **both permitted and refused requests**. A
+permitted request writes `request_complete`; one that passed every gate and then failed at
+the provider writes `provider_failure`. Previously only refusals were written, so the
+sealed chain could show what a control stopped and could not show what a key actually did.
+
+An allow event carries, all of it covered by the checkpoint leaf hash: event type,
+timestamp, request ID, organization, team, user, API key ID and key prefix, endpoint,
+method, status code, the configured provider key, the requested model alias, and whether
+the response was streamed. A `provider_failure` adds an enumerated reason.
+
+It does **not** carry latency, prompt and completion token counts, the resolved concrete
+model, or classification. `audit_events` has twenty-six columns and all twenty-six are in
+the leaf hash; adding a column changes every leaf hash and requires a
+`hash_schema_version` bump, and adding one outside the hash would leave the evidence
+fields unattested. Those values are in `usage_records` for the same request ID, which is
+**not sealed**. An assessor relying on token counts or latency should be told they are
+recorded but not attested. See
+[known limitations §2.14](evidence/known-limitations.md).
+
+A `request_complete` row means the gateway wrote the full response without error and
+flushed it where the response writer supports on-demand flushing. It is **not** proof the
+caller received it: a successful flush establishes only that the bytes reached the local
+kernel, and remote receipt would require an application-level acknowledgement the protocol
+does not carry. Read the row as evidence of what the gateway
+produced and sent.
+
+A dropped audit write is not always detectable from the data. One rejected before its id is
+allocated leaves no row and no gap, and `aegis_audit_write_failure_total` is the only
+signal. One that fails after allocation consumes the id permanently and leaves a gap, which
+stalls the sealer, since it refuses to seal past a gap. A non-zero counter means the record
+is incomplete for that window; the counter rising together with
+`aegis_audit_last_seal_age_seconds` means the chain has stopped advancing as well.
+
+### Model allowlist semantics
+
+`api_keys.allowed_models` is enforced in `internal/gateway/model_allowlist.go`, by a
+single predicate that both `ChatCompletions` and `ListModels` call. What a key is
+shown and what a key may use are therefore the same set by construction.
+
+Two properties an assessor should know, because neither is the obvious default:
+
+- **An empty allowlist permits every configured model.** The column defaults to
+  `'[]'`, so most keys carry no allowlist and are unrestricted. An empty list is
+  not a deny-all. A key that must be restricted has to name its models.
+- **Matching is exact against the alias in `configs/models.yaml`.** It is not
+  applied to the resolved provider model, and deprecated aliases are not expanded:
+  a key allowed `aegis-balanced` is refused `aegis-gpt4` even though that alias is
+  configured as a deprecated spelling of it.
+
+A refused request returns 403 `permission_error` / `model_not_allowed` and writes
+an `audit_events` row before any provider is selected. That row carries event type
+`auth_failure` with `reason = 'model_not_allowed'`; it is an authorisation denial
+recorded under the authentication event type, so a count of credential failures
+must filter on `reason` to exclude it.
+
+**The model name on that row is a configured alias or the literal `(unconfigured)`, never
+the caller's string.** The allowlist check runs before `ResolveRoute`, and validation checks
+a model name's length and character set rather than whether it exists, so an unrecognised
+name reaching that point is caller-controlled text. Sealing it verbatim would let anyone
+holding a key with a non-empty allowlist write up to 128 characters of their own content
+into the immutable, exported record. That was a real defect, found in review and fixed on
+2026-08-29; the unrecognised name remains in the process log, which is bounded and is not
+the attested record.
+
+Enforcement was added on 2026-08-29. Before that the field was populated and read
+only by `ListModels`, so it restricted what a key could see and not what it could
+use.
 
 ### GDPR
 

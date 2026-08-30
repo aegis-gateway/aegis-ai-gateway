@@ -110,7 +110,23 @@ The adapter's `TransformResponse` normalizes the provider response into `types.A
 
 Two writes happen asynchronously (non-blocking) after the response is sent:
 
-- **`audit.Logger`** — writes security-relevant events (auth failures, filter blocks, rate limit violations) to `audit_events`.
+- **`audit.Logger`** — writes security-relevant events to `audit_events`: refusals (auth
+  failures, filter blocks, rate limit and budget violations, pricing denials, model
+  allowlist denials) and, since 2026-08-29, permitted requests as well. A request that
+  passes every gate and completes writes `request_complete`; one that passes every gate
+  and then fails at the provider writes `provider_failure`. Before that the sealed chain
+  attested what was refused and nothing about what was allowed.
+
+  `request_complete` means the gateway wrote the full response without error and flushed it
+  where the response writer supports on-demand flushing. That is not the same as the caller
+  receiving it: a flush proves only that the bytes reached the local kernel. An allow event carries identity, outcome and routing: request
+  ID, organization, team, user, key ID and key prefix, endpoint, method, the status the
+  gateway sent, the configured provider key, the requested model alias, and whether the
+  response was streamed. It does **not** carry
+  latency, token counts, the resolved concrete model, or classification: there are no
+  columns for those, and adding one would require a `hash_schema_version` bump. Those
+  fields live in `usage_records` for the same request ID, which is not sealed. See
+  [known limitations §2.14](evidence/known-limitations.md).
 - **`storage.UsageRecorder`** — writes per-request token and cost data to `usage_records`.
 
 Neither write blocks the response path. Failures are logged but do not affect the client.
@@ -123,6 +139,14 @@ Neither write blocks the response path. Failures are logged but do not affect th
 
 Created by the `keygen` CLI tool. Stores a SHA-256 hash of the key (never the plaintext), along with organization/team/user attribution, classification ceiling, optional model allowlist, rate limits, and lifecycle timestamps (created, expires, last used, revoked).
 
+`allowed_models` is a permission, enforced by `modelAllowed` in
+`internal/gateway/model_allowlist.go` on both `POST /v1/chat/completions` and
+`GET /v1/models`. An **empty list permits every model**, which is the stored
+default; a populated list is matched exactly against the alias in
+`configs/models.yaml`, not against the resolved provider model. A request for an
+alias outside the list is refused with 403 before routing, and the refusal is
+written to `audit_events`.
+
 ### `audit_logs`
 
 **Created by migration 002 but never written.** No component in the codebase
@@ -134,13 +158,25 @@ but nothing populates it, so it stays empty. Per-request data lives in
 
 ### `audit_events`
 
-Written by `audit.Logger`. Five event types are actually emitted, all of them
-denials or failures: `auth_failure`, `rate_limit_violation`, `budget_violation`,
-`filter_block`, `redis_failure`. The `auth_success`, `provider_failure`, and
-`request_complete` constants are declared in `internal/audit/logger.go` but no
-method emits them, so **successful requests produce no audit event**. Each row has
-a structured `metadata` JSONB column for event-specific context (e.g. filter type,
-spend amounts).
+Written by `audit.Logger`. Since 2026-08-29 the table records **both permitted and refused
+requests**.
+
+Emitted on refusal: `auth_failure` (which also carries the per-key model allowlist denial,
+distinguished by `reason = 'model_not_allowed'`), `rate_limit_violation`,
+`budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`.
+
+Emitted on the allow path: `request_complete` when a request passes every gate and the
+response is written in full and flushed where the response writer supports on-demand
+flushing (see the component note above), and `provider_failure` when it passes every gate and then
+fails, with an enumerated `reason` distinguishing an unreachable provider, a provider
+error, a truncated or interrupted stream, a stream that never started, an undelivered
+buffered response, and a client that disconnected.
+
+`auth_success` remains declared and unemitted, deliberately: it is subsumed by those two
+and would double the write volume for no evidentiary gain.
+
+Migration 013 promoted the event-specific context out of the `metadata` JSONB into typed
+columns, so a reader queries `filter_type`, `reason`, `spent_cents` and the rest directly.
 
 Writes are fire-and-forget (`Log()` spawns a goroutine) and are skipped silently
 when the database handle is nil, so audit capture is best-effort rather than

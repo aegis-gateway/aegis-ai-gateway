@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +66,17 @@ type TestEnv struct {
 }
 
 // MockProviderServer mocks an LLM provider API.
+//
+// The handler runs on httptest's own goroutines, one per connection, so every
+// field it touches is shared with the test that configured it. mu guards them.
+//
+// Without it TestConcurrentRequests lost appends: ten requests arrived and nine
+// were recorded, intermittently, because two handlers read and wrote the slice
+// header at once. The race detector reports it, and it failed roughly one run
+// in eight without.
 type MockProviderServer struct {
+	mu sync.Mutex
+
 	Server        *httptest.Server
 	Requests      []*http.Request
 	Response      *types.AegisResponse
@@ -100,13 +111,23 @@ func NewMockProviderServer() *MockProviderServer {
 	}
 
 	mock.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Snapshot everything under the lock, then serve without holding it, so
+		// a ResponseDelay cannot serialise concurrent requests and turn the
+		// concurrency test into a sequential one.
+		mock.mu.Lock()
 		mock.Requests = append(mock.Requests, r)
+		delay := mock.ResponseDelay
+		shouldFail := mock.ShouldFail
+		chunks := append([]string(nil), mock.StreamChunks...)
+		statusCode := mock.StatusCode
+		response := mock.Response
+		mock.mu.Unlock()
 
-		if mock.ResponseDelay > 0 {
-			time.Sleep(mock.ResponseDelay)
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 
-		if mock.ShouldFail {
+		if shouldFail {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"error": {"message": "Internal server error"}}`))
 			return
@@ -121,7 +142,7 @@ func NewMockProviderServer() *MockProviderServer {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 
-			for _, chunk := range mock.StreamChunks {
+			for _, chunk := range chunks {
 				fmt.Fprintf(w, "data: %s\n\n", chunk)
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
@@ -134,8 +155,8 @@ func NewMockProviderServer() *MockProviderServer {
 
 		// Return non-streaming response
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(mock.StatusCode)
-		json.NewEncoder(w).Encode(mock.Response)
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 
 	return mock
@@ -341,6 +362,30 @@ func (e *TestEnv) WaitForUsageRecord(t *testing.T) storage.UsageRecord {
 	}
 }
 
+// RequestCount reports how many requests the mock has served.
+//
+// Reading len(Requests) directly races the handler, which is what the
+// concurrency test was doing while asserting on the very field being mutated.
+func (m *MockProviderServer) RequestCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Requests)
+}
+
+// SetStreamChunks and SetShouldFail configure the mock from a test goroutine
+// while the handler may already be serving.
+func (m *MockProviderServer) SetStreamChunks(chunks []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StreamChunks = chunks
+}
+
+func (m *MockProviderServer) SetShouldFail(fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ShouldFail = fail
+}
+
 // mockProviderAdapter implements ProviderAdapter for testing.
 type mockProviderAdapter struct {
 	name   string
@@ -452,8 +497,8 @@ func TestFullRequestLifecycle(t *testing.T) {
 	}
 
 	// Verify provider received request
-	if len(env.MockProvider.Requests) != 1 {
-		t.Errorf("Expected 1 provider request, got %d", len(env.MockProvider.Requests))
+	if env.MockProvider.RequestCount() != 1 {
+		t.Errorf("Expected 1 provider request, got %d", env.MockProvider.RequestCount())
 	}
 
 	// The usage row is the reason this test needs a database at all. Without
@@ -486,11 +531,11 @@ func TestStreamingRequest(t *testing.T) {
 	defer env.Cleanup()
 
 	// Setup streaming chunks
-	env.MockProvider.StreamChunks = []string{
+	env.MockProvider.SetStreamChunks([]string{
 		`{"model":"gpt-4","choices":[{"delta":{"content":"Hello"}}]}`,
 		`{"model":"gpt-4","choices":[{"delta":{"content":" world"}}]}`,
 		`{"model":"gpt-4","usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`,
-	}
+	})
 
 	// Create streaming request
 	reqBody := map[string]interface{}{
@@ -544,7 +589,7 @@ func TestProviderFailure(t *testing.T) {
 	defer env.Cleanup()
 
 	// Configure provider to fail
-	env.MockProvider.ShouldFail = true
+	env.MockProvider.SetShouldFail(true)
 
 	reqBody := map[string]interface{}{
 		"model": "gpt-4",
@@ -686,8 +731,8 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 
 	// Verify all requests reached provider
-	if len(env.MockProvider.Requests) != concurrency {
-		t.Errorf("Expected %d provider requests, got %d", concurrency, len(env.MockProvider.Requests))
+	if env.MockProvider.RequestCount() != concurrency {
+		t.Errorf("Expected %d provider requests, got %d", concurrency, env.MockProvider.RequestCount())
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -265,8 +266,14 @@ func main() {
 		cfg.Routing.CircuitBreaker.RecoveryProbeInterval,
 	)
 
-	// Build audit logger
-	auditLogger := audit.NewLogger(dbPool)
+	// Build audit logger.
+	//
+	// WithMetrics so a dropped audit write increments
+	// aegis_audit_write_failure_total. A write rejected before its id is
+	// allocated leaves no row and no gap, and the counter is then the only
+	// signal; one that fails after allocation leaves a permanent gap that
+	// stalls the sealer. See docs/evidence/known-limitations.md 2.14.
+	auditLogger := audit.NewLogger(dbPool).WithMetrics(metrics)
 
 	// Build retry executor
 	retryConfig := retry.Config{
@@ -398,10 +405,57 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulShutdown)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
+	shutdownErr := srv.Shutdown(ctx)
+
+	// Drain the audit writes before the deferred dbPool.Close runs, and before
+	// any exit.
+	//
+	// srv.Shutdown waits for handlers, and audit writes are deliberately
+	// asynchronous so they add no latency to a request, so at this point there
+	// can be accepted events that have not been persisted. Closing the pool
+	// here would lose them, and every affected caller has already had a 200:
+	// a routine rollout would quietly drop the tail of the decision record.
+	//
+	// Its own deadline, not the shutdown context. Those writes are spawned as
+	// handlers return, which is when Shutdown returns, so whatever remains of
+	// the graceful budget is at its smallest exactly when this needs it. A
+	// long-running stream can consume the whole budget on its own, and the
+	// events most at risk would then get no time at all.
+	//
+	// Sized from audit.WriteTimeout, which bounds a single insert, plus a
+	// margin. No in-flight write can outlive that, so the drain cannot cut one
+	// short and cannot hang either.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), audit.WriteTimeout+time.Second)
+	if !auditLogger.Drain(drainCtx) {
+		logger.Error("audit writes still in flight after the drain deadline; " +
+			"the decision record is incomplete for the final requests")
+	}
+	drainCancel()
+
+	// Reported after the drain, not before. A shutdown that times out is
+	// exactly the case where handlers were still running and their audit
+	// events are most likely to be outstanding, so exiting on it first would
+	// abandon the writes this drain exists to save.
+	if shutdownErr != nil {
+		// Drain reporting success here means only that nothing already
+		// REGISTERED was outstanding. It says nothing about a handler still
+		// blocked on its provider, which has not called into the logger at all
+		// and therefore counts as zero in-flight. The process is about to
+		// terminate that handler, and an event it never produced cannot be
+		// persisted by anything downstream.
+		//
+		// So this is a real and unavoidable hole rather than something the
+		// drain can close: past the graceful deadline the operator has asked
+		// the process to stop, and waiting for a provider that may take another
+		// two minutes would defeat the deadline they configured. What the
+		// gateway can do is refuse to imply the record is complete.
+		logger.Error("shutdown deadline expired with handlers still active; "+
+			"any audit events they had not yet registered are lost, so the "+
+			"decision record is incomplete for the requests in flight at exit",
+			"error", shutdownErr)
 		os.Exit(1)
 	}
+
 	logger.Info("gateway stopped")
 }
 
@@ -557,8 +611,36 @@ func makeHealthHandler(pool *pgxpool.Pool, rdb *redis.Client, limiter *ratelimit
 
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// X-Request-ID is echoed back and used as the correlation key in the
+		// logs, the usage row and the audit event. audit_events.request_id is
+		// VARCHAR(50), and PostgreSQL rejects an over-long value rather than
+		// truncating it, so an unbounded header cost the entire audit row: the
+		// request returned 200 and left no attested record. Since every
+		// permitted request now writes an event, any caller could trigger that
+		// with one long header.
+		//
+		// An unusable id is replaced rather than truncated or repaired.
+		// Truncating could collide with another caller's id, and rejecting the
+		// request with a 400 would turn a header the gateway can simply handle
+		// into a new failure mode for traffic that works today. The caller still
+		// learns which id was used, because it is echoed in the response header.
+		//
+		// Two ways an id is unusable, and both must be caught here so that every
+		// sink uses the same value.
+		//
+		// Too long: audit_events.request_id is VARCHAR(50), which PostgreSQL
+		// measures in CHARACTERS, and audit.clip counts runes to match. Counting
+		// bytes here would replace a perfectly storable id, for example thirty
+		// CJK characters, and break the caller's correlation for no reason.
+		//
+		// Not valid UTF-8: Go accepts an obs-text byte such as 0xff in an HTTP/1
+		// header, and the two sinks then diverge. The audit path clips, and clip
+		// replaces invalid bytes with U+FFFD, so the sealed row would carry a
+		// different id from the one returned to the caller and the two could not
+		// be correlated. The usage path does not clip at all, and PostgreSQL
+		// refuses the byte sequence outright, so the spend record is lost.
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
+		if reqID == "" || utf8.RuneCountInString(reqID) > audit.MaxRequestID || !utf8.ValidString(reqID) {
 			reqID = generateRequestID()
 		}
 		w.Header().Set("X-Request-ID", reqID)

@@ -36,6 +36,12 @@ var (
 	// ErrCircuitOpen is returned when circuit breaker is open
 	ErrCircuitOpen = errors.New("circuit breaker is open")
 
+	// ErrProviderStatus marks a failure the provider reported as an HTTP status
+	// rather than as a Go error. It exists so a status failure is still visible
+	// as an error to anything downstream that classifies causes, which a bare
+	// nil could not be.
+	ErrProviderStatus = errors.New("provider returned a failing status")
+
 	// ErrContextCancelled is returned when context is cancelled
 	ErrContextCancelled = errors.New("request context cancelled")
 )
@@ -88,7 +94,17 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			if e.metrics != nil {
 				e.metrics.RecordCancellation(provider, "before_attempt")
 			}
-			return nil, fmt.Errorf("%w: %v", ErrContextCancelled, ctx.Err())
+			// lastErr is joined for the same reason as the backoff arm below:
+			// when cancellation and the backoff timer are ready together the
+			// timer can win, the loop advances, and this check then runs with a
+			// provider fault already recorded. Returning only the cancellation
+			// would discard it and the request would be attributed to the
+			// caller.
+			cancelled := fmt.Errorf("%w: %v", ErrContextCancelled, ctx.Err())
+			if lastErr != nil {
+				return nil, errors.Join(cancelled, lastErr)
+			}
+			return nil, cancelled
 		default:
 		}
 
@@ -105,8 +121,17 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			return resp, nil
 		}
 
-		// Store the error
+		// Store what went wrong.
+		//
+		// A retryable HTTP status is a provider failure with no Go error: resp
+		// is non-nil and err is nil. Assigning err alone left lastErr nil for
+		// the commonest retry case, so a 503 followed by a caller leaving
+		// during backoff produced only a cancellation and the audit trail
+		// recorded a clean client disconnect, erasing the provider fault.
 		lastErr = err
+		if lastErr == nil && resp != nil {
+			lastErr = fmt.Errorf("%w: provider returned status %d", ErrProviderStatus, resp.StatusCode)
+		}
 
 		// Check if error is retryable
 		if !e.isRetryable(err, resp) {
@@ -157,7 +182,16 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			if e.metrics != nil {
 				e.metrics.RecordCancellation(provider, "during_backoff")
 			}
-			return nil, fmt.Errorf("%w during backoff: %v", ErrContextCancelled, ctx.Err())
+			// lastErr is joined rather than dropped. The attempt that provoked
+			// this backoff failed for a reason, and a caller who leaves while
+			// waiting does not undo it. Returning only the cancellation makes a
+			// provider fault indistinguishable from a clean disconnect, and the
+			// audit trail then attributes the request to the caller.
+			cancelled := fmt.Errorf("%w during backoff: %v", ErrContextCancelled, ctx.Err())
+			if lastErr != nil {
+				return nil, errors.Join(cancelled, lastErr)
+			}
+			return nil, cancelled
 		case <-time.After(backoff):
 			// Continue to next retry
 		}

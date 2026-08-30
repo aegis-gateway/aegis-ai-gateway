@@ -15,8 +15,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,7 +27,18 @@ import (
 )
 
 const redisCacheTTL = 5 * time.Minute
-const redisKeyPrefix = "aegis:key:"
+
+// redisKeyPrefix is versioned so a change to how cached metadata is validated
+// cannot be defeated by entries written under the old rules.
+//
+// v2 made entries cached before the allowlist decode failed closed unreachable:
+// they hold "allowed_models":null for keys whose stored value was malformed,
+// which decodes into an empty slice and grants every model.
+//
+// v3 adds key_prefix to the cached shape. A v2 entry lacks it, so it would
+// decode with an empty prefix and the audit record would lose the key
+// attribution for the length of the TTL.
+const redisKeyPrefix = "aegis:key:v3:"
 
 // KeyStore looks up API key metadata by hash.
 type KeyStore interface {
@@ -74,13 +87,54 @@ func (s *CachedKeyStore) Lookup(ctx context.Context, keyHash string) (*KeyMetada
 	return meta, nil
 }
 
+// parseAllowedModels decodes api_keys.allowed_models, failing closed.
+//
+// An empty result means "every model is permitted", which is the documented
+// default for a key that never set an allowlist. That makes a discarded decode
+// error dangerous: a JSONB object, a bare string, or an array holding a
+// non-string all leave the slice empty, so an unreadable value silently became
+// an unrestricted key. It is a fail-open on an access control, and it became
+// consequential when the allowlist started gating what a key may USE rather
+// than only what it may see.
+//
+// EVERY anomalous representation is rejected, including an absent value. The
+// database's normal no-allowlist value is the default '[]', not NULL, so a nil
+// byte slice here means a SQL NULL that an import or a manual UPDATE left
+// behind, and reading it as "no restriction" grants every model on a key whose
+// restrictions could not be determined.
+//
+// An earlier version of this function accepted nil as unrestricted, reasoning
+// that it was the schema default. It is not: the default is '[]'. That mistake
+// also made the two lookup paths disagree, because a nil slice marshals to
+// "allowed_models":null in the Redis cache, which the decoder refuses, so the
+// same key succeeded on a cache miss and failed on a cache hit.
+//
+// Migration 015 backfills and constrains the column so the anomaly cannot
+// exist. This stays as the guard for a database that has not been migrated.
+func parseAllowedModels(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("allowed_models is absent; the no-allowlist value is [], not NULL")
+	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, errors.New("allowed_models is not a JSON array")
+	}
+
+	var out []string
+	if err := json.Unmarshal(trimmed, &out); err != nil {
+		return nil, fmt.Errorf("allowed_models is unreadable: %w", err)
+	}
+	return out, nil
+}
+
 func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMetadata, error) {
 	var meta KeyMetadata
 	var allowedModelsJSON []byte
 	var userID *string
 
 	err := s.db.QueryRow(ctx, `
-		SELECT id, organization_id, team_id, user_id, name, max_classification,
+		SELECT id, key_prefix, organization_id, team_id, user_id, name, max_classification,
 		       allowed_models, rpm_limit, tpm_limit, daily_spend_limit_cents, expires_at
 		FROM api_keys
 		WHERE key_hash = $1
@@ -88,6 +142,7 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 		  AND expires_at > NOW()
 	`, keyHash).Scan(
 		&meta.ID,
+		&meta.KeyPrefix,
 		&meta.OrganizationID,
 		&meta.TeamID,
 		&userID,
@@ -110,9 +165,11 @@ func (s *CachedKeyStore) lookupDB(ctx context.Context, keyHash string) (*KeyMeta
 		meta.UserID = *userID
 	}
 
-	if len(allowedModelsJSON) > 0 {
-		_ = json.Unmarshal(allowedModelsJSON, &meta.AllowedModels)
+	allowed, err := parseAllowedModels(allowedModelsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("api key %s: %w", meta.ID, err)
 	}
+	meta.AllowedModels = allowed
 
 	// Update last_used_at asynchronously (fire-and-forget)
 	go func() {

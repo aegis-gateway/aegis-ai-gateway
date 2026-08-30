@@ -102,70 +102,55 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, auditListResponse{Object: "list", Data: rows, NextBefore: next})
 }
 
-// Logs serves GET /aegis/v1/audit/logs.
+// Logs serves GET /aegis/v1/audit/logs, which is retired.
+//
+// The endpoint returned an empty list for its whole life. Nothing has ever
+// written audit_logs: the table is created by migration 002 and a
+// repository-wide search finds it only in the migration, the reader, and purge.
+// Because the handler emitted a full 21-column CSV header before the empty
+// body, an operator exporting the decision record got a well-formed file with
+// no rows, which reads as "no activity" rather than "this endpoint does not
+// work". That is worse than an error.
+//
+// 410 rather than 404: the route existed, was documented, and is deliberately
+// gone. A 404 would suggest a typo and invite a retry.
+//
+// The access gate is kept. Nothing here reads a row, so scoping has nothing to
+// protect, but weakening an access check as a side effect of a deprecation is
+// not a trade worth making for one line: TestAuditHandler_RefusesSentinelOrg
+// asserts both audit routes refuse the unattributed-org sentinel, and it still
+// does. Query parameters are no longer validated, because validating the
+// arguments of a retired endpoint tells the caller nothing useful.
+// GET /aegis/v1/audit/events is unchanged.
+//
+// The audit_logs table is deliberately left in place. Purge, the schema guard
+// and migration history all reference it, and dropping it is a separate and
+// riskier change. See docs/evidence/known-limitations.md section 2.11.
 func (h *AuditHandler) Logs(w http.ResponseWriter, r *http.Request) {
 	reqID := w.Header().Get("X-Request-ID")
-	authInfo, filter, format, ok := h.parse(w, r, reqID)
-	if !ok {
+	if _, ok := h.authorize(w, r, reqID); !ok {
 		return
 	}
-
-	rows, err := h.reader.QueryLogs(r.Context(), authInfo.OrganizationID, filter)
-	if err != nil {
-		httputil.WriteInternalError(w, reqID, "Failed to read audit logs")
-		return
-	}
-
-	if format == "csv" {
-		writeCSV(w, reqID, "audit_logs",
-			[]string{"id", "request_id", "timestamp", "duration_ms", "gateway_overhead_ms",
-				"status_code", "organization_id", "team_id", "user_id", "model_requested",
-				"model_served", "provider", "endpoint", "stream", "classification",
-				"prompt_tokens", "completion_tokens", "total_tokens",
-				"estimated_cost_cents", "routing_attempts", "failovers"},
-			func(yield func([]string) error) error {
-				for _, l := range rows {
-					if err := yield([]string{
-						strconv.FormatInt(l.ID, 10), l.RequestID,
-						l.Timestamp.UTC().Format(time.RFC3339Nano),
-						strconv.Itoa(l.DurationMs), strconv.Itoa(l.GatewayOverheadMs),
-						strconv.Itoa(l.StatusCode), l.OrganizationID, l.TeamID, deref(l.UserID),
-						l.ModelRequested, l.ModelServed, l.Provider, l.Endpoint,
-						strconv.FormatBool(l.Stream), l.Classification,
-						strconv.Itoa(l.PromptTokens), strconv.Itoa(l.CompletionTokens),
-						strconv.Itoa(l.TotalTokens), strconv.Itoa(l.EstimatedCostCents),
-						strconv.Itoa(l.RoutingAttempts), strconv.Itoa(l.Failovers),
-					}); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-		return
-	}
-
-	var next *int64
-	if len(rows) == filter.Limit {
-		next = &rows[len(rows)-1].ID
-	}
-	writeJSON(w, auditListResponse{Object: "list", Data: rows, NextBefore: next})
+	httputil.WriteGoneError(w, reqID,
+		"GET /aegis/v1/audit/logs is retired: audit_logs was never written and this "+
+			"endpoint always returned an empty list. Use GET /aegis/v1/audit/events, "+
+			"which carries the decision record")
 }
 
-// parse pulls auth, filter and format off the request, writing the error
-// response itself and reporting false when the request cannot be served.
-func (h *AuditHandler) parse(w http.ResponseWriter, r *http.Request, reqID string) (*auth.AuthInfo, audit.ReadFilter, string, bool) {
-	var zero audit.ReadFilter
-
+// authorize is the access gate every audit read shares, including the retired
+// one. It writes the error response itself and reports false when the caller
+// must not be served.
+func (h *AuditHandler) authorize(w http.ResponseWriter, r *http.Request, reqID string) (*auth.AuthInfo, bool) {
 	authInfo, ok := auth.AuthFromContext(r.Context())
 	if !ok {
 		httputil.WriteAuthError(w, reqID, "Not authenticated")
-		return nil, zero, "", false
+		return nil, false
 	}
 	// An organization-less key cannot be scoped, so it is refused rather than
 	// served an unscoped query.
 	if authInfo.OrganizationID == "" {
 		httputil.WriteAuthError(w, reqID, "API key carries no organization; cannot scope an audit query")
-		return nil, zero, "", false
+		return nil, false
 	}
 	// audit.UnattributedOrg is the sentinel recorded for events that happen
 	// before a caller is identified. It is not a tenant, and a key carrying it
@@ -174,6 +159,18 @@ func (h *AuditHandler) parse(w http.ResponseWriter, r *http.Request, reqID strin
 	if authInfo.OrganizationID == audit.UnattributedOrg {
 		httputil.WriteAuthError(w, reqID,
 			"API key organization is the reserved sentinel for unattributed events; cannot scope an audit query")
+		return nil, false
+	}
+	return authInfo, true
+}
+
+// parse pulls auth, filter and format off the request, writing the error
+// response itself and reporting false when the request cannot be served.
+func (h *AuditHandler) parse(w http.ResponseWriter, r *http.Request, reqID string) (*auth.AuthInfo, audit.ReadFilter, string, bool) {
+	var zero audit.ReadFilter
+
+	authInfo, ok := h.authorize(w, r, reqID)
+	if !ok {
 		return nil, zero, "", false
 	}
 

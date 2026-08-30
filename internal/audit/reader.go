@@ -202,6 +202,12 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 }
 
 // QueryLogs returns audit_logs for one organization, newest first.
+//
+// DEPRECATED and unreachable from the HTTP surface. Its only caller was
+// GET /aegis/v1/audit/logs, retired on 2026-08-29, and audit_logs has never
+// been written by anything, so this has only ever returned an empty slice.
+// Kept alongside the table it reads rather than removed separately; both go
+// together when the table does. See docs/evidence/known-limitations.md 2.11.
 func (r *Reader) QueryLogs(ctx context.Context, orgID string, f ReadFilter) ([]LogRow, error) {
 	if orgID == "" {
 		return nil, fmt.Errorf("audit read: organization scope is required")

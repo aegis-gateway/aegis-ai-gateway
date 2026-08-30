@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/redact"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
@@ -130,7 +131,11 @@ func (a *MockAdapter) TransformResponse(ctx context.Context, resp *http.Response
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mock provider returned status %d: %s", resp.StatusCode, string(body))
+		// redact.Excerpt, not string(body): this error is logged by the
+		// handler, and a provider error body is unbounded text the gateway
+		// does not control which routinely echoes the caller's own content
+		// back. Logging it verbatim puts caller text into the log store.
+		return nil, fmt.Errorf("mock provider returned status %d: %s", resp.StatusCode, redact.Excerpt(body))
 	}
 
 	var oaiResp openAIResponseBody

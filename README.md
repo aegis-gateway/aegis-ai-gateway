@@ -107,7 +107,7 @@ Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an S
 | POST | `/v1/chat/completions` | Yes | Chat completions — an OpenAI-compatible **subset**, see below |
 | GET | `/v1/models` | Yes | List available models |
 | GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
-| GET | `/aegis/v1/audit/logs` | Yes | Read the per-request decision record. `?format=csv` to export |
+| GET | `/aegis/v1/audit/logs` | Yes | **Retired**, returns 410. `audit_logs` was never written; use `/aegis/v1/audit/events` |
 
 `model`, `messages`, `temperature`, `max_tokens`, `top_p`, `stop` and `stream`
 are honoured, as is tool calling: `tools`, `tool_choice`, `parallel_tool_calls`,

@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -42,6 +43,9 @@ import (
 type AuditLogger interface {
 	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
 	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
+	LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, ip string)
+	LogRequestComplete(req audit.CompletedRequest)
+	LogProviderFailure(req audit.CompletedRequest, reason string)
 }
 
 // Handler holds dependencies for the gateway HTTP handlers.
@@ -177,6 +181,51 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.metrics.RecordFilterAction(fr.FilterName, "flag")
 			}
 		}
+	}
+
+	// Enforce the API key's model allowlist.
+	//
+	// AuthInfo.AllowedModels comes from the api_keys row and was read in
+	// exactly one place, ListModels, which decides what a key may SEE. Nothing
+	// checked it on the path that decides what a key may USE, so a key
+	// restricted to aegis-fast was served aegis-reasoning and billed for it.
+	// docs/COMPLIANCE-MAPPING.md cites this field as the CC6.1 logical access
+	// control, so the gap was between the claim and the code.
+	//
+	// Placed after the filter chain and before routing. Before routing because
+	// a refused key must not reach a provider or influence provider selection;
+	// after the filters for the reason the tool-capability refusal below gives
+	// at length, which is that a content block is the more security-relevant
+	// record and must not be preempted by a cheaper check.
+	if !modelAllowed(authInfo.AllowedModels, aegisReq.Model) {
+		slog.Warn("request refused: model not in the key's allowlist",
+			"request_id", reqID,
+			"model", aegisReq.Model,
+			"org_id", authInfo.OrganizationID,
+			"team_id", authInfo.TeamID,
+		)
+		// Only a CONFIGURED alias may be sealed.
+		//
+		// This check runs before ResolveRoute, and validation checks a model
+		// name's length and character set rather than its existence, so
+		// aegisReq.Model here is whatever the caller sent. Writing it to
+		// audit_events.model would let any caller holding a key with a
+		// non-empty allowlist put up to 128 characters of their own text into
+		// the sealed, exported trail: the no-payload contract broken through a
+		// field nobody thinks of as payload.
+		//
+		// The unknown name stays in the process log, which is bounded and not
+		// the attested record, so an operator can still see what was asked for.
+		deniedModel := aegisReq.Model
+		if _, configured := h.modelsCfg().Models[deniedModel]; !configured {
+			deniedModel = audit.UnconfiguredModel
+		}
+		if h.auditLogger != nil {
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, authInfo.KeyPrefix, deniedModel, r.RemoteAddr)
+		}
+		httputil.WriteModelNotAllowedError(w, reqID,
+			"model "+aegisReq.Model+" is not permitted for this API key")
+		return
 	}
 
 	// Route to provider
@@ -337,7 +386,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Streaming: forward SSE events from provider to client with full monitoring
 	if aegisReq.Stream {
-		h.streamingHandler.HandleStream(w, r, reqID, providerReq, adapter, providerKey, originalModel, authInfo, &aegisReq)
+		h.streamingHandler.HandleStream(w, r, reqID, providerReq, adapter, providerKey, originalModel, providerModel, authInfo, &aegisReq)
 		return
 	}
 
@@ -362,14 +411,71 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.healthTracker != nil {
 			h.healthTracker.RecordFailure(adapter.Name())
 		}
+		// This request passed every gate and then failed at the provider.
+		// Without an event here it would produce no attested record at all,
+		// which is the completeness hole an allow event exists to close,
+		// reached from the other side.
+		//
+		// The refusal is written BEFORE the event, so the recorded status is
+		// one the gateway has actually sent rather than one it is about to
+		// attempt. The success path was already ordered this way.
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
+		if h.auditLogger != nil {
+			// A provider that answered, and answered badly, is not unreachable.
+			// retry.Executor returns the last response alongside
+			// ErrMaxRetriesExceeded, so persistent 500s arrive here with a
+			// non-nil response; recording provider_unreachable and status 0
+			// would describe a transport failure that did not happen and would
+			// hide a provider returning errors from anyone reading the trail.
+			failureReason := audit.ReasonProviderUnreachable
+			providerStatus := 0
+			switch {
+			case providerResp != nil:
+				failureReason = audit.ReasonProviderError
+				providerStatus = providerResp.StatusCode
+			case errors.Is(err, retry.ErrProviderStatus):
+				// A retryable status followed by a disconnect during backoff
+				// returns no response, but the error carries the fault. Without
+				// this the reason falls back to unreachable and the provider
+				// failure disappears exactly where it was just made visible.
+				failureReason = audit.ReasonProviderError
+			}
+			h.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+				providerFailureReason(r, err, providerStatus, failureReason))
+		}
 		return
 	}
 
 	aegisResp, err := adapter.TransformResponse(r.Context(), providerResp)
 	if err != nil {
-		slog.Error("failed to transform response", "error", err, "provider", adapter.Name())
+		// err carries the provider status and a bounded excerpt of its body,
+		// never the body itself: the adapters build it with redact.Excerpt for
+		// the reason given at that call site. providerKey rather than
+		// adapter.Name() so the log names the configured provider and not the
+		// adapter type, which is shared across providers.
+		slog.Error("failed to transform response",
+			"request_id", reqID,
+			"error", err,
+			"status", providerResp.StatusCode,
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+		)
+		// http.StatusInternalServerError, not providerResp.StatusCode: the
+		// audit record states the status the GATEWAY SENT, and it sends 500
+		// from WriteInternalError below. Recording an upstream 401
+		// here would seal a row saying the client got 401 when it did not. The
+		// upstream status is in the log line above, where it belongs.
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
+		// The status is passed because the adapters read the body before they
+		// inspect it: a caller leaving during a non-200 body read yields a
+		// cancellation and no status error, and the provider fault would
+		// otherwise be erased.
+		if h.auditLogger != nil {
+			h.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
+		}
 		return
 	}
 
@@ -455,7 +561,40 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Record usage asynchronously (non-blocking)
+	// Send the response BEFORE recording anything about it.
+	//
+	// Completion is a claim about what the gateway managed to WRITE AND FLUSH,
+	// which is the strongest thing an HTTP handler can establish. Encoding
+	// straight into the ResponseWriter can fail, most obviously when the caller
+	// has gone away, and the error used to be discarded, so a request whose
+	// body was never written was still attested as a completed 200. The
+	// streaming path treats delivery failure explicitly and this path agrees
+	// with it. Neither path can prove the peer received the bytes; see
+	// flushToClient in deliver.go.
+	w.Header().Set("Content-Type", "application/json")
+	deliveryErr := json.NewEncoder(w).Encode(aegisResp)
+	if deliveryErr == nil {
+		// Encode reporting no error only means net/http accepted the bytes into
+		// its buffer. A small response can sit there until the handler returns,
+		// so the socket write, and its failure, can happen after this point.
+		// Flushing here is the last moment the gateway can still tell whether
+		// the caller got the response it is about to attest.
+		deliveryErr = flushToClient(w)
+	}
+	if deliveryErr != nil {
+		slog.Warn("failed to deliver the response to the caller",
+			"request_id", reqID,
+			"error", deliveryErr,
+			"provider", providerKey,
+			"org_id", authInfo.OrganizationID,
+		)
+	}
+
+	// Record usage asynchronously (non-blocking).
+	//
+	// Unconditional: the provider did the work and the spend happened whether
+	// or not the bytes reached the caller, so omitting it on a delivery failure
+	// would under-report cost. Only the audit outcome depends on delivery.
 	if h.usageRecorder != nil {
 		h.usageRecorder.RecordUsage(storage.UsageRecord{
 			RequestID:          reqID,
@@ -481,9 +620,28 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Return OpenAI-compatible response
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(aegisResp)
+	// Attest the outcome, next to the usage write so the two cannot drift.
+	//
+	// audit_events held only refusals until this existed, so the sealed chain
+	// recorded what was denied and nothing about what was permitted. The usage
+	// row, the log line above and the Prometheus counters are all unsealed, so
+	// none of them is evidence.
+	//
+	// Asynchronous, like every other audit write: Logger.Log spawns a goroutine
+	// and this must never add latency to or fail the caller's request.
+	//
+	// The status is 200 either way, because that is the status line the gateway
+	// sent: the first write into the ResponseWriter commits it, so a failure
+	// part way through the body still went out as a 200. What changes is the
+	// event, not the status.
+	if h.auditLogger != nil {
+		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false)
+		if deliveryErr != nil {
+			h.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
+		} else {
+			h.auditLogger.LogRequestComplete(rec)
+		}
+	}
 }
 
 // ListModels handles GET /v1/models
@@ -499,18 +657,10 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	modelsCfg := h.modelsCfg()
 	var models []modelObject
 	for name, mapping := range modelsCfg.Models {
-		// Filter by allowed models if set
-		if len(authInfo.AllowedModels) > 0 {
-			allowed := false
-			for _, m := range authInfo.AllowedModels {
-				if m == name {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
+		// Same predicate ChatCompletions enforces, so what a key is shown and
+		// what it may use cannot diverge.
+		if !modelAllowed(authInfo.AllowedModels, name) {
+			continue
 		}
 
 		_ = mapping

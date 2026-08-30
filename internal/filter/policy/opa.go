@@ -34,6 +34,32 @@ import (
 // content array, so a rule that needs per-part granularity has it without the
 // flattening ambiguity. ToolCalls carries the names of tools this turn asked
 // for, never their arguments.
+//
+// WARNING, for anyone writing a Rego rule against these fields.
+//
+// Content and Parts hold the caller's message text in full. That is necessary:
+// a policy that cannot see the content cannot decide on it. But the deny
+// message a rule produces does not stay inside the evaluation.
+//
+// A rule's deny string is joined into Result.Message by Evaluator.ScanRequest,
+// passed as the reason argument by internal/gateway/handler.go, and written to
+// audit_events.reason by internal/audit/logger.go, clipped to 512 characters.
+// audit_events is the sealed table: reason is one of the twenty-six fields in
+// the leaf hash at hash_schema_version=2, so whatever a rule puts there is
+// hashed into the checkpoint chain and served by the audit read API.
+//
+// So a rule as ordinary as
+//
+//	msg := sprintf("blocked: %s", [input.messages[0].content])
+//
+// places up to 512 characters of the caller's prompt into the attested record,
+// permanently, in a table the product describes as holding no payload.
+//
+// Return a rule IDENTIFIER, not interpolated content. "restricted_data_on_
+// uncleared_alias" tells an operator which rule fired and is safe to seal;
+// the message that tripped it is not. The gateway does not and cannot prevent
+// this, because it cannot tell an interpolated prompt from a literal.
+// See docs/evidence/known-limitations.md section 2.13.
 type PolicyMessage struct {
 	Role      string   `json:"role"`
 	Content   string   `json:"content"`

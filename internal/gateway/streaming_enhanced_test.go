@@ -151,7 +151,7 @@ data: [DONE]
 	providerReq, _ := http.NewRequest("POST", "http://mock-provider.com", nil)
 
 	// Execute streaming
-	streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", authInfo, aegisReq)
+	streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", "gpt-4-0613", authInfo, aegisReq)
 
 	// Verify response
 	if w.Code != http.StatusOK {
@@ -243,7 +243,7 @@ func TestStreamTimeouts(t *testing.T) {
 
 			// Execute streaming
 			start := time.Now()
-			streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", authInfo, aegisReq)
+			streamingHandler.HandleStream(w, req, "test-req-id", providerReq, adapter, "openai", "gpt-4", "gpt-4-0613", authInfo, aegisReq)
 			duration := time.Since(start)
 
 			// Verify timeout behavior
@@ -477,6 +477,7 @@ data: [DONE]
 		w, req, "test-req-id", providerReq, adapter,
 		configuredProvider, // what routing resolved, and what pricing is keyed by
 		alias,
+		servedModel, // the resolved provider model, which pricing is keyed by
 		&auth.AuthInfo{OrganizationID: org},
 		&types.AegisRequest{Model: alias, Stream: true},
 	)

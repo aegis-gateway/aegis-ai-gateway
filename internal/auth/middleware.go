@@ -104,6 +104,7 @@ func Middleware(store KeyStore, auditLogger AuditLogger, pepper string) func(htt
 			// Enrich context
 			info := &AuthInfo{
 				KeyID:                meta.ID,
+				KeyPrefix:            meta.KeyPrefix,
 				OrganizationID:       meta.OrganizationID,
 				TeamID:               meta.TeamID,
 				UserID:               meta.UserID,

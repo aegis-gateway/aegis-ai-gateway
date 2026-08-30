@@ -18,16 +18,20 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/redact"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/storage"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/telemetry"
@@ -69,7 +73,65 @@ type StreamMetrics struct {
 	// ToolCallNames are the tool names reconstructed from the stream's tool
 	// call deltas, in index order. Names only, never arguments.
 	ToolCallNames []string
+
+	// Outcome is how the stream ended. Every exit from the monitoring loop
+	// returns the same metrics value, so without this the caller cannot tell a
+	// stream that finished from one that timed out, and would attest a
+	// truncated response as a completion.
+	Outcome StreamOutcome
+
+	// terminatorSeen records that the provider sent its end-of-stream marker:
+	// [DONE] from an OpenAI-compatible provider, or message_stop from
+	// Anthropic, which the transformer renders as [DONE].
+	//
+	// EOF alone does not mean the response finished. A provider that closes
+	// the connection cleanly part way through produces a nil scanner error and
+	// is indistinguishable from a complete stream without this flag, so a
+	// truncated answer would be sealed as request_complete.
+	terminatorSeen bool
 }
+
+// StreamOutcome enumerates how a stream ended. It decides which audit event the
+// request produces, so it is a closed set rather than a free string.
+type StreamOutcome string
+
+const (
+	// StreamOutcomeUnset is the zero value: no exit set an outcome.
+	//
+	// It exists so that "nobody said" is distinguishable from any real
+	// outcome. Letting the zero value fall into a default branch is what
+	// silently classified every completed stream as a failure when the [DONE]
+	// return was missed, and a seventh exit added later would do it again.
+	StreamOutcomeUnset StreamOutcome = ""
+	// StreamCompleted means the provider closed the stream normally.
+	StreamCompleted StreamOutcome = "completed"
+	// StreamTotalTimeout means the whole-stream deadline elapsed.
+	StreamTotalTimeout StreamOutcome = "total_timeout"
+	// StreamChunkTimeout means the gap between chunks exceeded its deadline.
+	StreamChunkTimeout StreamOutcome = "chunk_timeout"
+	// StreamClientDisconnected means the caller went away mid-stream.
+	StreamClientDisconnected StreamOutcome = "client_disconnect"
+	// StreamReadError means reading the provider stream failed.
+	StreamReadError StreamOutcome = "read_error"
+	// StreamNotStarted means streaming was refused before any header went out,
+	// so the gateway sent an error status rather than a stream.
+	StreamNotStarted StreamOutcome = "not_started"
+	// StreamHeaderUndelivered means the 200 header was written and its flush
+	// failed, so nothing of the stream reached the caller.
+	//
+	// Distinct from StreamNotStarted because the status line differs, and the
+	// record has to state what the gateway sent. WriteHeader has already
+	// committed 200 by this point and no error status can follow it, so
+	// recording 500 here would put a status the caller never received into the
+	// sealed record: the same mismatch this PR corrected on every other path.
+	StreamHeaderUndelivered StreamOutcome = "header_undelivered"
+	// StreamTruncated means the provider closed the stream cleanly without
+	// sending its end-of-stream marker, so the client received a partial
+	// response that looked like a whole one.
+	StreamTruncated StreamOutcome = "truncated"
+	// StreamChunkError means a chunk could not be processed or forwarded.
+	StreamChunkError StreamOutcome = "chunk_error"
+)
 
 // StreamingHandler manages enhanced streaming with metrics, timeouts, and cost tracking.
 type StreamingHandler struct {
@@ -101,6 +163,7 @@ func (sh *StreamingHandler) HandleStream(
 	adapter adapters.ProviderAdapter,
 	providerKey string,
 	originalModel string,
+	providerModel string,
 	authInfo *auth.AuthInfo,
 	aegisReq *types.AegisRequest,
 ) {
@@ -126,24 +189,54 @@ func (sh *StreamingHandler) HandleStream(
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), "request_failed")
 		}
 
+		// Written before the event, so the recorded status is one the gateway
+		// has sent rather than one it is about to attempt.
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
+		}
 		return
 	}
 
 	if providerResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(providerResp.Body)
 		_ = providerResp.Body.Close()
+		// The body is excerpted, never logged whole. A provider error body is
+		// unbounded text the gateway does not control and it routinely echoes
+		// the caller's own content back, so logging it verbatim writes caller
+		// text to the log store, which is a durable copy by any reading of the
+		// zero-retention claim.
+		//
+		// provider is the configured provider key, not adapter.Name(): the
+		// adapter type is shared, so azure_openai and internal_vllm both report
+		// "openai" and an operator could not tell which one failed.
 		slog.Error("streaming provider returned error",
+			"request_id", reqID,
 			"status", providerResp.StatusCode,
-			"provider", adapter.Name(),
-			"body", string(body),
+			"provider", providerKey,
+			"adapter", adapter.Name(),
+			"body_excerpt", redact.Excerpt(body),
 		)
 
 		if sh.handler.metrics != nil {
 			sh.handler.metrics.RecordStreamingError(adapter.Name(), fmt.Sprintf("http_%d", providerResp.StatusCode))
 		}
 
+		// The gateway sends 500 from WriteInternalError, so that is what the
+		// record says, and it is written first so the status is one already
+		// sent. The upstream status is in the log line above.
 		httputil.WriteInternalError(w, reqID, "Provider returned error")
+		if sh.handler.auditLogger != nil {
+			sh.handler.auditLogger.LogProviderFailure(
+				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+				// Not providerFailureReason: this branch runs only when the
+				// provider returned a non-200, so its failure is already
+				// established and a concurrent disconnect merely interrupted
+				// reading the error body.
+				audit.ReasonProviderError)
+		}
 		return
 	}
 
@@ -155,7 +248,7 @@ func (sh *StreamingHandler) HandleStream(
 	)
 
 	// Execute streaming with full monitoring
-	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, providerKey, authInfo)
+	metrics := sh.streamWithMonitoring(ctx, w, reqID, providerResp, adapter, providerKey, providerModel, authInfo)
 
 	totalDuration := time.Since(receivedAt)
 
@@ -194,7 +287,7 @@ func (sh *StreamingHandler) HandleStream(
 		"total_tokens", metrics.TotalTokens,
 		"estimated_cost_usd", metrics.EstimatedCostUSD,
 		"duration_ms", totalDuration.Milliseconds(),
-		"time_to_first_token_ms", metrics.FirstChunkTime.Sub(metrics.StartTime).Milliseconds(),
+		"time_to_first_token_ms", firstTokenMsForLog(metrics),
 		// The same pair the non-streaming path logs, so the two are comparable.
 		// tools_returned is reconstructed from the stream's index-keyed deltas,
 		// which is the only place a streamed response records it.
@@ -207,11 +300,15 @@ func (sh *StreamingHandler) HandleStream(
 	// Record Prometheus metrics
 	if sh.handler.metrics != nil {
 		sh.handler.metrics.RecordRequest(telemetry.RequestLabels{
-			Org:              authInfo.OrganizationID,
-			Team:             authInfo.TeamID,
-			Model:            originalModel,
-			Provider:         metrics.Provider,
-			Status:           "200",
+			Org:      authInfo.OrganizationID,
+			Team:     authInfo.TeamID,
+			Model:    originalModel,
+			Provider: metrics.Provider,
+			// The same status the audit event and the usage row record. This
+			// was hard-coded, so a stream that never started, which sends a
+			// 500, was counted as a successful request and every error-rate
+			// dashboard built on aegis_request_total under-reported it.
+			Status:           strconv.Itoa(clientStatusFor(metrics.Outcome)),
 			Classification:   string(authInfo.MaxClassification),
 			DurationMs:       float64(totalDuration.Milliseconds()),
 			OverheadMs:       float64(totalDuration.Milliseconds()),
@@ -221,15 +318,72 @@ func (sh *StreamingHandler) HandleStream(
 		})
 
 		// Record streaming-specific metrics
-		timeToFirstToken := metrics.FirstChunkTime.Sub(metrics.StartTime)
+		// Only observed when a first chunk actually arrived; see
+		// timeToFirstToken. The other streaming metrics are still recorded,
+		// because a failed stream's chunk count and duration are real.
+		ttft, sawFirstChunk := timeToFirstToken(metrics)
+		if !sawFirstChunk {
+			ttft = -1
+		}
 		sh.handler.metrics.RecordStreamingMetrics(telemetry.StreamingLabels{
-			Provider:           metrics.Provider,
-			Model:              originalModel,
-			ChunkCount:         metrics.ChunkCount,
-			TimeToFirstTokenMs: float64(timeToFirstToken.Milliseconds()),
-			TokensPerSecond:    sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
-			StreamDurationMs:   float64(totalDuration.Milliseconds()),
+			Provider:             metrics.Provider,
+			Model:                originalModel,
+			ChunkCount:           metrics.ChunkCount,
+			TimeToFirstTokenMs:   float64(ttft.Milliseconds()),
+			OmitTimeToFirstToken: !sawFirstChunk,
+			TokensPerSecond:      sh.calculateTokensPerSecond(metrics.CompletionTokens, totalDuration),
+			StreamDurationMs:     float64(totalDuration.Milliseconds()),
 		})
+	}
+
+	// Attest the streamed request, exactly once, from one place.
+	//
+	// Every exit from streamWithMonitoring returns the same metrics value, so
+	// this is the only point that can tell a completed stream from an
+	// interrupted one, and the only point that runs for all of them. Emitting
+	// inside the loop instead would mean six call sites and a real chance of
+	// two events or none.
+	//
+	// The status code recorded is what the CLIENT actually received. A stream
+	// sends its 200 header before the first chunk, so a stream that later times
+	// out or is abandoned was still a 200 on the wire; recording anything else
+	// would be inventing a response that was never sent. The event type and
+	// reason carry the outcome instead.
+	if sh.handler.auditLogger != nil {
+		rec := completedRequest(reqID, authInfo, r, originalModel, providerKey,
+			clientStatusFor(metrics.Outcome), true)
+		switch metrics.Outcome {
+		case StreamOutcomeUnset:
+			// A path out of the monitoring loop set no outcome. The event is
+			// still written, because dropping it would be a hole in the record,
+			// but it is recorded as interrupted rather than guessed as a
+			// success, and it says loudly that the gateway has a bug.
+			slog.Error("stream ended with no outcome set; attesting it as interrupted",
+				"request_id", reqID,
+				"chunks", metrics.ChunkCount,
+				"fix", "every return from streamWithMonitoring must set metrics.Outcome",
+			)
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
+		case StreamCompleted:
+			sh.handler.auditLogger.LogRequestComplete(rec)
+		case StreamNotStarted:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamNotStarted)
+		case StreamHeaderUndelivered:
+			// The header went out and the flush did not, so nothing of the
+			// stream reached the caller. response_not_delivered is exactly
+			// that, and clientStatusFor leaves the status at the committed 200.
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
+		case StreamTruncated:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
+		case StreamClientDisconnected:
+			// Not the provider's fault, and the reason says so. It is recorded
+			// as a failure because the response was not delivered in full, and
+			// a partial delivery attested as a completion would be a false
+			// record of what the gateway delivered.
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonClientDisconnected)
+		default:
+			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
+		}
 	}
 
 	// Record usage asynchronously
@@ -252,11 +406,78 @@ func (sh *StreamingHandler) HandleStream(
 			CacheWrite1hTokens: metrics.CacheWrite1hTokens,
 			EstimatedCostUSD:   metrics.EstimatedCostUSD,
 			DurationMs:         totalDuration.Milliseconds(),
-			StatusCode:         http.StatusOK,
+			StatusCode:         clientStatusFor(metrics.Outcome),
 			Project:            aegisReq.Project,
 			Stream:             true,
 		})
 	}
+}
+
+// outcomeForContext maps a cancelled stream context onto an outcome.
+//
+// ctx is context.WithTimeout(r.Context(), TotalTimeout), so the deadline
+// elapsing yields DeadlineExceeded while the caller hanging up cancels the
+// parent and yields Canceled. The ctx.Done() branch and the scanner-error race
+// both use this, so the two endings cannot be told apart differently in two
+// places.
+func outcomeForContext(err error) StreamOutcome {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return StreamTotalTimeout
+	}
+	return StreamClientDisconnected
+}
+
+// streamErrorLabel is the RecordStreamingError label for an outcome reached by
+// way of outcomeForContext, so the ctx.Done() branch and the scanner-error race
+// report the same label for the same ending.
+func streamErrorLabel(o StreamOutcome) string {
+	if o == StreamTotalTimeout {
+		return "total_timeout"
+	}
+	return "client_disconnect"
+}
+
+// firstTokenMsForLog renders the first-token latency for the completion log
+// line, using -1 to mean "no chunk ever arrived" rather than printing a
+// nonsensical negative age.
+func firstTokenMsForLog(m StreamMetrics) int64 {
+	d, ok := timeToFirstToken(m)
+	if !ok {
+		return -1
+	}
+	return d.Milliseconds()
+}
+
+// timeToFirstToken reports how long the first content chunk took, and whether
+// there was one.
+//
+// FirstChunkTime is the zero time until a chunk arrives, so a stream that failed
+// before then yields FirstChunkTime.Sub(StartTime) as a multi-billion-year
+// negative duration. Logging that is merely wrong; observing it on the
+// aegis_streaming_time_to_first_token_ms histogram corrupts the _sum that every
+// average over that metric is computed from, and it does so for precisely the
+// failures an operator would be looking at.
+func timeToFirstToken(m StreamMetrics) (time.Duration, bool) {
+	if m.FirstChunkTime.IsZero() {
+		return 0, false
+	}
+	return m.FirstChunkTime.Sub(m.StartTime), true
+}
+
+// clientStatusFor reports the HTTP status the gateway sent.
+//
+// A stream sends its 200 header before the first chunk, so any ending after
+// that point was still a 200 on the wire however badly it went, including a
+// header whose flush failed: WriteHeader has already committed the status and
+// no error can follow it. The single exception is a stream that never started,
+// where an error status went out and nothing else. Both the audit event and the
+// usage row have to agree with the status line the gateway wrote, or the record
+// contradicts the response.
+func clientStatusFor(outcome StreamOutcome) int {
+	if outcome == StreamNotStarted {
+		return http.StatusInternalServerError
+	}
+	return http.StatusOK
 }
 
 // streamWithMonitoring handles the actual streaming with timeouts and monitoring.
@@ -267,14 +488,36 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	providerResp *http.Response,
 	adapter adapters.ProviderAdapter,
 	providerKey string,
+	providerModel string,
 	authInfo *auth.AuthInfo,
 ) (result StreamMetrics) {
 	defer func() { _ = providerResp.Body.Close() }()
 
+	// Initialised before the first return, so every outcome carries the
+	// provider. The early returns below used to yield a zero StreamMetrics, and
+	// HandleStream records a usage row from whatever comes back: a stream that
+	// failed at the header therefore persisted provider = '' even though
+	// providerKey was known all along, losing the attribution for exactly the
+	// requests an operator would be investigating.
+	metrics := StreamMetrics{
+		StartTime: time.Now(),
+		// The configured provider name, not adapter.Name(). See HandleStream.
+		Provider: providerKey,
+		// The routed model, known before the request was sent. A stream that
+		// carries usage will overwrite this with the model the provider reports
+		// serving; an early return keeps it, so the usage row says which
+		// provider request failed instead of recording an empty model_served.
+		Model: providerModel,
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		// No stream is sent and the caller receives 500. Say so in the result:
+		// the zero value would leave the outcome unset, and the attested event
+		// and the usage row would both record the 200 that was never written.
 		httputil.WriteInternalError(w, reqID, "Streaming not supported")
-		return StreamMetrics{}
+		metrics.Outcome = StreamNotStarted
+		return metrics
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -282,12 +525,20 @@ func (sh *StreamingHandler) streamWithMonitoring(
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Request-ID", reqID)
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 
-	metrics := StreamMetrics{
-		StartTime: time.Now(),
-		// The configured provider name, not adapter.Name(). See HandleStream.
-		Provider: providerKey,
+	// The header flush is checked like every other write on this path. Leaving
+	// it unchecked meant a stream whose 200 never reached the client could
+	// still be attested as complete if the later chunk and terminator writes
+	// happened to succeed, which contradicts the attested claim. See
+	// flushToClient in deliver.go for exactly what that claim is.
+	if err := flushToClient(w); err != nil {
+		slog.Error("failed to flush the streaming response header",
+			"request_id", reqID,
+			"error", err,
+			"provider", providerKey,
+		)
+		metrics.Outcome = StreamHeaderUndelivered
+		return metrics
 	}
 
 	// Tool calls arrive as index-keyed fragments across many chunks. The relay
@@ -311,13 +562,6 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 	scanner := bufio.NewScanner(providerResp.Body)
 	scanner.Buffer(make([]byte, 0, sh.config.BufferSize), sh.config.MaxBufferSize)
-
-	// Channel to detect client disconnect via context cancellation
-	clientDisconnected := make(chan bool, 1)
-	go func() {
-		<-ctx.Done()
-		clientDisconnected <- true
-	}()
 
 	// Channel for per-chunk timeout
 	chunkTimer := time.NewTimer(sh.config.PerChunkTimeout)
@@ -344,15 +588,43 @@ func (sh *StreamingHandler) streamWithMonitoring(
 
 		select {
 		case <-ctx.Done():
-			slog.Warn("stream total timeout exceeded",
+			// One case, and the cause decides which ending it was.
+			//
+			// There used to be a second case fed by a goroutine waiting on this
+			// same ctx.Done(), meaning both became ready at once and select
+			// chose between them at random: a total timeout could be recorded
+			// as a client disconnect and a disconnect as a timeout. That was
+			// survivable while it only mislabelled a log line. It is not
+			// survivable now that the outcome is sealed into the audit record.
+			//
+			// ctx is context.WithTimeout(r.Context(), TotalTimeout), so the two
+			// causes are already distinguishable: the deadline elapsing yields
+			// DeadlineExceeded, and the caller hanging up cancels the parent
+			// and yields Canceled.
+			if outcomeForContext(ctx.Err()) == StreamTotalTimeout {
+				slog.Warn("stream total timeout exceeded",
+					"request_id", reqID,
+					"chunks_sent", metrics.ChunkCount,
+				)
+				if sh.handler.metrics != nil {
+					sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				}
+				// Only the timeout gets an error frame. A disconnected client
+				// is not there to read one.
+				_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+				flusher.Flush()
+				metrics.Outcome = StreamTotalTimeout
+				return metrics
+			}
+
+			slog.Info("client disconnected during streaming",
 				"request_id", reqID,
 				"chunks_sent", metrics.ChunkCount,
 			)
 			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "total_timeout")
+				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
 			}
-			_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
-			flusher.Flush()
+			metrics.Outcome = StreamClientDisconnected
 			return metrics
 
 		case <-chunkTimer.C:
@@ -365,40 +637,143 @@ func (sh *StreamingHandler) streamWithMonitoring(
 			}
 			_, _ = fmt.Fprintf(w, "data: {\"error\": \"chunk timeout\"}\n\n")
 			flusher.Flush()
-			return metrics
-
-		case <-clientDisconnected:
-			slog.Info("client disconnected during streaming",
-				"request_id", reqID,
-				"chunks_sent", metrics.ChunkCount,
-			)
-			if sh.handler.metrics != nil {
-				sh.handler.metrics.RecordStreamingError(adapter.Name(), "client_disconnect")
-			}
+			metrics.Outcome = StreamChunkTimeout
 			return metrics
 
 		case <-scanChan:
-			// Scanner finished
-			if err := scanner.Err(); err != nil {
-				slog.Error("error reading stream", "error", err, "provider", adapter.Name())
+			// The scanner reached EOF. That is not the same as the response
+			// being finished: a provider that closes the connection cleanly
+			// part way through gives a nil error here and would otherwise be
+			// attested as a completion, sealing a truncated answer as a whole
+			// one. Only the terminator establishes completion.
+			switch {
+			case scanner.Err() != nil:
+				// Ending the stream context cancels the provider request, so
+				// the scanner reports that cancellation and scanChan closes at
+				// the same moment ctx.Done() becomes ready. select picks
+				// between them, so this branch has to reach the same verdict
+				// the ctx.Done() branch would, or the outcome depends on which
+				// case it happened to choose.
+				//
+				// Both endings race here, not just the caller hanging up: the
+				// total deadline expiring while scanner.Scan is blocked yields
+				// a scanner error wrapping DeadlineExceeded. Handling only
+				// Canceled sealed that as a provider read failure and logged it
+				// against the provider, when the deadline was ours.
+				//
+				// Requiring the scanner error to wrap ctx.Err() keeps a genuine
+				// read failure that merely coincides with cancellation out of
+				// this branch; such an error falls through and is still
+				// reported as StreamReadError.
+				if ctx.Err() != nil && errors.Is(scanner.Err(), ctx.Err()) {
+					outcome := outcomeForContext(ctx.Err())
+					if outcome == StreamTotalTimeout {
+						slog.Warn("stream total timeout exceeded",
+							"request_id", reqID,
+							"chunks_sent", metrics.ChunkCount,
+						)
+						// Same frame the ctx.Done() branch sends. The caller is
+						// still connected on a timeout, and which branch the
+						// race picks must not change what they receive.
+						_, _ = fmt.Fprintf(w, "data: {\"error\": \"timeout\"}\n\n")
+						flusher.Flush()
+					} else {
+						slog.Info("client disconnected during streaming",
+							"request_id", reqID,
+							"chunks_sent", metrics.ChunkCount,
+						)
+					}
+					if sh.handler.metrics != nil {
+						sh.handler.metrics.RecordStreamingError(adapter.Name(), streamErrorLabel(outcome))
+					}
+					metrics.Outcome = outcome
+					return metrics
+				}
+				slog.Error("error reading stream", "error", scanner.Err(), "provider", adapter.Name())
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "scanner_error")
 				}
+				metrics.Outcome = StreamReadError
+			case !metrics.terminatorSeen:
+				slog.Warn("provider closed the stream without an end-of-stream marker",
+					"request_id", reqID,
+					"provider", providerKey,
+					"chunks_sent", metrics.ChunkCount,
+				)
+				if sh.handler.metrics != nil {
+					sh.handler.metrics.RecordStreamingError(adapter.Name(), "truncated")
+				}
+				metrics.Outcome = StreamTruncated
+			default:
+				metrics.Outcome = StreamCompleted
 			}
 			return metrics
 
 		case line := <-lineChan:
 			// Process chunk
-			if err := sh.processChunk(w, flusher, line, adapter, transformer, &metrics, toolCalls); err != nil {
+			if err := sh.processChunk(w, line, adapter, transformer, &metrics, toolCalls); err != nil {
 				slog.Error("error processing chunk", "error", err)
 				if sh.handler.metrics != nil {
 					sh.handler.metrics.RecordStreamingError(adapter.Name(), "chunk_processing_error")
 				}
+				// The RETURNED ERROR is the evidence, and the context only
+				// corroborates. A chunk failing to write is the usual way a
+				// caller hanging up becomes visible, but a provider sending an
+				// untransformable chunk fails here too, and a cancellation that
+				// merely arrived alongside it must not relabel that as a
+				// disconnect. This branch used to read the context alone,
+				// which is the same mistake providerFailureReason was carrying.
+				// clientGone as well as cancellation: a disconnect during a
+				// chunk write surfaces as EPIPE or ECONNRESET, which is the
+				// commonest form and wraps nothing cancellation-shaped.
+				switch {
+				case errors.Is(ctx.Err(), context.DeadlineExceeded):
+					// The gateway's OWN deadline ended the stream. The write
+					// then failing with a socket error is a consequence of
+					// that, not the cause, and the caller did not leave. This
+					// case is first because the previous version corroborated
+					// clientGone with any non-nil context error, which made
+					// this branch unreachable for exactly that failure.
+					metrics.Outcome = StreamTotalTimeout
+				case (errors.Is(err, context.Canceled) || clientGone(err)) &&
+					errors.Is(ctx.Err(), context.Canceled):
+					metrics.Outcome = StreamClientDisconnected
+				default:
+					metrics.Outcome = StreamChunkError
+				}
 				return metrics
 			}
 
-			// Check if stream ended
-			if strings.Contains(line, "[DONE]") {
+			// Check if the stream ended.
+			//
+			// Keyed off the flag processChunk sets, not off the raw line: the
+			// Anthropic terminator is message_stop, which only becomes [DONE]
+			// after transformation, so a raw-line test silently covered
+			// OpenAI alone and let every Anthropic stream end at EOF instead.
+			//
+			// This is the NORMAL completion path and it is a separate return
+			// from the scanner-finished case above. Missing it is what once
+			// left a completed stream carrying the zero-value outcome.
+			if metrics.terminatorSeen {
+				// terminatorSeen is set only after the marker has been written
+				// AND flushed without error, so reaching here means the full
+				// response went out. A caller closing the connection promptly
+				// afterwards, which is the normal end of a streamed request,
+				// cancels the context but does not undo that: sealing it as a
+				// disconnect would deny a completion that demonstrably happened.
+				//
+				// Only a DEADLINE still overrides, because a stream that ran out
+				// of time and produced a terminator on the same tick did not
+				// complete within the budget the operator set.
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					metrics.Outcome = StreamTotalTimeout
+					slog.Info("stream deadline elapsed as its terminator arrived; not attesting completion",
+						"request_id", reqID,
+						"chunks_sent", metrics.ChunkCount,
+					)
+					return metrics
+				}
+				metrics.Outcome = StreamCompleted
 				return metrics
 			}
 		}
@@ -408,7 +783,6 @@ func (sh *StreamingHandler) streamWithMonitoring(
 // processChunk handles a single SSE chunk with token counting.
 func (sh *StreamingHandler) processChunk(
 	w http.ResponseWriter,
-	flusher http.Flusher,
 	line string,
 	adapter adapters.ProviderAdapter,
 	transformer adapters.StreamTransformer,
@@ -417,20 +791,39 @@ func (sh *StreamingHandler) processChunk(
 ) error {
 	// SSE format: lines starting with "data: "
 	if !strings.HasPrefix(line, "data: ") {
-		// Forward event lines or empty lines as-is for keep-alive
+		// Forward event lines or empty lines as-is for keep-alive. Checked for
+		// the same reason as content chunks: these bytes are part of the
+		// response, so a failure here means it was not written in full.
 		if strings.HasPrefix(line, "event: ") || line == "" {
-			_, _ = fmt.Fprintf(w, "%s\n", line)
-			flusher.Flush()
+			if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+				return fmt.Errorf("writing stream keep-alive line: %w", err)
+			}
+			if err := flushToClient(w); err != nil {
+				return fmt.Errorf("flushing stream keep-alive line: %w", err)
+			}
 		}
 		return nil
 	}
 
 	data := strings.TrimPrefix(line, "data: ")
 
-	// End of stream
+	// End of stream, OpenAI-compatible form.
+	//
+	// The write error is checked rather than discarded, and terminatorSeen is
+	// set only after it succeeds. Completion is a claim about what the CALLER
+	// received, so a terminator the gateway failed to deliver does not
+	// establish one.
 	if data == "[DONE]" {
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+			return fmt.Errorf("writing end-of-stream marker: %w", err)
+		}
+		// http.Flusher.Flush discards its error, so a marker that reached
+		// net/http's buffer and then failed on the socket looked delivered.
+		// The flag is set only once the flush has actually succeeded.
+		if err := flushToClient(w); err != nil {
+			return fmt.Errorf("flushing end-of-stream marker: %w", err)
+		}
+		metrics.terminatorSeen = true
 		return nil
 	}
 
@@ -445,10 +838,21 @@ func (sh *StreamingHandler) processChunk(
 		return nil
 	}
 
-	// Check if the adapter signaled end of stream
+	// Check if the adapter signaled end of stream. This is the Anthropic path:
+	// message_stop arrives as an ordinary data line and the transformer renders
+	// it as [DONE], so the raw line never contains the marker. The loop's own
+	// terminator check used to test the RAW line, which meant it only ever
+	// matched OpenAI and every Anthropic stream fell through to EOF.
 	if string(transformed) == "[DONE]" {
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+			return fmt.Errorf("writing end-of-stream marker: %w", err)
+		}
+		// Same as the OpenAI branch above: the flush error is what says the
+		// marker actually left the gateway.
+		if err := flushToClient(w); err != nil {
+			return fmt.Errorf("flushing end-of-stream marker: %w", err)
+		}
+		metrics.terminatorSeen = true
 		return nil
 	}
 
@@ -473,9 +877,20 @@ func (sh *StreamingHandler) processChunk(
 		toolCalls.Observe(transformed)
 	}
 
-	// Forward to client
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", transformed)
-	flusher.Flush()
+	// Forward to client.
+	//
+	// These errors used to be discarded, so a chunk that failed to reach the
+	// client midway through a response was invisible: if a later terminator
+	// wrote and flushed cleanly the stream was attested as complete, which
+	// contradicts the attested claim about the FULL response. See
+	// flushToClient in deliver.go.
+	// Returning the error makes the loop record StreamChunkError instead.
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", transformed); err != nil {
+		return fmt.Errorf("writing stream chunk: %w", err)
+	}
+	if err := flushToClient(w); err != nil {
+		return fmt.Errorf("flushing stream chunk: %w", err)
+	}
 
 	return nil
 }
@@ -501,7 +916,14 @@ func (sh *StreamingHandler) extractTokensFromChunk(chunk []byte, metrics *Stream
 	}
 
 	// Update model if present
-	if chunkData.Model != "" && metrics.Model == "" {
+	// The model the PROVIDER reports always wins over the routed one.
+	//
+	// Model is pre-populated with the routed model so an early return can still
+	// attribute the request, and the old "only if empty" guard then made this
+	// permanently false: a completed stream kept the routed name, so
+	// model_served and the streaming cost were wrong whenever the provider
+	// served something else. The routed value is a fallback, not a floor.
+	if chunkData.Model != "" {
 		metrics.Model = chunkData.Model
 	}
 

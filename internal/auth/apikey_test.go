@@ -80,7 +80,15 @@ func TestKeyPrefix(t *testing.T) {
 	}{
 		{"aegis-prod-abcdefghijklmnopqrstuvwxyz012345", "aegis-prod-abcdefgh"},
 		{"aegis-dev-12345678901234567890123456789012", "aegis-dev-12345678"},
-		{"short", "short"},
+
+		// A short key returns a fragment, NOT the key. This case asserted
+		// {"short", "short"} until 2026-08-30, which encoded the defect: the
+		// result is written to audit_events.api_key_prefix, which is sealed and
+		// served by the audit read API, so returning the input whole put a
+		// credential somewhere it can never be removed from. A generated key is
+		// always long enough that this never arose in practice, but an imported
+		// or manually provisioned one need not be.
+		{"short", "s"},
 	}
 
 	for _, tt := range tests {

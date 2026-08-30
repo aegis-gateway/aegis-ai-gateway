@@ -365,3 +365,328 @@ and requires `hash_schema_version=3`, and the verifier deliberately computes one
 set. Spending that on additive metadata is a bad trade. The decision, the three
 rejected alternatives, and the specific thing to watch for are recorded in
 [ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md), and the bump itself is tracked on [issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38).
+
+### 2.11 `audit_logs` still exists and is still never written
+
+`audit_logs` is created by migration `002_create_audit_logs` and **nothing has ever
+inserted into it**. A repository-wide search finds the table in that migration, in
+`internal/audit/reader.go`, and in the purge code, and nowhere else. The per-request
+decision record lives in `audit_events`, which is the table the sealer covers.
+
+`GET /aegis/v1/audit/logs` was retired on 2026-08-29 and now returns **410 Gone** with a
+body naming `GET /aegis/v1/audit/events` as the replacement. Until then it returned an
+empty list, and in `?format=csv` it emitted a full 21-column header before the empty
+body, so an operator exporting the decision record received a well-formed file with no
+rows. That reads as "no activity in this window", which is a worse failure than an error:
+it answers the question incorrectly instead of declining to answer.
+
+The endpoint still authenticates and still refuses an unscoped or sentinel-organization
+key, unchanged. Nothing behind it reads a row, so scoping has nothing left to protect,
+but the access check was kept rather than dropped as a side effect of the deprecation.
+
+**Removal is pending and is not scheduled here.** The table stays because purge, the
+schema guard and migration history all reference it, and dropping it is a separate change
+with its own risk. `Reader.QueryLogs` and the `LogRow` type stay with it; they are
+unreachable from the HTTP surface and are marked deprecated in place rather than deleted
+piecemeal, so that the table and its reader are removed together or not at all.
+
+What a reader should take from this: the absence of rows in `audit_logs` is not evidence
+about traffic. It has never held anything.
+
+### 2.12 Provider error bodies reach the process log, bounded
+
+When a provider returns a non-200, the gateway logs an excerpt of the response body so an
+operator can tell a bad API key from a rate limit from a malformed request. Until
+2026-08-29 it logged the body **verbatim**, at `ERROR` level, on both the streaming path
+(`internal/gateway/streaming_enhanced.go`) and, indirectly, the non-streaming one, where
+`internal/router/adapters/openai.go` wrapped the whole body into an error that
+`internal/gateway/handler.go` then logged.
+
+Provider error bodies are unbounded strings the gateway does not control, and they
+routinely quote the offending request back. So caller-supplied text could reach whatever
+collects the process logs. The zero-retention claim is about prompts and responses
+reaching durable storage, and a log shipper is durable storage.
+
+`internal/redact.Excerpt` now bounds every such excerpt to 256 characters, collapses it to
+a single line so a crafted body cannot forge additional log records, and drops control
+characters. The status code, provider key and request ID are logged as separate fields,
+which is the part an operator acts on.
+
+**What this does not do.** It does not detect secrets or PII inside the excerpt, and it
+should not be described as though it did. Up to 256 characters of provider-controlled
+text, which may include a fragment of the caller's request, still reaches the log. The
+mitigation is volumetric, not semantic. Treat gateway logs as containing incidental
+third-party text, and set retention on them accordingly.
+
+### 2.13 A custom Rego rule can place message text into the sealed record
+
+Policy evaluation receives the caller's message text in full. `PolicyMessage.Content` in
+`internal/filter/policy/opa.go` carries each message flattened to a string, and `Parts`
+carries the structured form. That is necessary rather than incidental: a policy that
+cannot see the content cannot make a decision about it.
+
+The deny message a rule produces does not stay inside the evaluation. The path is:
+
+1. Rego builds a deny string, joined by `concat("; ", deny)` in the shipped bundle.
+2. `Evaluator.ScanRequest` concatenates it into `filter.Result.Message`.
+3. `internal/gateway/handler.go` passes that as the `reason` argument to the audit logger.
+4. `internal/audit/logger.go` writes it to `audit_events.reason`, clipped to 512
+   characters by `MaxReason` in `internal/audit/limits.go`.
+
+`audit_events` is the table the checkpoint sealer covers, and `reason` is one of the
+twenty-six fields in the leaf hash at `hash_schema_version=2`
+(`internal/audit/checkpoint/event.go`). So a deny message is hashed into the chain, served
+by the audit read API, and cannot be edited afterwards without breaking verification.
+
+A rule as ordinary as
+
+```rego
+msg := sprintf("blocked: %s", [input.messages[0].content])
+```
+
+therefore writes up to 512 characters of the caller's prompt into the attested trail,
+permanently, in a table this project describes as holding no payload.
+
+**This is operator-caused and the gateway does not prevent it.** The gateway cannot tell an
+interpolated prompt from a literal string: both arrive as a deny message and both are
+written. The zero-retention guarantee covers the code paths this project controls, and a
+custom Rego bundle is not one of them. Nothing in the shipped configuration does this; the
+default bundle interpolates only `input.request.model`.
+
+**What an operator should do instead.** Return a rule *identifier*, not interpolated
+content:
+
+```rego
+deny contains "restricted_data_on_uncleared_alias" if { ... }
+```
+
+That tells an operator which rule fired, which is the question a denial record has to
+answer, and quotes nothing the caller sent. Interpolating a request *field* the operator
+controls, such as `input.request.model` or `input.request.provider_type`, is fine: those
+are metadata of the same kind as provider or status code. Interpolating message *content*
+is not.
+
+**Not enforced in code, deliberately.** Detecting whether a deny string contains caller
+text would mean substring-matching every deny message against the request, which is both
+expensive on the request path and unreliable, and refusing to seal a denial because its
+message looked suspicious would drop a governance record for a heuristic. Making the
+constraint enforceable is a design decision that has not been taken. Until it is, this is
+a documented operator responsibility, and a Rego bundle that will be sealed deserves the
+same review as any other code that writes to the audit trail.
+
+### 2.14 The allow event carries identity and outcome, not tokens or latency
+
+`audit_events` records permitted requests as of 2026-08-29. `request_complete` is written
+when a request passes every gate and completes; `provider_failure` when a request passes
+every gate and then fails at the provider. Before this, only refusals were written, so the
+sealed chain attested what was denied and nothing about what was allowed.
+
+**What an allow event carries**, all of it in existing columns and therefore all of it
+inside the leaf hash: `event_type`, `timestamp`, `request_id`, `organization_id`,
+`team_id`, `user_id`, `api_key_id`, `api_key_prefix`, `endpoint`, `method`, `status_code`,
+`provider` (the configured provider key, not the adapter type), `model` (the requested
+alias), and `mode` (`stream` or `buffered`). A `provider_failure` additionally carries
+`reason`, from a fixed set: `provider_unreachable`, `provider_error`, `stream_interrupted`,
+`stream_truncated`, `stream_not_started`, `response_not_delivered`, `client_disconnected`.
+
+`stream_truncated` is worth calling out. A provider that closes the connection cleanly
+part way through a response produces EOF with no error, which is indistinguishable from a
+finished stream except by the absence of the protocol terminator (`[DONE]` for
+OpenAI-compatible providers, `message_stop` for Anthropic). The caller receives a partial
+answer that looks whole. That is recorded as a failure rather than a completion.
+
+**What `request_complete` actually claims.** The gateway wrote the full response without
+error, and flushed it where the response writer supports on-demand flushing. That is the
+strongest statement an HTTP handler can make, and it is deliberately weaker than "the
+caller received it".
+
+The flushing qualifier is not hypothetical hedging. Under net/http's own `ResponseWriter` a
+flush is always supported and always performed; it is absent only behind a wrapper that
+hides both `http.Flusher` and `Unwrap`, in which case the response is still written and
+net/http still flushes it when the handler returns. The gateway records a completion there
+rather than a failure, because nothing has gone wrong, but it has not confirmed a flush and
+the contract does not pretend otherwise.
+
+A successful flush proves the bytes were handed to the local kernel. It does not prove the
+peer received them: a client that disconnects after the kernel accepts the write but before
+the data is delivered or read produces a TCP reset that surfaces later, or never, and the
+flush returns nil in that window. Remote receipt would need an application-level
+acknowledgement, which an OpenAI-compatible client does not send. **Do not read a
+`request_complete` row as proof the caller has the answer.** It is proof the gateway
+produced and sent one.
+
+Within that limit, both paths check what they can. On a stream, **every** chunk write and
+flush is checked, not only the terminator: a failure part way through a response means it
+was not written in full, and is recorded as an interruption even if a later terminator
+succeeds. A terminator the gateway failed to write or flush does not establish completion
+either, and neither does one processed on the same tick the caller went away. On a buffered
+response the event follows a successful encode and flush; a failure is recorded as
+`response_not_delivered`. The usage row is
+written either way, because the provider did the work and the spend happened regardless.
+
+`status_code` on any of these is **the status the gateway sent**, not what the provider
+returned. A stream sends its 200 header before the first chunk, so a stream that later
+fails was still a 200 on the wire; and when a provider returns a non-200 the gateway sends
+500 rather than passing the upstream status through. The provider's own status is in the
+logs. Recording it here would make the sealed row state something that never went out.
+
+**What it does not carry: latency, prompt and completion tokens, the resolved concrete
+model, and classification.** There are no columns for them, and the reason not to add
+columns is specific rather than conservative.
+
+`audit_events` has twenty-six columns and all twenty-six are fields in the leaf hash at
+`hash_schema_version=2`. That correspondence is exact, and it is what makes "the row is
+attested" mean the whole row. Adding a column and putting it in the hash changes every
+leaf hash and requires `hash_schema_version=3`, which is deferred under
+[ADR 0011](../adr/0011-tool-names-wait-for-a-hash-schema-bump.md) and tracked on
+[issue #38](https://github.com/aegis-gateway/aegis-ai-gateway/issues/38). Adding a column
+and leaving it out of the hash would be worse than not adding it: the fields carrying the
+evidence would be the only fields nothing attests, and the record would look more complete
+than it is.
+
+So the token counts and the latency for a given `request_id` are in `usage_records`, which
+is **not sealed**. Joining the two gives the full picture of a request and gives it at two
+different levels of assurance. An assessor should be told which half is attested.
+
+If those fields need to be attested, they should be added in the same
+`hash_schema_version=3` bump as the tool names in §2.10, because the bump is the expensive
+part and doing it twice costs twice.
+
+**Loss visibility.** A failed audit write leaves no row, and what it leaves in the id
+sequence depends on where it failed. That distinction matters operationally, so it is
+worth stating exactly.
+
+- **Rejected before the id is allocated**, which is the case for an over-long value in a
+  bounded column: PostgreSQL coerces the parameter before evaluating the `BIGSERIAL`
+  default, so the sequence does not advance and the ids stay contiguous. Measured. Nothing
+  in the data records that anything was lost.
+- **Failed after the id is allocated**, which covers the write timing out on the logger's
+  five-second context, the connection dropping mid-statement, or any constraint checked on
+  the formed row: `nextval` has already run and sequence increments are **not rolled back**
+  by the aborted transaction, so the id is consumed permanently and a gap remains.
+
+`aegis_audit_write_failure_total`, labelled by event type, is incremented in both cases and
+is the only signal in the first. **Any non-zero value means the completeness claim does not
+hold for that window.** Alert on any increase.
+
+**A gap has a second consequence.** `checkpoint/sealer.go` deliberately refuses to seal
+past an id gap, because an in-flight transaction may still commit into it. That is correct
+for a gap that is about to close, and it means a permanently lost id **stalls sealing at
+that point** until an operator intervenes. So a transient database failure during an audit
+write can halt the checkpoint chain, not merely lose one row. Treat a sealer that has
+stopped advancing, visible as a rising `aegis_audit_last_seal_age_seconds`, together with a
+non-zero write-failure counter as that situation rather than as a sealer outage.
+
+**Shutdown.** Audit writes are asynchronous so they never add latency to a request, which
+means at SIGTERM there can be accepted events that are not yet persisted. `srv.Shutdown`
+waits for handlers and knows nothing about those goroutines, so the gateway drains them
+explicitly before closing the database pool and before any exit. The drain has its own
+deadline, sized from the single-insert timeout rather than borrowed from the shutdown
+budget, which a long-running stream can consume entirely. Before this, a routine rollout
+could drop the tail of the decision record while every affected caller had received a 200.
+
+**A forced shutdown still loses events, and this cannot be fixed by draining.** If the
+graceful deadline expires with a handler still active, for example one blocked awaiting its
+provider, that handler has not yet called the audit logger at all: it counts as zero
+in-flight, the drain legitimately reports nothing outstanding, and the process then
+terminates the handler before it can produce its event. Waiting instead would defeat the
+deadline the operator configured, since a provider call can run for minutes. The gateway
+therefore logs explicitly that the record is incomplete for whatever was in flight at exit,
+rather than letting a successful drain imply otherwise. **Treat a `shutdown deadline
+expired with handlers still active` line as a known gap in that window.**
+
+**Volume.** `audit_events` now receives one row per request rather than one row per
+refusal. Measured on 2026-08-29: 50,000 events occupy 29 MB including indexes, about
+600 bytes per row, and seal at roughly 31,000 events per second into 10,000-leaf
+checkpoints of about 215 bytes each. A deployment serving a million requests a day should
+budget in the region of 600 MB a day of `audit_events` growth and plan retention
+accordingly.
+
+### 2.15 A revoked or expired key keeps working for up to five minutes
+
+`internal/auth.CachedKeyStore` caches key metadata in Redis for five minutes
+(`redisCacheTTL`). On a cache hit `Lookup` returns the stored metadata directly and
+**nothing re-validates it**: the `status = 'active' AND expires_at > NOW()` filter lives in
+`lookupDB`, which a cache hit never reaches, and the middleware does not check `ExpiresAt`
+afterwards.
+
+So for up to five minutes after the change:
+
+- A **revoked** key still authenticates.
+- An **expired** key still authenticates.
+- A **tightened allowlist** is not enforced; the key keeps the models it had.
+
+There is no invalidation hook. `cost.Calculator.InvalidateCache` exists for pricing and has
+no counterpart here, so an operator revoking a credential during an incident cannot make it
+take effect immediately except by flushing the cache or running without Redis.
+
+**Stop the cache writers first, then flush every generation.** Both halves are required.
+
+*Every generation*, because the prefix is versioned and has changed twice: `aegis:key:`
+before 2026-08-30, then `aegis:key:v2:`, now `aegis:key:v3:`. During a rolling upgrade,
+instances running older code read and write the older namespace, so clearing only the
+newest deletes entries that may not exist yet while the old instances keep serving the
+credential.
+
+*Writers stopped*, because a flush concurrent with a running instance is racy. `Lookup`
+reads PostgreSQL and writes Redis **afterwards**, so a request that read the key before it
+was revoked can repopulate a namespace the flush has already cleared, and that entry
+authenticates the revoked key for another five minutes. Draining the instances and
+flushing again once they are gone closes the same window.
+
+```
+# after the pre-upgrade instances have stopped or drained
+redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL
+```
+
+A single flush against a live fleet reduces the exposure but does not end it. Verifying a
+revocation still means observing a 401, not observing the flush.
+
+This is long-standing behaviour rather than anything introduced recently, but two things
+now depend on it being understood. Migration `015` revokes keys whose `allowed_models`
+could not be read, expecting them to fail closed, and that revocation is subject to the
+same delay. And the per-key model allowlist is now an enforced access control rather than a
+display filter, so the delay applies to tightening it.
+
+**What an operator should do.** Treat revocation as eventually consistent with a
+five-minute bound. During an incident, flush the key cache rather than assuming a `revoked`
+status is immediately effective. Verifying that a revocation has taken hold means observing
+a 401, not observing the database row.
+
+Closing this properly needs a design decision, an invalidation channel or a short-lived
+version counter checked on every hit, and is deliberately not attempted here.
+
+---
+
+### 2.16 `keygen` mints keys that may use every configured model
+
+`cmd/keygen` writes `allowed_models` as an empty JSON array
+(`cmd/keygen/main.go:96-105`) and offers no flag to populate it. An empty allowlist
+**permits every configured model**: `modelAllowed` returns `true` when `len(allowed) == 0`
+(`internal/gateway/model_allowlist.go:43-46`). The allowlist is opt-in per key.
+
+So every key `keygen` issues is unrestricted, and the only way to restrict one is a direct
+`UPDATE` against `api_keys`:
+
+```sql
+UPDATE api_keys SET allowed_models = '["aegis-fast"]'::jsonb
+ WHERE key_prefix = 'aegis-prod-xxxxxxxx';
+```
+
+The value must be a JSON array of strings; migration `015` adds a `CHECK` that rejects
+anything else. That rejection **leaves the existing row untouched and still active**, so a
+malformed edit is a failed restriction, not a revocation: the key keeps the permissions it
+had. On a database that predates the constraint, an unreadable value instead makes
+`parseAllowedModels` fail closed, which denies the request at lookup while `status` stays
+`active`. Neither path revokes anything. Verifying that a restriction took hold means
+re-reading the row, not assuming the `UPDATE` succeeded.
+
+Phase 1 did not change any of this; it changed what the field is *for*. The column was
+previously a display filter, and it is now an enforced access control, so the grant-all
+default carries a consequence it did not carry before: a key issued and forgotten is a key
+that may reach every model in `configs/models.yaml`, including any added later.
+
+This is recorded rather than fixed because giving `keygen` an allowlist flag is a change to
+the issuing tool, which this work order does not cover. Whoever picks it up should decide
+whether the flag is required rather than defaulted, since the safe default and the
+convenient default point in opposite directions here.

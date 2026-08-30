@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/cost"
@@ -280,7 +281,10 @@ type spyAuditLogger struct {
 	pricingDenied []struct{ Provider, Model, Mode string }
 }
 
-func (s *spyAuditLogger) LogFilterBlock(_, _, _, _, _, _ string, _ string) {}
+func (s *spyAuditLogger) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
+func (s *spyAuditLogger) LogModelDenied(_, _, _, _, _, _ string, _ string)      {}
+func (s *spyAuditLogger) LogRequestComplete(_ audit.CompletedRequest)           {}
+func (s *spyAuditLogger) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
 func (s *spyAuditLogger) LogPricingDenied(_, _, _, _, provider, model, mode string, _ string) {
 	s.pricingDenied = append(s.pricingDenied, struct{ Provider, Model, Mode string }{provider, model, mode})
 }
