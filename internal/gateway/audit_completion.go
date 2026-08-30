@@ -23,23 +23,23 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 )
 
-// providerFailureReason picks the reason for a request whose failure has NO
-// established cause.
+// providerFailureReason decides whether a failed request was the caller leaving
+// or the provider failing.
 //
-// A caller cancelling mid-request lands on the same error paths as a provider
-// that failed: an error from the send when the provider was never reached, and
-// an error from the body read when the provider answered and the caller went
-// away mid-decode. Sealing a provider reason for those attributes routine
-// disconnects to a provider fault, permanently, in the record an operator uses
-// to judge provider reliability. The request context distinguishes them.
+// The ERROR must say cancellation. An earlier version consulted only
+// r.Context().Err(), which is a snapshot at the moment of classification, so a
+// genuine provider failure followed a moment later by the caller hanging up was
+// sealed as client_disconnected and a real fault vanished from the record an
+// operator uses to judge provider reliability. The error is the evidence of what
+// actually went wrong; the context is corroboration that the caller is the one
+// who went away.
 //
-// USE THIS ONLY WHERE THE CAUSE IS GENUINELY UNKNOWN. Once a non-200 status is
-// in hand the provider has already failed, and a disconnect during the read of
-// its error body does not erase that: calling this there would delete a real
-// provider failure from the reliability record. Check the status first and pass
-// the provider reason straight through when it is established.
-func providerFailureReason(r *http.Request, providerReason string) string {
-	if errors.Is(r.Context().Err(), context.Canceled) {
+// This also removes the need for callers to special-case a non-200. A provider
+// that answers with an error status produces an ordinary error from the decode,
+// not a cancellation, so its fault is preserved without anyone having to
+// remember to check the status first.
+func providerFailureReason(r *http.Request, err error, providerReason string) string {
+	if errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled) {
 		return audit.ReasonClientDisconnected
 	}
 	return providerReason

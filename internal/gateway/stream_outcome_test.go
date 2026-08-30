@@ -16,6 +16,8 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -694,13 +696,16 @@ func TestStream_FailedChunkIsNotACompletion(t *testing.T) {
 // the registry at a different name instead makes ResolveRoute fail first and no
 // audit event is produced at all, which is how the first version of these tests
 // managed to skip while proving nothing.
-type sendFailingAdapter struct{}
+type sendFailingAdapter struct{ err error }
 
 func (sendFailingAdapter) Name() string { return "stub-provider" }
 func (sendFailingAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
 	return http.NewRequestWithContext(ctx, http.MethodPost, "http://provider.invalid/v1/chat/completions", nil)
 }
-func (sendFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
+func (a sendFailingAdapter) SendRequest(*http.Request) (*http.Response, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
 	return nil, io.ErrUnexpectedEOF
 }
 func (sendFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
@@ -710,10 +715,10 @@ func (sendFailingAdapter) TransformStreamChunk(c []byte) ([]byte, error) { retur
 func (sendFailingAdapter) SupportsStreaming() bool                       { return true }
 func (sendFailingAdapter) SupportsTools() bool                           { return false }
 
-func newSendFailingHandler(spy AuditLogger) *Handler {
+func newSendFailingHandler(spy AuditLogger, sendErr error) *Handler {
 	h := newAllowlistTestHandler(spy)
 	reg := router.NewRegistry()
-	reg.Register("stub-provider", sendFailingAdapter{})
+	reg.Register("stub-provider", sendFailingAdapter{err: sendErr})
 	h.registry = reg
 	return h
 }
@@ -724,7 +729,12 @@ func newSendFailingHandler(spy AuditLogger) *Handler {
 // provider outage, in the record an operator uses to judge provider reliability.
 func TestChatCompletions_CallerCancellationIsNotAProviderOutage(t *testing.T) {
 	spy := &outcomeSpy{}
-	h := newSendFailingHandler(spy)
+	// A real transport reports a cancelled request as an error wrapping
+	// context.Canceled. Returning an unrelated error while cancelling the
+	// context does not model a disconnect, it models a provider failure that
+	// coincided with one, which is a different thing and is classified as a
+	// provider fault on purpose.
+	h := newSendFailingHandler(spy, fmt.Errorf("Post \"http://provider.invalid\": %w", context.Canceled))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
@@ -749,7 +759,7 @@ func TestChatCompletions_CallerCancellationIsNotAProviderOutage(t *testing.T) {
 // would relabel real outages as client disconnects.
 func TestChatCompletions_RealProviderFailureIsStillAProviderOutage(t *testing.T) {
 	spy := &outcomeSpy{}
-	h := newSendFailingHandler(spy)
+	h := newSendFailingHandler(spy, nil) // an ordinary transport failure
 
 	info := &auth.AuthInfo{OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test"}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -979,7 +989,10 @@ func TestStream_ProviderReportedModelOverridesTheRoutedOne(t *testing.T) {
 
 // decodeFailingAdapter answers with 200 and then fails while the body is being
 // read, which is what a caller disconnecting mid-decode looks like from here.
-type decodeFailingAdapter struct{ status int }
+type decodeFailingAdapter struct {
+	status int
+	err    error
+}
 
 func (decodeFailingAdapter) Name() string { return "stub-provider" }
 func (decodeFailingAdapter) TransformRequest(ctx context.Context, req *types.AegisRequest) (*http.Request, error) {
@@ -992,8 +1005,11 @@ func (d decodeFailingAdapter) SendRequest(*http.Request) (*http.Response, error)
 	}
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
 }
-func (decodeFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
-	return nil, context.Canceled
+func (d decodeFailingAdapter) TransformResponse(context.Context, *http.Response) (*types.AegisResponse, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	return nil, errors.New("malformed provider response")
 }
 func (decodeFailingAdapter) TransformStreamChunk(c []byte) ([]byte, error) { return c, nil }
 func (decodeFailingAdapter) SupportsStreaming() bool                       { return true }
@@ -1004,21 +1020,21 @@ func (decodeFailingAdapter) SupportsTools() bool                           { ret
 // there attributes a routine disconnect to the provider, in the record an
 // operator uses to judge provider reliability.
 func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.T) {
+	// The classification turns on WHAT WENT WRONG, not on the state of the
+	// request context when the event happens to be written. The last two cases
+	// are the decisive ones: a genuine provider failure whose caller also went
+	// away is still a provider failure.
 	tests := map[string]struct {
 		status int
+		err    error
 		cancel bool
 		want   string
 	}{
-		// 200 that will not decode: the cause is genuinely unknown, so a
-		// cancelled caller is the explanation.
-		"cancelled mid-decode of a 200": {http.StatusOK, true, audit.ReasonClientDisconnected},
-		"undecodable 200, live caller":  {http.StatusOK, false, audit.ReasonProviderError},
-
-		// A non-200 means the provider already failed. A concurrent disconnect
-		// only interrupted reading its error body and must not erase a real
-		// provider failure from the reliability record.
-		"non-200, caller also gone": {http.StatusBadGateway, true, audit.ReasonProviderError},
-		"non-200, live caller":      {http.StatusBadGateway, false, audit.ReasonProviderError},
+		"cancelled mid-decode":            {http.StatusOK, context.Canceled, true, audit.ReasonClientDisconnected},
+		"undecodable 200, live caller":    {http.StatusOK, nil, false, audit.ReasonProviderError},
+		"non-200, live caller":            {http.StatusBadGateway, nil, false, audit.ReasonProviderError},
+		"non-200, caller also gone":       {http.StatusBadGateway, nil, true, audit.ReasonProviderError},
+		"malformed 200, caller also gone": {http.StatusOK, nil, true, audit.ReasonProviderError},
 	}
 
 	for name, tt := range tests {
@@ -1026,7 +1042,7 @@ func TestChatCompletions_CancellationDuringDecodeIsNotAProviderError(t *testing.
 			spy := &outcomeSpy{}
 			h := newAllowlistTestHandler(spy)
 			reg := router.NewRegistry()
-			reg.Register("stub-provider", decodeFailingAdapter{status: tt.status})
+			reg.Register("stub-provider", decodeFailingAdapter{status: tt.status, err: tt.err})
 			h.registry = reg
 
 			ctx, cancel := context.WithCancel(context.Background())

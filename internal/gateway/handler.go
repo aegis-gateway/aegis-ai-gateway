@@ -423,7 +423,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
-				providerFailureReason(r, audit.ReasonProviderUnreachable))
+				providerFailureReason(r, err, audit.ReasonProviderUnreachable))
 		}
 		return
 	}
@@ -448,19 +448,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// here would seal a row saying the client got 401 when it did not. The
 		// upstream status is in the log line above, where it belongs.
 		httputil.WriteInternalError(w, reqID, "Failed to process provider response")
-		// This branch is reached two ways, and only one of them has an unknown
-		// cause. A non-200 means the provider has already failed, and a
-		// disconnect while its error body was read does not erase that. A 200
-		// that would not decode is ambiguous: a caller going away mid-read
-		// produces exactly the same error, so the context decides.
-		transformReason := audit.ReasonProviderError
-		if providerResp.StatusCode == http.StatusOK {
-			transformReason = providerFailureReason(r, audit.ReasonProviderError)
-		}
+		// No status special-case needed: a provider that answered with an error
+		// status produces an ordinary decode error rather than a cancellation,
+		// so its fault survives on the evidence of the error itself.
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
-				transformReason)
+				providerFailureReason(r, err, audit.ReasonProviderError))
 		}
 		return
 	}
