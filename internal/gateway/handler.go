@@ -421,9 +421,21 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// attempt. The success path was already ordered this way.
 		httputil.WriteServiceUnavailableError(w, reqID, "Provider request failed")
 		if h.auditLogger != nil {
+			// A provider that answered, and answered badly, is not unreachable.
+			// retry.Executor returns the last response alongside
+			// ErrMaxRetriesExceeded, so persistent 500s arrive here with a
+			// non-nil response; recording provider_unreachable and status 0
+			// would describe a transport failure that did not happen and would
+			// hide a provider returning errors from anyone reading the trail.
+			failureReason := audit.ReasonProviderUnreachable
+			providerStatus := 0
+			if providerResp != nil {
+				failureReason = audit.ReasonProviderError
+				providerStatus = providerResp.StatusCode
+			}
 			h.auditLogger.LogProviderFailure(
 				completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
-				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
+				providerFailureReason(r, err, providerStatus, failureReason))
 		}
 		return
 	}

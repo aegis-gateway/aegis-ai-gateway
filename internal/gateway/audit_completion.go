@@ -17,7 +17,9 @@ package gateway
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"syscall"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -46,6 +48,17 @@ func providerFailureReason(r *http.Request, err error, providerStatus int, provi
 	return audit.ReasonClientDisconnected
 }
 
+// clientGone reports whether an error is the network telling us the caller has
+// gone: a write to a socket the peer has closed.
+//
+// A disconnect during a write surfaces as EPIPE or ECONNRESET, not as anything
+// wrapping context.Canceled, so a check for cancellation alone misses the
+// commonest form of the very thing it is looking for.
+func clientGone(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, net.ErrClosed)
+}
+
 // callerWentAway reports whether a failure was the caller going away.
 //
 // The error is the evidence of WHAT failed. Consulting only r.Context().Err()
@@ -64,7 +77,8 @@ func callerWentAway(r *http.Request, err error) bool {
 	if !errors.Is(r.Context().Err(), context.Canceled) {
 		return false
 	}
-	if !errors.Is(err, context.Canceled) && !errors.Is(err, retry.ErrContextCancelled) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, retry.ErrContextCancelled) &&
+		!clientGone(err) {
 		return false
 	}
 	// A cancellation that arrived on top of a provider failure is not a clean

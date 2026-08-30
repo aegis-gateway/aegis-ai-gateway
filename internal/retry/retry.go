@@ -36,6 +36,12 @@ var (
 	// ErrCircuitOpen is returned when circuit breaker is open
 	ErrCircuitOpen = errors.New("circuit breaker is open")
 
+	// ErrProviderStatus marks a failure the provider reported as an HTTP status
+	// rather than as a Go error. It exists so a status failure is still visible
+	// as an error to anything downstream that classifies causes, which a bare
+	// nil could not be.
+	ErrProviderStatus = errors.New("provider returned a failing status")
+
 	// ErrContextCancelled is returned when context is cancelled
 	ErrContextCancelled = errors.New("request context cancelled")
 )
@@ -105,8 +111,17 @@ func (e *Executor) Execute(ctx context.Context, provider string, fn RetryableFun
 			return resp, nil
 		}
 
-		// Store the error
+		// Store what went wrong.
+		//
+		// A retryable HTTP status is a provider failure with no Go error: resp
+		// is non-nil and err is nil. Assigning err alone left lastErr nil for
+		// the commonest retry case, so a 503 followed by a caller leaving
+		// during backoff produced only a cancellation and the audit trail
+		// recorded a clean client disconnect, erasing the provider fault.
 		lastErr = err
+		if lastErr == nil && resp != nil {
+			lastErr = fmt.Errorf("%w: provider returned status %d", ErrProviderStatus, resp.StatusCode)
+		}
 
 		// Check if error is retryable
 		if !e.isRetryable(err, resp) {

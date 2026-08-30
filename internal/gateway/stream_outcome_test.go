@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1174,6 +1175,45 @@ func TestStream_ChunkErrorIsNotRelabelledByACoincidentCancellation(t *testing.T)
 	if got.Outcome == StreamClientDisconnected {
 		t.Error("a provider chunk failure was relabelled as a client disconnect because " +
 			"the context happened to be cancelled")
+	}
+	_ = spy
+}
+
+// A disconnect during a chunk write surfaces as EPIPE or ECONNRESET, not as
+// anything wrapping context.Canceled. Checking only for cancellation missed the
+// commonest form of the very thing it was looking for.
+func TestStream_SocketWriteFailureIsADisconnect(t *testing.T) {
+	spy := &outcomeSpy{}
+	h := newAllowlistTestHandler(spy)
+	sh := NewStreamingHandler(h, StreamingConfig{
+		TotalTimeout:    5 * time.Second,
+		PerChunkTimeout: 2 * time.Second,
+		BufferSize:      4096,
+		MaxBufferSize:   1 << 20,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The write fails the way a closed peer makes it fail, and the caller is
+	// gone by then, which is what a real disconnect looks like from here.
+	adapter := &scriptedStreamAdapter{
+		body:         "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
+		transformErr: fmt.Errorf("write chunk: %w", syscall.EPIPE),
+		onTransform:  cancel,
+	}
+	resp, err := adapter.SendRequest(nil)
+	if err != nil {
+		t.Fatalf("sending: %v", err)
+	}
+
+	got := sh.streamWithMonitoring(ctx, httptest.NewRecorder(), "req-epipe",
+		resp, adapter, "anthropic", "claude-test",
+		&auth.AuthInfo{OrganizationID: "org-test"})
+
+	if got.Outcome != StreamClientDisconnected {
+		t.Errorf("outcome = %q, want %q: a broken pipe is the caller going away",
+			got.Outcome, StreamClientDisconnected)
 	}
 	_ = spy
 }

@@ -682,7 +682,11 @@ func (sh *StreamingHandler) streamWithMonitoring(
 				// merely arrived alongside it must not relabel that as a
 				// disconnect. This branch used to read the context alone,
 				// which is the same mistake providerFailureReason was carrying.
-				if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+				// clientGone as well as cancellation: a disconnect during a
+				// chunk write surfaces as EPIPE or ECONNRESET, which is the
+				// commonest form and wraps nothing cancellation-shaped.
+				if (errors.Is(err, context.Canceled) || clientGone(err)) &&
+					ctx.Err() != nil {
 					metrics.Outcome = StreamClientDisconnected
 				} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					metrics.Outcome = StreamTotalTimeout
