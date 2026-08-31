@@ -37,8 +37,12 @@ migrate-up:
 migrate-down:
 	go run ./cmd/migrate -direction down
 
+# MODELS is required, like ORG/TEAM/NAME. Written as -allowed-models=$(MODELS)
+# rather than with a space so that an empty value produces keygen's own "required"
+# message; with a space, the flag would swallow -classification as its value.
+# Example: make keygen ORG=acme TEAM=platform NAME=svc MODELS=aegis-fast CLASS=INTERNAL EXPIRES=365d
 keygen:
-	go run ./cmd/keygen -org $(ORG) -team $(TEAM) -name $(NAME) -classification $(CLASS) -expires $(EXPIRES)
+	go run ./cmd/keygen -org $(ORG) -team $(TEAM) -name $(NAME) -allowed-models=$(MODELS) -classification $(CLASS) -expires $(EXPIRES)
 
 docker-build:
 	docker build -t aegis-gateway:latest .

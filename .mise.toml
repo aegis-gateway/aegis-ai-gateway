@@ -120,6 +120,7 @@ export GATEWAY_PORT="${GATEWAY_PORT:-18080}"
 export TEST_SERVER_URL="http://localhost:${GATEWAY_PORT}"
 
 key=$(go run ./cmd/keygen -org mise-org -team mise-team -name integration \
+        -allowed-models aegis-fast \
         -env dev -classification INTERNAL -expires 1d \
       | grep -oE 'aegis-dev-[a-z0-9]{32}' | head -1)
 [ -n "$key" ] || { echo "could not issue an API key" >&2; exit 1; }
@@ -182,6 +183,7 @@ go run ./cmd/keygen \
   -org dev-org \
   -team dev-team \
   -name dev-key \
+  -allowed-models any \
   -classification INTERNAL \
   -expires 365d
 """
