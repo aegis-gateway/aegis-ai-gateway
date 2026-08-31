@@ -793,15 +793,29 @@ The resulting allowlist is printed with the key.
 
 **Keys issued before this date are unaffected and are unrestricted.** There is no migration
 that could fix them, because an empty allowlist is indistinguishable from a deliberate
-grant-all. Auditing them means reading `api_keys.allowed_models` and deciding which of the
-empty ones were meant that way:
+grant-all. Only someone who knows what a key is for can say which it is.
 
-```sql
-SELECT key_prefix, name, organization_id, created_at
-  FROM api_keys
- WHERE status = 'active' AND allowed_models = '[]'::jsonb
- ORDER BY created_at;
+`aegis-migrate audit-keys` reports them:
+
 ```
+$ aegis-migrate audit-keys
+=== API keys that may use every configured model ===
+
+  KEY PREFIX             NAME         ORG      TEAM      STATUS   CREATED     EXPIRES
+  aegis-prod-v34com14    legacy-svc   acme     platform  active   2026-05-02  2027-05-02
+
+  active keys:        4
+  unrestricted:       1
+  restricted:         3
+```
+
+It is read-only, issuing `SELECT`s and nothing else, so it is safe against a production
+database. It exits 2 when any unrestricted key is found, so a scheduled run is visible
+without parsing the text. `-org` scopes it to one tenant; `-include-inactive` also lists
+revoked and expired keys, which are shown but never counted, because a key that cannot
+authenticate is not exposure.
+
+Restricting one is still a direct `UPDATE`:
 
 Restricting an existing key is still a direct `UPDATE` against `api_keys`:
 

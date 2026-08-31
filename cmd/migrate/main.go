@@ -49,6 +49,9 @@ func main() {
 		case "submit":
 			runSubmit(os.Args[2:])
 			return
+		case "audit-keys":
+			runAuditKeys(os.Args[2:])
+			return
 		case "up", "down":
 			runMigrate(os.Args[1], os.Args[2:])
 			return
@@ -451,4 +454,170 @@ func loadPurgeConfig(dir string) (*config.Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// runAuditKeys reports API keys whose model allowlist is empty.
+//
+// An empty allowlist does not mean "no access": modelAllowed returns true for a
+// zero-length list, so such a key may use every configured model, including any
+// added later. keygen wrote that value unconditionally until 2026-08-30, so
+// every key issued before then is unrestricted.
+//
+// No migration can fix them, which is why this is a report rather than a repair:
+// an empty allowlist left by the old keygen is byte-identical to one an operator
+// chose deliberately, and the database cannot tell them apart. Only someone who
+// knows what a key is for can say which it is.
+//
+// Read-only by construction. It issues SELECTs and nothing else, so it is safe
+// to run against a production database.
+func runAuditKeys(args []string) {
+	fs := flag.NewFlagSet("audit-keys", flag.ExitOnError)
+	dbURL := fs.String("db-url", "", "database URL (overrides env)")
+	org := fs.String("org", "", "restrict the report to one organization")
+	includeInactive := fs.Bool("include-inactive", false,
+		"also list revoked and expired keys, which cannot authenticate")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate audit-keys [flags]")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Lists API keys that may use EVERY configured model.")
+		fmt.Fprintln(os.Stderr, "An empty allowed_models is no restriction, not no access.")
+		fmt.Fprintln(os.Stderr, "Read-only: issues SELECTs and nothing else.")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("audit-keys: parse flags: %v", err)
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, resolveDSN(*dbURL))
+	if err != nil {
+		log.Fatalf("audit-keys: connect: %v", err)
+	}
+	defer pool.Close()
+
+	report, err := AuditKeys(ctx, pool, *org, *includeInactive)
+	if err != nil {
+		log.Fatalf("audit-keys: %v", err)
+	}
+	total, unrestricted, restricted := report.Active, report.Unrestricted, report.Restricted
+
+	fmt.Println("=== API keys that may use every configured model ===")
+	fmt.Println()
+	for i, k := range report.Keys {
+		if i == 0 {
+			fmt.Printf("  %-22s %-24s %-16s %-14s %-10s %-12s %s\n",
+				"KEY PREFIX", "NAME", "ORG", "TEAM", "STATUS", "CREATED", "EXPIRES")
+		}
+		fmt.Printf("  %-22s %-24s %-16s %-14s %-10s %-12s %s\n",
+			k.Prefix, truncate(k.Name, 24), truncate(k.Org, 16), truncate(k.Team, 14), k.Status,
+			k.Created.UTC().Format("2006-01-02"), k.Expires.UTC().Format("2006-01-02"))
+	}
+	if len(report.Keys) == 0 {
+		fmt.Println("  none")
+	}
+	fmt.Println()
+	fmt.Printf("  active keys:        %d\n", total)
+	fmt.Printf("  unrestricted:       %d\n", unrestricted)
+	fmt.Printf("  restricted:         %d\n", restricted)
+	fmt.Println()
+
+	if unrestricted == 0 {
+		fmt.Println("  Every active key names the models it may use.")
+		return
+	}
+	fmt.Println("  An empty allowed_models permits EVERY configured model, including any")
+	fmt.Println("  added later. Keys issued before 2026-08-30 have it because keygen wrote")
+	fmt.Println("  it unconditionally; it is indistinguishable from a deliberate grant-all,")
+	fmt.Println("  so each one needs a human decision.")
+	fmt.Println()
+	fmt.Println("  To restrict one:")
+	fmt.Println("    UPDATE api_keys SET allowed_models = '[\"aegis-fast\"]'::jsonb")
+	fmt.Println("     WHERE key_prefix = '<prefix>';")
+	fmt.Println()
+	fmt.Println("  The value must be a JSON array of strings; migration 015 rejects anything")
+	fmt.Println("  else, and a rejected UPDATE leaves the key exactly as it was.")
+
+	// Non-zero so a scheduled run is visible in CI or cron without parsing text.
+	os.Exit(2)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "\u2026"
+}
+
+// UnrestrictedKey is one API key whose allowlist is empty.
+type UnrestrictedKey struct {
+	Prefix, Name, Org, Team, User, Status string
+	Created, Expires                      time.Time
+}
+
+// KeyAuditReport is what audit-keys found.
+//
+// Active is every active key in scope, not just the listed ones, because
+// "12 unrestricted" means little without knowing whether the estate is 13 keys
+// or 1,300.
+type KeyAuditReport struct {
+	Active       int64
+	Unrestricted int64
+	Restricted   int64
+	Keys         []UnrestrictedKey
+}
+
+// AuditKeys reports the keys whose allowed_models is empty, which permits every
+// configured model.
+//
+// Separate from the command so the query can be tested without a process exit.
+// Read-only: SELECTs and nothing else, so it is safe against a production
+// database.
+func AuditKeys(ctx context.Context, pool *pgxpool.Pool, org string, includeInactive bool) (*KeyAuditReport, error) {
+	rep := &KeyAuditReport{}
+
+	// The counts are always over ACTIVE keys, whatever the listing includes: a
+	// revoked key cannot authenticate, so counting it as unrestricted would
+	// overstate the exposure the report exists to measure.
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE allowed_models = '[]'::jsonb),
+		       count(*) FILTER (WHERE allowed_models <> '[]'::jsonb)
+		  FROM api_keys
+		 WHERE status = 'active' AND expires_at > NOW()
+		   AND ($1 = '' OR organization_id = $1)
+	`, org).Scan(&rep.Active, &rep.Unrestricted, &rep.Restricted); err != nil {
+		return nil, fmt.Errorf("counting: %w", err)
+	}
+
+	statusFilter := "status = 'active' AND expires_at > NOW()"
+	if includeInactive {
+		statusFilter = "TRUE"
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT key_prefix, name, organization_id, team_id,
+		       coalesce(user_id, '-'), status, created_at, expires_at
+		  FROM api_keys
+		 WHERE allowed_models = '[]'::jsonb
+		   AND (`+statusFilter+`)
+		   AND ($1 = '' OR organization_id = $1)
+		 ORDER BY created_at
+	`, org)
+	if err != nil {
+		return nil, fmt.Errorf("listing: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var k UnrestrictedKey
+		if err := rows.Scan(&k.Prefix, &k.Name, &k.Org, &k.Team, &k.User,
+			&k.Status, &k.Created, &k.Expires); err != nil {
+			return nil, fmt.Errorf("scanning: %w", err)
+		}
+		rep.Keys = append(rep.Keys, k)
+	}
+	return rep, rows.Err()
 }
