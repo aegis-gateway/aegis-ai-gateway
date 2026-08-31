@@ -194,6 +194,25 @@ docker compose -f deploy/docker-compose.yaml exec gateway ./migrate up
 
 ---
 
+## Auditing API key model grants
+
+An empty `allowed_models` permits **every** configured model, including any added later.
+`keygen` wrote that value unconditionally until 2026-08-30, so keys issued before then are
+unrestricted whether or not anyone intended it.
+
+```bash
+aegis-migrate audit-keys              # every unrestricted active key
+aegis-migrate audit-keys -org acme    # one tenant
+```
+
+Read-only, and safe against production. Exits 2 when it finds any, so it can be scheduled
+and alerted on without parsing output. Revoked and expired keys are excluded from the
+counts because they cannot authenticate; `-include-inactive` lists them anyway.
+
+There is no migration that can fix the keys it finds: an empty allowlist left by the old
+`keygen` is identical to one an operator chose, so each needs a human decision. See
+`docs/evidence/known-limitations.md` 2.16.
+
 ## Audit log retention and purge
 
 AEGIS accumulates rows in `audit_events` indefinitely until an operator explicitly
