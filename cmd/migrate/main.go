@@ -24,11 +24,13 @@ import (
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/purge"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,6 +50,9 @@ func main() {
 			return
 		case "submit":
 			runSubmit(os.Args[2:])
+			return
+		case "audit-keys":
+			runAuditKeys(os.Args[2:])
 			return
 		case "up", "down":
 			runMigrate(os.Args[1], os.Args[2:])
@@ -451,4 +456,237 @@ func loadPurgeConfig(dir string) (*config.Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// runAuditKeys reports API keys whose model allowlist is empty.
+//
+// An empty allowlist does not mean "no access": modelAllowed returns true for a
+// zero-length list, so such a key may use every configured model, including any
+// added later. keygen wrote that value unconditionally until 2026-08-30, so
+// every key issued before then is unrestricted.
+//
+// No migration can fix them, which is why this is a report rather than a repair:
+// an empty allowlist left by the old keygen is byte-identical to one an operator
+// chose deliberately, and the database cannot tell them apart. Only someone who
+// knows what a key is for can say which it is.
+//
+// Read-only by construction. It issues SELECTs and nothing else, so it is safe
+// to run against a production database.
+func runAuditKeys(args []string) {
+	fs := flag.NewFlagSet("audit-keys", flag.ExitOnError)
+	dbURL := fs.String("db-url", "", "database URL (overrides env)")
+	org := fs.String("org", "", "restrict the report to one organization")
+	includeInactive := fs.Bool("include-inactive", false,
+		"also list revoked and expired keys, which cannot authenticate")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: aegis-migrate audit-keys [flags]")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Lists API keys that may use EVERY configured model.")
+		fmt.Fprintln(os.Stderr, "An empty allowed_models is no restriction, not no access.")
+		fmt.Fprintln(os.Stderr, "Read-only: issues SELECTs and nothing else.")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("audit-keys: parse flags: %v", err)
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, resolveDSN(*dbURL))
+	if err != nil {
+		log.Fatalf("audit-keys: connect: %v", err)
+	}
+	defer pool.Close()
+
+	report, err := AuditKeys(ctx, pool, *org, *includeInactive)
+	if err != nil {
+		log.Fatalf("audit-keys: %v", err)
+	}
+	total, unrestricted, restricted := report.Active, report.Unrestricted, report.Restricted
+
+	fmt.Println("=== API keys that may use every configured model ===")
+	fmt.Println()
+	for i, k := range report.Keys {
+		if i == 0 {
+			fmt.Printf("  %-38s %-22s %-22s %-16s %-12s %s\n",
+				"ID", "KEY PREFIX", "NAME", "ORG", "CREATED", "STATUS")
+		}
+		status := k.Status
+		if k.StillCacheable {
+			// Named rather than left as "revoked", because the whole point is
+			// that this one may still be authenticating.
+			status = k.Status + " (cached)"
+		}
+		fmt.Printf("  %-38s %-22s %-22s %-16s %-12s %s\n",
+			k.ID, k.Prefix, truncate(k.Name, 22), truncate(k.Org, 16),
+			k.Created.UTC().Format("2006-01-02"), status)
+	}
+	if len(report.Keys) == 0 {
+		fmt.Println("  none")
+	}
+	fmt.Println()
+	fmt.Printf("  active keys:        %d\n", total)
+	fmt.Printf("  unrestricted:       %d\n", unrestricted)
+	fmt.Printf("  restricted:         %d\n", restricted)
+	if report.StillCacheable > 0 {
+		fmt.Printf("  of which revoked or expired within the last %s: %d\n",
+			report.CacheWindow, report.StillCacheable)
+		fmt.Println("    These are counted as exposure deliberately. A cache hit returns stored")
+		fmt.Println("    metadata without rechecking status or expiry, so a key revoked minutes")
+		fmt.Println("    ago still authenticates until its entry ages out. See")
+		fmt.Println("    docs/evidence/known-limitations.md 2.15.")
+	}
+	fmt.Println()
+
+	if unrestricted == 0 {
+		fmt.Println("  Every active key names the models it may use.")
+		return
+	}
+	fmt.Println("  An empty allowed_models permits EVERY configured model, including any")
+	fmt.Println("  added later. Keys issued before 2026-08-30 have it because keygen wrote")
+	fmt.Println("  it unconditionally; it is indistinguishable from a deliberate grant-all,")
+	fmt.Println("  so each one needs a human decision.")
+	fmt.Println()
+	fmt.Println("  To restrict one, BY ID:")
+	fmt.Println("    UPDATE api_keys SET allowed_models = '[\"aegis-fast\"]'::jsonb")
+	fmt.Println("     WHERE id = '<id>';")
+	fmt.Println()
+	fmt.Println("  By id and not by key_prefix: that column has no unique constraint, so an")
+	fmt.Println("  imported or manually provisioned key can share a prefix and an UPDATE")
+	fmt.Println("  matching on it would restrict another tenant's credential too.")
+	fmt.Println()
+	fmt.Println("  The value must be a JSON array of strings; migration 015 rejects anything")
+	fmt.Println("  else, and a rejected UPDATE leaves the key exactly as it was.")
+
+	// Non-zero so a scheduled run is visible in CI or cron without parsing text.
+	os.Exit(2)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "\u2026"
+}
+
+// UnrestrictedKey is one API key whose allowlist is empty.
+type UnrestrictedKey struct {
+	ID                                    string
+	Prefix, Name, Org, Team, User, Status string
+	Created, Expires                      time.Time
+	// StillCacheable marks a key that is revoked or expired but became so
+	// recently enough that a cached lookup may still be serving it.
+	StillCacheable bool
+}
+
+// KeyAuditReport is what audit-keys found.
+//
+// Active is every active key in scope, not just the listed ones, because
+// "12 unrestricted" means little without knowing whether the estate is 13 keys
+// or 1,300.
+type KeyAuditReport struct {
+	Active         int64
+	Unrestricted   int64
+	Restricted     int64
+	StillCacheable int64
+	CacheWindow    time.Duration
+	Keys           []UnrestrictedKey
+}
+
+// KeyCacheWindow is how long a revoked or expired key may keep authenticating.
+//
+// It is auth.CacheTTL itself rather than a copy of the number. Nothing
+// re-validates on a cache hit, because the status and expiry filter lives in the
+// database query a hit never reaches, so a revoked key still authenticates until
+// its entry ages out. known-limitations 2.15 records it.
+//
+// Aliased rather than duplicated: a second five-minute constant here would be
+// correct today and silently wrong the moment the cache TTL changed, which is
+// exactly the kind of drift this report cannot afford.
+const KeyCacheWindow = auth.CacheTTL
+
+// AuditKeys reports the keys whose allowed_models is empty, which permits every
+// configured model.
+//
+// EXPOSURE IS NOT THE SAME AS "ACTIVE". An earlier version counted only active
+// keys, reasoning that a revoked or expired one cannot authenticate. That is
+// false in this system and known-limitations 2.15 says so: a cache hit returns
+// stored metadata without rechecking status or expiry, so a key revoked four
+// minutes ago is still working. A report that excluded it could print zero
+// unrestricted keys and exit 0 while such a credential was live, which is the
+// precise failure this command exists to prevent.
+//
+// So a key that stopped being usable within KeyCacheWindow counts, and is marked
+// so an operator can tell it from one that is currently valid.
+//
+// Both reads run in one REPEATABLE READ transaction. As two autocommit queries
+// they could disagree: a key inserted between them would be listed and yet
+// absent from the count, and the command would print it and then report that
+// every key is restricted.
+//
+// Read-only: SELECTs in a read-only transaction, so it is safe against a
+// production database.
+func AuditKeys(ctx context.Context, pool *pgxpool.Pool, org string, includeInactive bool) (*KeyAuditReport, error) {
+	rep := &KeyAuditReport{CacheWindow: KeyCacheWindow}
+
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// usable_until is the moment a key stops authenticating even from cache: the
+	// earlier of revocation and expiry, plus the cache window. A key is exposure
+	// while now() is before it.
+	const usableExpr = `
+		LEAST(COALESCE(revoked_at, 'infinity'::timestamptz), expires_at) + $2::interval`
+
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'active' AND expires_at > NOW()),
+		       count(*) FILTER (WHERE allowed_models = '[]'::jsonb AND NOW() < `+usableExpr+`),
+		       count(*) FILTER (WHERE allowed_models <> '[]'::jsonb AND NOW() < `+usableExpr+`),
+		       count(*) FILTER (WHERE allowed_models = '[]'::jsonb
+		                          AND NOT (status = 'active' AND expires_at > NOW())
+		                          AND NOW() < `+usableExpr+`)
+		  FROM api_keys
+		 WHERE ($1 = '' OR organization_id = $1)
+	`, org, KeyCacheWindow).Scan(&rep.Active, &rep.Unrestricted, &rep.Restricted,
+		&rep.StillCacheable); err != nil {
+		return nil, fmt.Errorf("counting: %w", err)
+	}
+
+	listFilter := `NOW() < ` + usableExpr
+	if includeInactive {
+		listFilter = "TRUE"
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id::text, key_prefix, name, organization_id, team_id,
+		       coalesce(user_id, '-'), status, created_at, expires_at,
+		       NOT (status = 'active' AND expires_at > NOW()) AND NOW() < `+usableExpr+`
+		  FROM api_keys
+		 WHERE allowed_models = '[]'::jsonb
+		   AND (`+listFilter+`)
+		   AND ($1 = '' OR organization_id = $1)
+		 ORDER BY created_at
+	`, org, KeyCacheWindow)
+	if err != nil {
+		return nil, fmt.Errorf("listing: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var k UnrestrictedKey
+		if err := rows.Scan(&k.ID, &k.Prefix, &k.Name, &k.Org, &k.Team, &k.User,
+			&k.Status, &k.Created, &k.Expires, &k.StillCacheable); err != nil {
+			return nil, fmt.Errorf("scanning: %w", err)
+		}
+		rep.Keys = append(rep.Keys, k)
+	}
+	return rep, rows.Err()
 }
