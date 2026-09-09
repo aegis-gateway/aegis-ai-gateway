@@ -539,7 +539,19 @@ func runAuditKeys(args []string) {
 	fmt.Println()
 
 	if unrestricted == 0 {
-		fmt.Println("  Every active key names the models it may use.")
+		fmt.Println("  Every key that can still authenticate names the models it may use.")
+		fmt.Println()
+		fmt.Printf("  This reflects the DATABASE. A key remediated within the last %s may still\n",
+			KeyCacheWindow)
+		fmt.Println("  be reaching every model: a cache hit returns the metadata stored when the")
+		fmt.Println("  entry was written, including the allowlist it had then, and nothing")
+		fmt.Println("  re-validates it. There is no column recording when allowed_models changed,")
+		fmt.Println("  so this report cannot see that and does not claim to.")
+		fmt.Println()
+		fmt.Println("  After remediating, either wait out the window or flush the key cache:")
+		fmt.Println("    redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL")
+		fmt.Println("  Stop or drain the gateways first; a request that read the key before the")
+		fmt.Println("  change can repopulate the namespace afterwards. See known-limitations 2.15.")
 		return
 	}
 	fmt.Println("  An empty allowed_models permits EVERY configured model, including any")
@@ -557,6 +569,18 @@ func runAuditKeys(args []string) {
 	fmt.Println()
 	fmt.Println("  The value must be a JSON array of strings; migration 015 rejects anything")
 	fmt.Println("  else, and a rejected UPDATE leaves the key exactly as it was.")
+	fmt.Println()
+	fmt.Printf("  THE UPDATE IS NOT EFFECTIVE IMMEDIATELY. For up to %s a cache hit keeps\n",
+		KeyCacheWindow)
+	fmt.Println("  returning the allowlist the entry was written with, and nothing re-validates")
+	fmt.Println("  it, so the key goes on reaching every model. api_keys records no timestamp")
+	fmt.Println("  for an allowlist change, so a later run of this command cannot detect that")
+	fmt.Println("  either: it will report the key as restricted while the credential is not.")
+	fmt.Println()
+	fmt.Println("  To make it take effect now, drain the gateways and flush the key cache:")
+	fmt.Println("    redis-cli --scan --pattern 'aegis:key:*' | xargs -r redis-cli DEL")
+	fmt.Println("  Draining first matters: a request that read the key before the change can")
+	fmt.Println("  repopulate the namespace after the flush. See known-limitations 2.15.")
 
 	// Non-zero so a scheduled run is visible in CI or cron without parsing text.
 	os.Exit(2)

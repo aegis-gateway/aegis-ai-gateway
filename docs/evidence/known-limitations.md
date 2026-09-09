@@ -820,6 +820,13 @@ five minutes still works. Such a key is counted as exposure and marked `(cached)
 listing. One that stopped being usable longer ago than that window cannot authenticate and
 is excluded; `-include-inactive` lists it anyway without counting it.
 
+**Exit 0 means the database is clean, not that every credential is.** The same cache that
+keeps a revoked key working keeps a remediated one unrestricted: a hit returns the metadata
+stored when the entry was written, including the allowlist it had then. `api_keys` records
+no timestamp for an allowlist change, so the report cannot detect a key restricted in the
+last five minutes and says so rather than implying otherwise. After remediating, drain the
+gateways and flush the key cache, or wait out the window.
+
 The report prints each key's **id**, and the remediation it suggests matches on `id` rather
 than `key_prefix`. That column has no unique constraint, so an imported or manually
 provisioned key can share a prefix and an `UPDATE` matching on it would restrict another
