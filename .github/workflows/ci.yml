@@ -356,6 +356,24 @@ jobs:
           echo "allowlist denial event type verified by name"
         env:
           TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
+
+      # cmd/... is not compiled with the integration tag by any other step, so
+      # without this the audit-keys tests are never built and the query the
+      # command exists to run is never exercised in CI. Same omission the audit
+      # event-type test had, and checked by name for the same reason: `go test
+      # -run` exits 0 when its pattern matches nothing.
+      - name: Key audit regression
+        run: |
+          set -euo pipefail
+          log=$(mktemp)
+          go test ./cmd/... -tags=integration -run AuditKeys -v -count=1 -p 1 | tee "$log"
+          if ! grep -q -- "--- PASS: TestAuditKeys_CountsWhatCanStillAuthenticate" "$log"; then
+            echo "::error::TestAuditKeys_CountsWhatCanStillAuthenticate did not report PASS; the unrestricted-key report is unevidenced by this run"
+            exit 1
+          fi
+          echo "key audit report verified by name"
+        env:
+          TEST_DATABASE_URL: postgres://aegis:aegis-dev@localhost:5432/aegis?sslmode=disable
       - name: Gateway integration tests
         run: go test ./internal/gateway/... -tags=integration -v -count=1
         env:

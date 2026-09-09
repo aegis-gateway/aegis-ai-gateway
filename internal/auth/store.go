@@ -26,7 +26,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const redisCacheTTL = 5 * time.Minute
+// CacheTTL is how long key metadata stays in Redis, and therefore how long a
+// revoked or expired key keeps authenticating: nothing re-validates on a cache
+// hit, because the status and expiry filter lives in the database query a hit
+// never reaches. See docs/evidence/known-limitations.md 2.15.
+//
+// Exported because it is not only this package's business. Anything reasoning
+// about whether a credential can still be used has to know this window, and a
+// second copy of the number elsewhere would drift.
+const CacheTTL = 5 * time.Minute
 
 // redisKeyPrefix is versioned so a change to how cached metadata is validated
 // cannot be defeated by entries written under the old rules.
@@ -80,7 +88,7 @@ func (s *CachedKeyStore) Lookup(ctx context.Context, keyHash string) (*KeyMetada
 	if s.redis != nil {
 		data, err := json.Marshal(meta)
 		if err == nil {
-			s.redis.Set(ctx, redisKeyPrefix+keyHash, data, redisCacheTTL)
+			s.redis.Set(ctx, redisKeyPrefix+keyHash, data, CacheTTL)
 		}
 	}
 
