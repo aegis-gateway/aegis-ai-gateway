@@ -635,6 +635,15 @@ const KeyCacheWindow = auth.CacheTTL
 // AuditKeys reports the keys whose allowed_models is empty, which permits every
 // configured model.
 //
+// THE WINDOW IS A LOWER BOUND, NOT A GUARANTEE. Lookup reads the database and
+// writes the cache afterwards, so a request that read a key immediately before
+// it was revoked writes its entry AFTER revoked_at, and that entry's five
+// minutes start from the write. revoked_at + CacheTTL can therefore expire while
+// a usable entry is still live. Widening it by an arbitrary multiple would look
+// like rigour without being a bound, so the report keeps the honest window and
+// says what it cannot promise: certainty requires draining the gateways and
+// flushing the key cache, which is what known-limitations 2.15 prescribes.
+//
 // EXPOSURE IS NOT THE SAME AS "ACTIVE". An earlier version counted only active
 // keys, reasoning that a revoked or expired one cannot authenticate. That is
 // false in this system and known-limitations 2.15 says so: a cache hit returns
@@ -665,11 +674,30 @@ func AuditKeys(ctx context.Context, pool *pgxpool.Pool, org string, includeInact
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// usable_until is the moment a key stops authenticating even from cache: the
-	// earlier of revocation and expiry, plus the cache window. A key is exposure
-	// while now() is before it.
+	// usable_until is the moment a key stops authenticating even from cache.
+	//
+	// A currently valid key is 'infinity': it authenticates now, so no window
+	// arithmetic applies and no stale column can exclude it. That branch exists
+	// because revoked_at is historical rather than current state. A key revoked
+	// last year and later reactivated still carries the old timestamp, and
+	// lookupDB authenticates it because it filters on status and expiry alone;
+	// treating that timestamp as a limit hid a live, unrestricted key from both
+	// the count and the listing, which is the worst direction for this report to
+	// be wrong in.
+	//
+	// Otherwise the key stopped being usable at the earlier of its revocation
+	// and its expiry, and a cache entry written at that last moment survives the
+	// window. revoked_at applies only when the key is actually revoked; a NULL
+	// revocation timestamp on a revoked key is unknown rather than old, so it
+	// falls through to the expiry and is included.
 	const usableExpr = `
-		LEAST(COALESCE(revoked_at, 'infinity'::timestamptz), expires_at) + $2::interval`
+		CASE WHEN status = 'active' AND expires_at > NOW() THEN 'infinity'::timestamptz
+		     ELSE LEAST(
+		            CASE WHEN status <> 'active'
+		                 THEN COALESCE(revoked_at, 'infinity'::timestamptz)
+		                 ELSE 'infinity'::timestamptz END,
+		            expires_at) + $2::interval
+		END`
 
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE status = 'active' AND expires_at > NOW()),

@@ -98,6 +98,12 @@ func TestAuditKeys_CountsWhatCanStillAuthenticate(t *testing.T) {
 	// cache hit, so the credential still works.
 	seedKey(t, pool, 6, "revoked-just-now", orgA, `[]`, "revoked", 24*time.Hour, &justNow)
 	seedKey(t, pool, 7, "other-org", orgB, `[]`, "active", 24*time.Hour, nil)
+	// Revoked once, later reactivated, and revoked_at never cleared. lookupDB
+	// filters on status and expiry alone, so this key authenticates today. A
+	// window computed from the historical timestamp would hide a live,
+	// unrestricted credential.
+	longPast := 60 * 24 * time.Hour
+	seedKey(t, pool, 8, "reactivated", orgA, `[]`, "active", 24*time.Hour, &longPast)
 
 	t.Run("a key revoked inside the cache window is still exposure", func(t *testing.T) {
 		rep, err := AuditKeys(ctx, pool, orgA, false)
@@ -107,19 +113,19 @@ func TestAuditKeys_CountsWhatCanStillAuthenticate(t *testing.T) {
 		// Two active plus the one revoked seconds ago, which a cache hit may
 		// still be serving. Excluding it would let this command report no
 		// exposure while a credential that can use every model is live.
-		if rep.Unrestricted != 3 {
-			t.Errorf("unrestricted = %d, want 3: two active and one revoked inside the "+
+		if rep.Unrestricted != 4 {
+			t.Errorf("unrestricted = %d, want 4: three active and one revoked inside the "+
 				"%s cache window, which still authenticates because nothing re-validates "+
 				"on a cache hit", rep.Unrestricted, rep.CacheWindow)
 		}
 		if rep.StillCacheable != 1 {
 			t.Errorf("stillCacheable = %d, want 1", rep.StillCacheable)
 		}
-		if rep.Active != 3 {
-			t.Errorf("active = %d, want 3", rep.Active)
+		if rep.Active != 4 {
+			t.Errorf("active = %d, want 4", rep.Active)
 		}
-		if len(rep.Keys) != 3 {
-			t.Errorf("listed %d keys, want 3", len(rep.Keys))
+		if len(rep.Keys) != 4 {
+			t.Errorf("listed %d keys, want 4", len(rep.Keys))
 		}
 		var flagged int
 		for _, k := range rep.Keys {
@@ -174,12 +180,12 @@ func TestAuditKeys_CountsWhatCanStillAuthenticate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("auditing: %v", err)
 		}
-		if len(rep.Keys) != 5 {
-			t.Errorf("listed %d keys with -include-inactive, want 5 (2 active, 1 revoked "+
+		if len(rep.Keys) != 6 {
+			t.Errorf("listed %d keys with -include-inactive, want 6 (3 active, 1 revoked "+
 				"just now, 1 revoked long ago, 1 expired long ago)", len(rep.Keys))
 		}
-		if rep.Unrestricted != 3 {
-			t.Errorf("unrestricted = %d with -include-inactive, want 3: the listing widens "+
+		if rep.Unrestricted != 4 {
+			t.Errorf("unrestricted = %d with -include-inactive, want 4: the listing widens "+
 				"but the exposure count must not", rep.Unrestricted)
 		}
 	})
@@ -200,4 +206,49 @@ func TestAuditKeys_CountsWhatCanStillAuthenticate(t *testing.T) {
 				"against a production database", before, after)
 		}
 	})
+}
+
+// revoked_at is historical, not current state. A key revoked once and later
+// reactivated still carries the old timestamp, and lookupDB authenticates it
+// because it filters on status and expiry alone. Computing the cache window from
+// that timestamp hid a live, unrestricted credential from both the count and the
+// listing, and the command exited 0.
+func TestAuditKeys_ReactivatedKeyIsNotHiddenByAStaleRevocation(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	const org = "audit-keys-reactivated"
+	if _, err := pool.Exec(ctx, `DELETE FROM api_keys WHERE organization_id = $1`, org); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_keys WHERE organization_id = $1`, org)
+	})
+
+	longPast := 60 * 24 * time.Hour
+	seedKey(t, pool, 90, "reactivated", org, `[]`, "active", 24*time.Hour, &longPast)
+
+	rep, err := AuditKeys(ctx, pool, org, false)
+	if err != nil {
+		t.Fatalf("auditing: %v", err)
+	}
+	if rep.Unrestricted != 1 {
+		t.Errorf("unrestricted = %d, want 1; a key that authenticates today was hidden by "+
+			"a revocation timestamp from 60 days ago", rep.Unrestricted)
+	}
+	if len(rep.Keys) != 1 {
+		t.Fatalf("listed %d keys, want 1", len(rep.Keys))
+	}
+	if rep.Keys[0].StillCacheable {
+		t.Error("a currently valid key was marked as merely still-cacheable; it is live, " +
+			"not lingering in a cache")
+	}
 }

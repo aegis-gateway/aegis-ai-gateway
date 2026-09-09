@@ -820,6 +820,13 @@ five minutes still works. Such a key is counted as exposure and marked `(cached)
 listing. One that stopped being usable longer ago than that window cannot authenticate and
 is excluded; `-include-inactive` lists it anyway without counting it.
 
+**The window is a lower bound.** `Lookup` reads the database and writes the cache afterwards,
+so a request that read a key immediately before it was revoked writes its entry *after*
+`revoked_at`, and that entry's five minutes start from the write. `revoked_at + CacheTTL`
+can therefore lapse while a usable entry is still live. The report keeps the honest window
+rather than padding it by an arbitrary multiple, which would look like rigour without being
+a bound. Certainty comes from draining and flushing, not from arithmetic.
+
 **Exit 0 means the database is clean, not that every credential is.** The same cache that
 keeps a revoked key working keeps a remediated one unrestricted: a hit returns the metadata
 stored when the entry was written, including the allowlist it had then. `api_keys` records
