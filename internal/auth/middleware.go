@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -24,7 +25,7 @@ import (
 
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).
 type AuditLogger interface {
-	LogAuthFailure(requestID, ip, userAgent, apiKey, reason string)
+	LogAuthFailure(requestID string, src audit.Source, userAgent, apiKey, reason string)
 }
 
 // Middleware returns a chi middleware that authenticates requests via Bearer token.
@@ -57,7 +58,7 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 				if apiKey := r.Header.Get("X-Api-Key"); apiKey != "" {
 					if authHeader != "" && authHeader != "Bearer "+apiKey {
 						if auditLogger != nil {
-							auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "conflicting credentials")
+							auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), "", "conflicting credentials")
 						}
 						httputil.WriteAuthError(w, reqID, "x-api-key and Authorization carry different keys. Send one key")
 						return
@@ -67,7 +68,7 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 			}
 			if authHeader == "" {
 				if auditLogger != nil {
-					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "missing authorization header")
+					auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), "", "missing authorization header")
 				}
 				if acceptAPIKeyHeader {
 					httputil.WriteAuthError(w, reqID, "Missing API key. Use x-api-key: <api-key> or Authorization: Bearer <api-key>")
@@ -80,14 +81,14 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 			token := strings.TrimPrefix(authHeader, "Bearer ")
 			if token == authHeader {
 				if auditLogger != nil {
-					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "invalid authorization format")
+					auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), "", "invalid authorization format")
 				}
 				httputil.WriteAuthError(w, reqID, "Invalid Authorization format. Use: Authorization: Bearer <api-key>")
 				return
 			}
 			if token == "" {
 				if auditLogger != nil {
-					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "empty api key")
+					auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), "", "empty api key")
 				}
 				httputil.WriteAuthError(w, reqID, "Empty API key")
 				return
@@ -104,7 +105,7 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 			if err != nil {
 				slog.Error("key lookup failed (v2)", "error", err, "key_prefix", safePrefix(token))
 				if auditLogger != nil {
-					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), token, "database lookup error")
+					auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), token, "database lookup error")
 				}
 				httputil.WriteInternalError(w, reqID, "Internal error during authentication")
 				return
@@ -117,7 +118,7 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 				if err != nil {
 					slog.Error("key lookup failed (v1 fallback)", "error", err, "key_prefix", safePrefix(token))
 					if auditLogger != nil {
-						auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), token, "database lookup error")
+						auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), token, "database lookup error")
 					}
 					httputil.WriteInternalError(w, reqID, "Internal error during authentication")
 					return
@@ -127,7 +128,7 @@ func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAP
 			if meta == nil {
 				slog.Warn("auth failed: key not found", "key_prefix", safePrefix(token))
 				if auditLogger != nil {
-					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), token, "api key not found")
+					auditLogger.LogAuthFailure(reqID, audit.SourceOf(r), r.UserAgent(), token, "api key not found")
 				}
 				httputil.WriteAuthError(w, reqID, "Invalid API key")
 				return

@@ -79,7 +79,7 @@ func (h *Handler) runFilterChain(w http.ResponseWriter, r *http.Request, reqID s
 				"org_id", authInfo.OrganizationID,
 			)
 			if h.auditLogger != nil {
-				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, blocked.FilterName, blocked.Message, r.RemoteAddr)
+				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, blocked.FilterName, blocked.Message, audit.SourceOf(r))
 			}
 			if h.metrics != nil {
 				h.metrics.RecordFilterAction(blocked.FilterName, string(blocked.Action))
@@ -138,7 +138,7 @@ func (h *Handler) enforceModelAllowlist(w http.ResponseWriter, r *http.Request, 
 			deniedModel = audit.UnconfiguredModel
 		}
 		if h.auditLogger != nil {
-			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, authInfo.KeyPrefix, deniedModel, r.RemoteAddr)
+			h.auditLogger.LogModelDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, authInfo.KeyPrefix, deniedModel, audit.SourceOf(r))
 		}
 		httputil.WriteModelNotAllowedError(w, reqID,
 			"model "+aegisReq.Model+" is not permitted for this API key")
@@ -183,7 +183,7 @@ func (h *Handler) enforceUnscannedGate(w http.ResponseWriter, r *http.Request, r
 		)
 		if h.auditLogger != nil {
 			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
-				UnscannedPartsFilter, UnscannedPartsNotClearedReason, r.RemoteAddr)
+				UnscannedPartsFilter, UnscannedPartsNotClearedReason, audit.SourceOf(r))
 		}
 		// 451 like every other sealed content block: LogFilterBlock seals 451,
 		// and the record and the response must state the same status.
@@ -210,7 +210,7 @@ func (h *Handler) evaluatePolicy(w http.ResponseWriter, r *http.Request, reqID s
 				"org_id", authInfo.OrganizationID,
 			)
 			if h.auditLogger != nil {
-				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+				h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, audit.SourceOf(r))
 			}
 			if h.metrics != nil {
 				h.metrics.RecordFilterAction(result.FilterName, string(result.Action))
@@ -261,7 +261,7 @@ func (h *Handler) enforcePricing(w http.ResponseWriter, r *http.Request, reqID s
 			// belong in the audit trail, not only in process logs that rotate.
 			if h.auditLogger != nil {
 				h.auditLogger.LogPricingDenied(reqID, authInfo.OrganizationID, authInfo.TeamID,
-					authInfo.KeyID, providerKey, providerModel, mode, r.RemoteAddr)
+					authInfo.KeyID, providerKey, providerModel, mode, audit.SourceOf(r))
 			}
 			if mode == "deny" {
 				httputil.WriteError(w, reqID, http.StatusPaymentRequired,

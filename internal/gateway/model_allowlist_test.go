@@ -33,14 +33,15 @@ type modelDenialSpy struct {
 	denied []struct{ RequestID, Org, Team, Key, KeyPrefix, Model string }
 }
 
-func (s *modelDenialSpy) LogFilterBlock(_, _, _, _, _, _ string, _ string)      {}
-func (s *modelDenialSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
-func (s *modelDenialSpy) LogRequestComplete(_ audit.CompletedRequest)           {}
-func (s *modelDenialSpy) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
-func (s *modelDenialSpy) LogModelDenied(requestID, org, team, key, keyPrefix, model string, _ string) {
+func (s *modelDenialSpy) LogFilterBlock(_, _, _, _, _, _ string, _ audit.Source)      {}
+func (s *modelDenialSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ audit.Source) {}
+func (s *modelDenialSpy) LogRequestComplete(_ audit.CompletedRequest)                 {}
+func (s *modelDenialSpy) LogProviderFailure(_ audit.CompletedRequest, _ string)       {}
+func (s *modelDenialSpy) LogModelDenied(requestID, org, team, key, keyPrefix, model string, _ audit.Source) {
 	s.denied = append(s.denied, struct{ RequestID, Org, Team, Key, KeyPrefix, Model string }{
 		requestID, org, team, key, keyPrefix, model})
 }
+func (s *modelDenialSpy) LogFeatureDenied(_, _, _, _, _, _ string, _ audit.Source) {}
 
 // newAllowlistTestHandler routes every alias in configs/models.yaml order to a
 // single stub provider, with pricing present so the request would otherwise

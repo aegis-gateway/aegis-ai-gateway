@@ -102,12 +102,12 @@ type messagesAuditSpy struct {
 	failRecs  []audit.CompletedRequest
 }
 
-func (s *messagesAuditSpy) LogFilterBlock(_, _, _, _, filterType, _ string, _ string) {
+func (s *messagesAuditSpy) LogFilterBlock(_, _, _, _, filterType, _ string, _ audit.Source) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blocks = append(s.blocks, filterType)
 }
-func (s *messagesAuditSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
+func (s *messagesAuditSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ audit.Source) {}
 func (s *messagesAuditSpy) LogRequestComplete(c audit.CompletedRequest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,7 +119,8 @@ func (s *messagesAuditSpy) LogProviderFailure(c audit.CompletedRequest, reason s
 	s.failures = append(s.failures, reason)
 	s.failRecs = append(s.failRecs, c)
 }
-func (s *messagesAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ string) {}
+func (s *messagesAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ audit.Source)   {}
+func (s *messagesAuditSpy) LogFeatureDenied(_, _, _, _, _, _ string, _ audit.Source) {}
 
 func newMessagesHandler(t *testing.T, f *fakeAnthropic, spy AuditLogger) *Handler {
 	t.Helper()

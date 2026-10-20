@@ -69,7 +69,8 @@ func TestLogModelDenied_WritesItsOwnEventType(t *testing.T) {
 	// is otherwise vulnerable to.
 	logger.LogModelDenied(reqID, "org-t", "team-t",
 		"3f2a1c44-9b7e-4d21-8a55-0c9f7b1e4d33", "aegis-prod-testpfx",
-		audit.UnconfiguredModel, "203.0.113.1:1234")
+		audit.UnconfiguredModel,
+		audit.Source{IP: "203.0.113.1:1234", Endpoint: "/v1/chat/completions", Method: "POST"})
 
 	drainCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

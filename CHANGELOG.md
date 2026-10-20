@@ -9,7 +9,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Refusal rows in `audit_events` now record the endpoint and method.** `filter_block`, `model_denied`, `pricing_denied`, `rate_limit_violation`, `budget_violation` and `redis_failure` left `endpoint` empty, and `auth_failure` recorded `/v1/*`, so a refusal on `/v1/messages` could not be told from one on `/v1/chat/completions`. The value is the matched route pattern, never the caller's spelling of the path (`audit.SourceOf`). No schema change: the column already existed and is in the leaf hash.
+
 ### Added
+- **`feature_denied` audit event** for an `anthropic-beta` flag refused by `anthropic_messages.allowed_betas`, with `reason = anthropic_beta_not_allowed`. The flag value is not recorded.
 - **`POST /v1/messages` and `/v1/messages/count_tokens`, the Anthropic Messages API, so Claude Code runs through AEGIS.** Requests pass the same gates as chat completions over a projection of the body, then the client's own body is forwarded (model replaced) to an Anthropic-type route and the response relayed verbatim, event stream included. Thinking signatures, `cache_control`, effort and context management keep full fidelity. Key accepted in `x-api-key`. (`internal/gateway/messages_handler.go`, `internal/types/messages_request.go`, `docs/reference/anthropic-messages.md`, ADR 0014)
 - `anthropic_messages.allowed_betas` (default: the six flags Claude Code 2.1.150 sends), `stream_total_timeout` (30m) and `stream_idle_timeout` (60s) in `configs/gateway.yaml`.
 

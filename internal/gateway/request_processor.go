@@ -15,6 +15,7 @@
 package gateway
 
 import (
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"io"
 	"log/slog"
 	"net/http"
@@ -159,7 +160,7 @@ func (fp *FilterProcessor) RunFilters(
 				authInfo.KeyID,
 				blocked.FilterName,
 				blocked.Message,
-				r.RemoteAddr,
+				audit.SourceOf(r),
 			)
 		}
 
