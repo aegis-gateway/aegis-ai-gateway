@@ -101,18 +101,43 @@ attested. It is free at the provider and is not priced or written to `usage_reco
 
 ## Running Claude Code through AEGIS
 
+Name the alias after the Claude model id it serves, and route it to that same model:
+
+```yaml
+# configs/models.yaml
+models:
+  claude-haiku-4-5-20251001:
+    primary:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      classification_ceiling: INTERNAL
+```
+
+Then point Claude Code at the gateway and set the model variables to that id:
+
 ```bash
 export ANTHROPIC_BASE_URL=http://<gateway>:8080
 export ANTHROPIC_API_KEY=<AEGIS key>        # sent as x-api-key
-export ANTHROPIC_MODEL=<alias>              # an alias routed to an Anthropic provider
-export ANTHROPIC_DEFAULT_OPUS_MODEL=<alias>
-export ANTHROPIC_DEFAULT_SONNET_MODEL=<alias>
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=<alias>
+export ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-haiku-4-5-20251001
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-haiku-4-5-20251001
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5-20251001
 ```
 
-Claude Code requests models by Claude model id. AEGIS does not map those ids; point the
-variables above at AEGIS aliases, or name an alias after the id in `configs/models.yaml`.
-The key's model allowlist applies to whatever alias Claude Code sends.
+Why the alias carries the model id: Claude Code decides which request features to send,
+such as the thinking mode and effort, from the model name it is configured with. AEGIS
+forwards the body unchanged apart from the model, so those features reach the provider
+as Claude Code chose them. With an arbitrarily named alias Claude Code cannot tell which
+model is behind it, and the provider may refuse a feature that model does not support
+with a 400, which AEGIS relays. With `ANTHROPIC_MODEL=aegis-claude-haiku` routed to
+Haiku 4.5, every turn drew the relayed 400 `adaptive thinking is not supported on this
+model`; with an alias named `claude-haiku-4-5-20251001` the same session worked. That
+was observed on 2026-10-20 with Claude Code 2.1.150 and Haiku 4.5 only; other models and
+releases have not been checked.
+
+AEGIS does not map model ids itself: an id with no alias of that name in
+`configs/models.yaml` is refused like any unknown alias. The key's model allowlist
+applies to whatever alias Claude Code sends.
 
 Verified on 2026-10-20 with Claude Code 2.1.150 against a gateway on the mock provider:
 a turn completed and was sealed as `request_complete`, a prompt carrying an AWS key was

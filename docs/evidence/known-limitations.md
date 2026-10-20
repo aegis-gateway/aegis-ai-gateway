@@ -945,6 +945,12 @@ The decoder is an allowlist. A Claude Code release that adds a request field, bl
 or beta flag is refused by name until the allowlist or `anthropic_messages.allowed_betas`
 is extended. Verified against Claude Code 2.1.150.
 
+Claude Code chooses request features such as thinking and effort from the model name, so
+an alias not named after the Claude model id it serves may draw a relayed provider 400
+for a feature that model lacks. Name aliases after the model id
+([anthropic-messages.md](../reference/anthropic-messages.md#running-claude-code-through-aegis));
+observed with Haiku 4.5 and Claude Code 2.1.150 on 2026-10-20.
+
 Responses are relayed, not scanned, as on every route (§1).
 
 The policy input does not say which endpoint a request arrived on, so a Rego rule cannot
