@@ -101,6 +101,18 @@ type Event struct {
 	CompletionTokens *int64
 	TotalTokens      *int64
 	DurationMs       *int64
+
+	// Added by migration 018 and covered by the leaf hash at
+	// hash_schema_version=4. What a forwarded request carried past the
+	// filters: how many content parts went out unscanned, their decoded size,
+	// and their media types from the gateway allowlist. Metadata only. There
+	// is deliberately no field for the content or for a hash of it; ADR 0013.
+	//
+	// writeEvent normalizes all three before the insert, see
+	// normalizeUnscanned, so every producer gets the same guarantees.
+	UnscannedParts     *int64
+	UnscannedBytes     *int64
+	UnscannedPartTypes *string
 }
 
 func strPtr(s string) *string {
@@ -244,6 +256,7 @@ func (l *Logger) writeEvent(event Event) {
 	// so it is bounded like the rest even though no caller chooses it.
 	event.ModelServed = clipPtr(event.ModelServed, MaxModel)
 	event.Classification = clipPtr(event.Classification, MaxMode)
+	normalizeUnscanned(&event)
 
 	query := `
 		INSERT INTO audit_events (
@@ -253,11 +266,13 @@ func (l *Logger) writeEvent(event Event) {
 			api_key_prefix, limit_dimension, limit_value, spent_cents, limit_cents,
 			filter_type, reason, provider, model, mode, operation, error_detail,
 			model_served, classification, prompt_tokens, completion_tokens,
-			total_tokens, duration_ms
+			total_tokens, duration_ms,
+			unscanned_parts, unscanned_bytes, unscanned_part_types
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
 			$14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31
+			$26, $27, $28, $29, $30, $31,
+			$32, $33, $34
 		)
 	`
 
@@ -293,6 +308,9 @@ func (l *Logger) writeEvent(event Event) {
 		event.CompletionTokens,
 		event.TotalTokens,
 		event.DurationMs,
+		event.UnscannedParts,
+		event.UnscannedBytes,
+		event.UnscannedPartTypes,
 	)
 
 	if err != nil {
@@ -511,6 +529,32 @@ type CompletedRequest struct {
 	// and nulling that would discard a measurement the gateway did take. So
 	// absence is nil here and zero is a value.
 	DurationMs *int64
+
+	// What this request forwarded without scanning, sealed at
+	// hash_schema_version=4. Set by the gateway when a route that admits
+	// unscanned content parts forwards one; nil and "" otherwise.
+	//
+	// UnscannedParts is the count and UnscannedBytes the summed decoded size.
+	// nil means none, and the gateway must leave them nil rather than pass a
+	// pointer to 0: "no unscanned parts" is NULL in the sealed record, never a
+	// sealed 0. writeEvent enforces it anyway, recording all three as NULL
+	// when the count is nil or not positive.
+	//
+	// UnscannedPartTypes is the media types, comma-separated, each one from
+	// the allowlist [IsUnscannedMediaType] reads. The empty string means NULL.
+	// writeEvent sorts and de-duplicates them and replaces anything outside
+	// the allowlist with [UnlistedMediaType], so a type a caller declared can
+	// never be sealed.
+	//
+	// A request_complete record carries these whenever the request forwarded
+	// unscanned parts: the provider answered, which proves the body was sent.
+	// A provider_failure record carries them only when the request body was
+	// written to the provider, as observed by the transport through
+	// net/http/httptrace (bodyEgress in internal/gateway). A failure before
+	// the body was written leaves them nil, because nothing left.
+	UnscannedParts     *int64
+	UnscannedBytes     *int64
+	UnscannedPartTypes string
 }
 
 // LogRequestComplete records that a request passed every gate and completed.
@@ -537,7 +581,13 @@ type CompletedRequest struct {
 // counts and latency for the same request_id are in usage_records, which is not
 // sealed. See docs/evidence/known-limitations.md section 2.14.
 func (l *Logger) LogRequestComplete(req CompletedRequest) {
-	l.Log(Event{
+	l.Log(requestCompleteEvent(req))
+}
+
+// requestCompleteEvent builds the event LogRequestComplete writes. Separate so
+// the mapping from CompletedRequest to columns can be tested without a database.
+func requestCompleteEvent(req CompletedRequest) Event {
+	return Event{
 		RequestID:      req.RequestID,
 		Timestamp:      time.Now(),
 		EventType:      EventRequestComplete,
@@ -565,7 +615,12 @@ func (l *Logger) LogRequestComplete(req CompletedRequest) {
 		CompletionTokens: req.CompletionTokens,
 		TotalTokens:      req.TotalTokens,
 		DurationMs:       req.DurationMs,
-	})
+
+		// What went out unscanned. Metadata only; normalized in writeEvent.
+		UnscannedParts:     req.UnscannedParts,
+		UnscannedBytes:     req.UnscannedBytes,
+		UnscannedPartTypes: strPtr(req.UnscannedPartTypes),
+	}
 }
 
 // LogProviderFailure records a request that passed every gate and then failed at
@@ -581,7 +636,12 @@ func (l *Logger) LogRequestComplete(req CompletedRequest) {
 // sealed, so anything put here is permanent. internal/redact exists for the log
 // path; this column takes an enumerated value only.
 func (l *Logger) LogProviderFailure(req CompletedRequest, reason string) {
-	l.Log(Event{
+	l.Log(providerFailureEvent(req, reason))
+}
+
+// providerFailureEvent builds the event LogProviderFailure writes.
+func providerFailureEvent(req CompletedRequest, reason string) Event {
+	return Event{
 		RequestID:      req.RequestID,
 		Timestamp:      time.Now(),
 		EventType:      EventProviderFailure,
@@ -609,7 +669,16 @@ func (l *Logger) LogProviderFailure(req CompletedRequest, reason string) {
 		CompletionTokens: req.CompletionTokens,
 		TotalTokens:      req.TotalTokens,
 		DurationMs:       req.DurationMs,
-	})
+
+		// Set by the gateway only when the request body was written to the
+		// provider (bodyEgress in internal/gateway). A provider that errored
+		// after receiving the body did receive the parts, so leaving them off
+		// would understate what left; a failure before the write (DNS,
+		// connect, TLS) sent nothing, and the gateway leaves them nil.
+		UnscannedParts:     req.UnscannedParts,
+		UnscannedBytes:     req.UnscannedBytes,
+		UnscannedPartTypes: strPtr(req.UnscannedPartTypes),
+	}
 }
 
 // streamMode renders the transport as an enumerated value for the mode column.

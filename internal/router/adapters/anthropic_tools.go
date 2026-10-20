@@ -337,6 +337,45 @@ type anthropicContentBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   any    `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
+
+	// image
+	Source *anthropicImageSource `json:"source,omitempty"`
+}
+
+// anthropicImageSource is the source of an Anthropic image block. Only the
+// base64 form is produced: the gateway accepts images only as data URLs.
+type anthropicImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// anthropicUserBlocks converts a user turn carrying image parts into content
+// blocks in part order. A text-only turn is left to the string form, so its
+// wire shape does not change.
+//
+// An image part's detail is not carried. It is a resolution and cost hint with
+// no equivalent in the Anthropic Messages API, so the block is sent without it
+// and Anthropic applies its own image handling. Dropping it changes no
+// conversation content: the image bytes and every text part are sent
+// unchanged. This is deliberate and documented in
+// docs/reference/request-field-support.md, unlike the constructs refused with
+// UnmappableError above, which would change what the model is asked.
+func anthropicUserBlocks(c types.Content) []anthropicContentBlock {
+	blocks := make([]anthropicContentBlock, 0, len(c.Parts))
+	for _, p := range c.Parts {
+		switch p.Type {
+		case types.PartImageURL:
+			blocks = append(blocks, anthropicContentBlock{Type: "image", Source: &anthropicImageSource{
+				Type: "base64", MediaType: p.ImageURL.MediaType(), Data: p.ImageURL.Base64Data(),
+			}})
+		default:
+			if p.Text != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: p.Text})
+			}
+		}
+	}
+	return blocks
 }
 
 // toAnthropicMessages converts the canonical message list.
@@ -364,6 +403,16 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 
 	for i := 0; i < len(msgs); i++ {
 		m := msgs[i]
+
+		// Every arm but the user one reduces content to a string, which would
+		// drop an image silently. The validator already refuses an image off a
+		// user turn; this refuses again here rather than rely on it.
+		if m.Role != types.RoleUser && len(m.Content.ImageParts()) > 0 {
+			return "", nil, &UnmappableError{
+				Construct: fmt.Sprintf("messages[%d] (role %q) image content", i, m.Role),
+				Detail:    "the gateway carries images to Anthropic only on user turns",
+			}
+		}
 
 		switch m.Role {
 		case types.RoleSystem:
@@ -474,6 +523,10 @@ func toAnthropicMessages(msgs []types.Message) (string, []anthropicMessage, erro
 					Detail: "the Anthropic Messages API requires a tool result immediately after a " +
 						"tool call, and this message comes between them",
 				}
+			}
+			if len(m.Content.ImageParts()) > 0 {
+				out = append(out, anthropicMessage{Role: m.Role, Blocks: anthropicUserBlocks(m.Content)})
+				continue
 			}
 			out = append(out, anthropicMessage{Role: m.Role, Content: m.Content.Flatten()})
 		}

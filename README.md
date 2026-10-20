@@ -134,9 +134,10 @@ directions, streaming included. The mapping was established by probing the live
 API and is recorded with the provider's own error strings in
 [docs/evidence/anthropic-tool-mapping.md](docs/evidence/anthropic-tool-mapping.md).
 
-Two limits are worth reading before pointing an agent at this. A non-text
-content part (an image, audio, a file) is **refused**, because AEGIS cannot scan
-it and will not forward what it cannot inspect. And a handful of tool-calling
+Two limits are worth reading before pointing an agent at this. An image part
+is **not scanned**: it is forwarded only to a route an operator has opted into
+`unscanned_parts`, and refused everywhere else. Audio and file parts are refused
+outright. And a handful of tool-calling
 constructs that are legal OpenAI cannot be expressed against Anthropic, chiefly
 a tool call that is not immediately followed by its result; those are refused by
 name rather than approximated. Both are in
@@ -164,7 +165,7 @@ The audit trail establishes less than an evidence package usually wants it to. T
 
 - **A checkpoint attests event integrity, not policy provenance.** It proves a set of audit events existed, in that order, unaltered since sealing. It does not prove which version of `default.rego` or which gateway configuration was in force when they were produced. Nothing computes a configuration digest; the control plane protocol reserves `ConfigHash` and `PolicyBundles` and actively rejects any v1 submission that populates them ([ADR 0004](docs/adr/0004-reserved-fields-must-not-be-populated.md)).
 - **Requests are scanned; responses are not.** The filters run inbound. A secret in a model's output is not detected.
-- **Non-text content parts are refused, not filtered.** An image, audio or file part in a content array returns 400. AEGIS cannot read it, and it will not forward to a provider what no filter has inspected.
+- **Images are gated, not scanned.** An image part reaches only a route whose operator listed `image` in `unscanned_parts`; every other alias refuses it with 451. No filter reads what the image shows. The audit trail seals that it left, its size and media type, and not its content. Audio and file parts are refused with 400.
 - **Some tool-calling constructs cannot be expressed against Anthropic.** The Messages API requires a tool call to be followed immediately by its result, which OpenAI does not; a conversation that interleaves anything between them is refused by name rather than approximated.
 - **The default policy bundle denies on alias, not on provider trust.** `input.request.provider_type` sees the adapter type rather than the configured provider name, so the `provider_type == "external"` deny rule in `configs/policies/default.rego` never fires.
 - **Zero-retention is enforced behaviourally, and only partly structurally.** There is no database constraint that makes a payload column impossible. The guarantee rests on the schema, the two tests above, and the typed column bounds, not on something the database itself refuses.

@@ -67,6 +67,14 @@ const (
 	// set it. checkDecoderRefusals below verifies that claim against the
 	// decoder rather than trusting the comment.
 	excludedRefusedByDecoder
+	// gatedUnscanned is client-supplied data that DOES reach a provider and
+	// that no filter reads. It is not an exclusion and must not be dressed as
+	// one. It is admissible only because something else stands in for the
+	// scan: the decoder constrains what the field can hold, the router admits
+	// it only on routes an operator opted in, and the audit trail seals that it
+	// left. TestScanSurface_GatedFieldsAreGated checks the first two links of
+	// that chain from here; the router and audit packages test the rest.
+	gatedUnscanned
 )
 
 type fieldRule struct {
@@ -104,13 +112,22 @@ var scanSurface = map[string]fieldRule{
 	// free text: each is constrained to a vocabulary the gateway itself
 	// defines, validates, and matches against, so a secret cannot be smuggled
 	// in one and still route.
-	"AegisRequest.Model":                           {excluded, "an alias validated against configs/models.yaml; an unmatched value fails routing rather than reaching a provider", ""},
-	"AegisRequest.ProviderType":                    {excluded, "set from adapter.Name() after routing, never from the request body", ""},
-	"AegisRequest.ToolChoice.Mode":                 {excluded, `one of the literals "none", "auto" or "required"; the decoder refuses any other value`, ""},
-	"AegisRequest.Messages[].Role":                 {excluded, "one of a fixed set the validator enforces; an unknown role is a 400", ""},
-	"AegisRequest.Messages[].ToolCalls[].Type":     {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
-	"AegisRequest.Tools[].Type":                    {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
-	"AegisRequest.Messages[].Content.Parts[].Type": {excluded, `must be the literal "text"; a part of any other type is refused at decode`, ""},
+	"AegisRequest.Model":                                      {excluded, "an alias validated against configs/models.yaml; an unmatched value fails routing rather than reaching a provider", ""},
+	"AegisRequest.ProviderType":                               {excluded, "set from adapter.Name() after routing, never from the request body", ""},
+	"AegisRequest.ToolChoice.Mode":                            {excluded, `one of the literals "none", "auto" or "required"; the decoder refuses any other value`, ""},
+	"AegisRequest.Messages[].Role":                            {excluded, "one of a fixed set the validator enforces; an unknown role is a 400", ""},
+	"AegisRequest.Messages[].ToolCalls[].Type":                {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
+	"AegisRequest.Tools[].Type":                               {excluded, `must be the literal "function"; the validator refuses any other value`, ""},
+	"AegisRequest.Messages[].Content.Parts[].Type":            {excluded, `must be the literal "text" or "image_url"; a part of any other type is refused at decode`, ""},
+	"AegisRequest.Messages[].Content.Parts[].ImageURL.Detail": {excluded, `one of "auto", "low" or "high"; the decoder refuses any other value`, ""},
+
+	// Unscanned and gated. An image reaches the provider unread. The decoder
+	// admits only a base64 data URL of an allowlisted image type whose bytes
+	// match it, so the field cannot carry a remote URL or arbitrary text; the
+	// request is then routable only to a route listing "image" in
+	// unscanned_parts (router.ResolveRouteFor), and the forwarded parts are sealed
+	// into audit_events as counts, bytes and media types.
+	"AegisRequest.Messages[].Content.Parts[].ImageURL.URL": {gatedUnscanned, "no image scanner exists; admitted only on routes opted in via unscanned_parts and sealed in the audit trail as unscanned", ""},
 
 	// Everything a client can put words into. Each must come back out of
 	// TextSegments, and the second test proves each does.
@@ -182,7 +199,7 @@ func TestScanSurface_ExclusionsAreJustified(t *testing.T) {
 			if rule.reason != "" {
 				t.Errorf("%s is classified scanned but carries an exclusion reason; scanned fields need no reason", path)
 			}
-		case excluded, excludedRefusedByDecoder:
+		case excluded, excludedRefusedByDecoder, gatedUnscanned:
 			if strings.TrimSpace(rule.reason) == "" {
 				t.Errorf("%s is excluded with no reason. The exclusion list is the reviewable part of this "+
 					"file, and an entry without a reason cannot be reviewed", path)
@@ -207,6 +224,61 @@ func TestScanSurface_ExclusionsAreJustified(t *testing.T) {
 		}
 	}
 }
+
+// TestScanSurface_GatedFieldsAreGated checks what a gatedUnscanned
+// classification claims about the decoder, and that the gate can see the field.
+//
+// Two claims. The decoder refuses anything but a verified image in the field,
+// so it is not a free-text channel to the provider under another name. And a
+// request carrying it reports it from UnscannedParts, which is what the router
+// gates on and the audit trail seals: a gated field the gate cannot see is an
+// ungated one.
+func TestScanSurface_GatedFieldsAreGated(t *testing.T) {
+	t.Parallel()
+
+	gated := 0
+	for _, rule := range scanSurface {
+		if rule.disposition == gatedUnscanned {
+			gated++
+		}
+	}
+	if gated != 1 {
+		t.Fatalf("this test knows how to check exactly one gated field (the image URL) and found %d. "+
+			"A new gated field needs its own decoder probes and gate check here", gated)
+	}
+
+	wrap := func(url string) []byte {
+		return []byte(`{"model":"m","messages":[{"role":"user","content":[` +
+			`{"type":"image_url","image_url":{"url":"` + url + `"}}]}]}`)
+	}
+	refused := map[string]string{
+		"remote URL":            "https://example.invalid/SENTINEL.png",
+		"free text":             "SENTINEL_free_text",
+		"non-image data URL":    "data:text/plain;base64,U0VOVElORUw=",
+		"unencoded data URL":    "data:image/png,SENTINEL",
+		"bytes not an image":    "data:image/png;base64,U0VOVElORUxfc2VjcmV0X3RleHQ=",
+		"svg (scriptable text)": "data:image/svg+xml;base64,PHN2Zy8+",
+	}
+	for name, url := range refused {
+		if _, err := DecodeChatCompletion(wrap(url)); err == nil {
+			t.Errorf("%s: the image URL field accepted %q. A gated field that takes arbitrary content is "+
+				"an unscanned text channel to the provider", name, url)
+		}
+	}
+
+	req, err := DecodeChatCompletion(wrap(testPNGDataURL))
+	if err != nil {
+		t.Fatalf("a valid PNG data URL was refused: %v", err)
+	}
+	if s := req.UnscannedParts(); s.Parts != 1 || len(s.Kinds) != 1 || s.Kinds[0] != UnscannedKindImage {
+		t.Errorf("a request with one image reports UnscannedParts %+v; the router gate and the audit "+
+			"record both read this, so a miss here forwards the image ungated and unrecorded", s)
+	}
+}
+
+// testPNGDataURL is a 1x1 transparent PNG.
+const testPNGDataURL = "data:image/png;base64," +
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 // TestScanSurface_ScannedFieldsReachTextSegments is the behavioural half.
 //
@@ -293,7 +365,7 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 			if _, ok := excludedSentinels[path]; ok {
 				t.Errorf("%s is classified scanned but appears in excludedSentinels", path)
 			}
-		case excluded, excludedRefusedByDecoder:
+		case excluded, excludedRefusedByDecoder, gatedUnscanned:
 			if _, ok := sentinels[path]; ok {
 				t.Errorf("%s is classified excluded, but the fixture plants a scanned-sentinel for it. "+
 					"The classification and the behaviour disagree, and the classification is what a "+

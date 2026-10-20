@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -100,9 +101,26 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
-	body, err := io.ReadAll(r.Body)
+	// Parse request body.
+	//
+	// Bounded, because nothing bounded it before: io.ReadAll on the raw body
+	// would buffer whatever a key holder sent. Image parts made the gap matter,
+	// since they arrive as base64 inside the JSON body.
+	bodyLimit := config.DefaultMaxRequestBytes
+	if h.cfg != nil {
+		if c := h.cfg(); c != nil {
+			bodyLimit = c.Server.RequestBodyLimit()
+		}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httputil.WriteError(w, reqID, http.StatusRequestEntityTooLarge,
+				"invalid_request_error", "request_too_large",
+				fmt.Sprintf("request body exceeds %d bytes (server.max_request_bytes)", bodyLimit))
+			return
+		}
 		httputil.WriteBadRequestError(w, reqID, "Failed to read request body")
 		return
 	}
@@ -228,9 +246,50 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route to provider
+	// Refuse unscanned content parts on an alias no route of which is cleared
+	// for them.
+	//
+	// No filter reads an image, so one may leave only for a route whose
+	// operator listed its kind in unscanned_parts. This is the permanent half
+	// of that gate: the alias is never cleared, so the refusal is a governance
+	// decision, sealed and answered like a filter block, and not the retryable 503 a cleared
+	// route being down produces from ResolveRouteFor below. The sealed reason
+	// is a fixed rule identifier and never quotes the request.
+	//
+	// The gate applies only to a configured alias. An unknown alias is not
+	// "uncleared for images", it does not exist: it falls through to
+	// ResolveRouteFor and gets the same unknown-model 503 a text request
+	// gets, and no filter block is sealed for an alias nobody configured.
+	// The request is refused either way.
+	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	route, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
+	_, aliasConfigured := modelsCfg.Models[aegisReq.Model]
+	if !unscanned.Empty() && aliasConfigured && !router.AnyRouteAdmitsUnscanned(modelsCfg, aegisReq.Model, unscanned.Kinds) {
+		slog.Warn("request refused: unscanned content parts on an uncleared alias",
+			"request_id", reqID,
+			"model", aegisReq.Model,
+			"unscanned_parts", unscanned.Parts,
+			"unscanned_kinds", unscanned.Kinds,
+			"org_id", authInfo.OrganizationID,
+			"team_id", authInfo.TeamID,
+		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
+				UnscannedPartsFilter, UnscannedPartsNotClearedReason, r.RemoteAddr)
+		}
+		// 451 like every other sealed content block: LogFilterBlock seals 451,
+		// and the record and the response must state the same status.
+		httputil.WriteError(w, reqID, 451, "content_filter_error", "unscanned_parts_not_cleared",
+			"model "+aegisReq.Model+" is not cleared to carry image content parts. AEGIS cannot scan an "+
+				"image for secrets, PII or prompt injection, so it forwards one only to a route whose "+
+				"operator has listed \"image\" in unscanned_parts in configs/models.yaml. "+
+				"Use a model cleared for images, or remove the image parts")
+		return
+	}
+
+	// Route to provider. Every route considered, fallbacks included, must
+	// admit the request's unscanned kinds.
+	route, err := router.ResolveRouteFor(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification), unscanned.Kinds)
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
 		return
@@ -356,8 +415,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer cleanupMonitor()
 	}
 
-	// Transform and send to provider
-	providerReq, err := adapter.TransformRequest(r.Context(), &aegisReq)
+	// Transform and send to provider. Every attempt is built from egressCtx,
+	// so bodyEgress sees whether any of them wrote the body; a provider
+	// failure seals the unscanned-part metadata only if one did.
+	egress := &bodyEgress{}
+	egressCtx := withBodyEgress(r.Context(), egress)
+	providerReq, err := adapter.TransformRequest(egressCtx, &aegisReq)
 	if err != nil {
 		// A construct the provider cannot express is the caller's input, not a
 		// gateway failure. Reporting it as a 500 tells an agent to retry a
@@ -393,7 +456,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Send request with retry logic
 	var providerResp *http.Response
 	if h.retryExecutor != nil {
-		providerResp, err = h.retryExecutor.Execute(r.Context(), adapter.Name(), func(ctx context.Context, attempt int) (*http.Response, error) {
+		providerResp, err = h.retryExecutor.Execute(egressCtx, adapter.Name(), func(ctx context.Context, attempt int) (*http.Response, error) {
 			// Re-create request for each attempt with fresh context
 			retryReq, transformErr := adapter.TransformRequest(ctx, &aegisReq)
 			if transformErr != nil {
@@ -442,7 +505,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerStatus, failureReason))
 		}
@@ -476,7 +539,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
 		}
@@ -649,7 +712,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// event, not the status.
 	if h.auditLogger != nil {
 		rec := withOutcome(
-			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false),
+			// The provider answered, which proves the body was sent.
+			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false, unscanned, true),
 			aegisResp.Model,
 			aegisResp.UsageReported,
 			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,

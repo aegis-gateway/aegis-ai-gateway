@@ -99,6 +99,23 @@ type PolicyReq struct {
 	ToolsOffered   []string `json:"tools_offered"`
 	ToolsCalled    []string `json:"tools_called"`
 	ToolChoice     string   `json:"tool_choice,omitempty"`
+	// UnscannedParts describes the content parts no filter read. Always
+	// present, zero when there are none, so a rule can test
+	// input.request.unscanned_parts.count without guarding for absence.
+	UnscannedParts PolicyUnscanned `json:"unscanned_parts"`
+}
+
+// PolicyUnscanned is metadata about the unscanned parts of a request: how
+// many, how large, which kinds and media types. Never the parts or a hash of
+// them, for the reason ToolsOffered carries names and not arguments. Policy is
+// evaluated after routing, so a request that reaches a rule with count > 0 is
+// already on a route that opted in; a rule can narrow that further (by key,
+// team, classification or size), never widen it.
+type PolicyUnscanned struct {
+	Count      int      `json:"count"`
+	Bytes      int64    `json:"bytes"`
+	Kinds      []string `json:"kinds"`
+	MediaTypes []string `json:"media_types"`
 }
 
 type PolicyTime struct {
@@ -262,9 +279,22 @@ func (e *Evaluator) Evaluate(ctx context.Context, input PolicyInput) (bool, stri
 	return allowed, reason, nil
 }
 
-// ScanRequest implements filter.Filter.
-func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) filter.Result {
-	now := time.Now().UTC()
+func policyUnscanned(u types.UnscannedSummary) PolicyUnscanned {
+	p := PolicyUnscanned{Count: u.Parts, Bytes: u.Bytes, Kinds: u.Kinds, MediaTypes: u.MediaTypes}
+	// Empty arrays rather than null, so `"image" in input.request.unscanned_parts.kinds`
+	// is simply false on a text request instead of undefined.
+	if p.Kinds == nil {
+		p.Kinds = []string{}
+	}
+	if p.MediaTypes == nil {
+		p.MediaTypes = []string{}
+	}
+	return p
+}
+
+// buildPolicyInput is the one construction of the document OPA evaluates.
+// Tests serialise its output to prove what the policy can and cannot see.
+func buildPolicyInput(req *types.AegisRequest, now time.Time) PolicyInput {
 
 	msgs := make([]PolicyMessage, len(req.Messages))
 	for i, m := range req.Messages {
@@ -280,7 +310,7 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 		msgs[i] = pm
 	}
 
-	input := PolicyInput{
+	return PolicyInput{
 		User: PolicyUser{
 			ID:   req.UserID,
 			Org:  req.OrganizationID,
@@ -294,6 +324,7 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 			ToolsOffered:   req.ToolNames(),
 			ToolsCalled:    req.CalledToolNames(),
 			ToolChoice:     req.ToolChoice.String(),
+			UnscannedParts: policyUnscanned(req.UnscannedParts()),
 		},
 		Messages: msgs,
 		Time: PolicyTime{
@@ -301,6 +332,11 @@ func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) fi
 			Day:  now.Weekday().String(),
 		},
 	}
+}
+
+// ScanRequest implements filter.Filter.
+func (e *Evaluator) ScanRequest(ctx context.Context, req *types.AegisRequest) filter.Result {
+	input := buildPolicyInput(req, time.Now().UTC())
 
 	allowed, reason, err := e.Evaluate(ctx, input)
 	if err != nil {

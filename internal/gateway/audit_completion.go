@@ -20,12 +20,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // providerFailureReason decides whether a failed request was the caller leaving
@@ -136,8 +138,10 @@ func completedRequest(
 	providerKey string,
 	statusCode int,
 	stream bool,
+	unscanned types.UnscannedSummary,
+	bodySent bool,
 ) audit.CompletedRequest {
-	return audit.CompletedRequest{
+	rec := audit.CompletedRequest{
 		RequestID:      reqID,
 		OrganizationID: authInfo.OrganizationID,
 		TeamID:         authInfo.TeamID,
@@ -155,6 +159,19 @@ func completedRequest(
 		// it. The outcome fields are attached separately by withOutcome.
 		Classification: string(authInfo.MaxClassification),
 	}
+	// What left unscanned, as metadata, and only if it left. bodySent is true
+	// when the provider answered, since a response proves the body was sent,
+	// and on a provider failure it is what bodyEgress observed: a failure
+	// before the body was written (DNS, connect, TLS) sent nothing, and
+	// sealing the parts then would attest an egress that did not happen.
+	// Left nil when there were none or nothing left, which seals NULL.
+	if bodySent && !unscanned.Empty() {
+		parts, bytes := int64(unscanned.Parts), unscanned.Bytes
+		rec.UnscannedParts = &parts
+		rec.UnscannedBytes = &bytes
+		rec.UnscannedPartTypes = strings.Join(unscanned.MediaTypes, ",")
+	}
+	return rec
 }
 
 // withOutcome attaches what actually ran to a completion record.

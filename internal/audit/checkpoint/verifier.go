@@ -190,7 +190,8 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 		// row was sealed under. The two differ: version 3 appends the
 		// predecessor's id and is 104 bytes where version 2 is 96, so hashing a
 		// row with the wrong construction reports a valid checkpoint as
-		// tampered.
+		// tampered. Version 4 changed only the leaf field set and shares the
+		// version-3 construction.
 		var computed []byte
 		var err error
 		switch cp.HashSchemaVersion {
@@ -200,7 +201,7 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 				cp.RangeStart, cp.RangeEnd, cp.EventCount,
 				cp.HashSchemaVersion, cp.SealedAt,
 			)
-		case controlplanev1.HashSchemaVersion3:
+		case controlplanev1.HashSchemaVersion3, controlplanev1.HashSchemaVersion4:
 			prevIDHashed := controlplanev1.GenesisPrevCheckpointID
 			if cp.PrevCheckpointID != nil {
 				prevIDHashed = *cp.PrevCheckpointID
@@ -218,10 +219,10 @@ func verifyChain(ctx context.Context, conn *pgx.Conn, opts VerifyOptions) (*Veri
 			// without --full would then report OK and exit 0 over a chain this
 			// build cannot check.
 			result.Anomalies = append(result.Anomalies,
-				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes versions %d, %d and %d). Not a chain break: this checkpoint is attested but unverifiable here.",
+				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes versions %d, %d, %d and %d). Not a chain break: this checkpoint is attested but unverifiable here.",
 					cp.ID, cp.HashSchemaVersion,
 					controlplanev1.HashSchemaVersion1, controlplanev1.HashSchemaVersion2,
-					controlplanev1.HashSchemaVersion3))
+					controlplanev1.HashSchemaVersion3, controlplanev1.HashSchemaVersion4))
 			continue
 		}
 		if err != nil {
@@ -293,18 +294,36 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 			}
 		}
 
-		// Load and re-hash events.
-		// Select the columns this checkpoint's version hashes. A version-2 row
-		// read with the version-3 list would scan the extra columns into fields
-		// eventJCS never reads, which is harmless, but the reverse is not: a
-		// version-3 leaf computed from a row whose new fields were never
-		// selected hashes six nulls and mismatches.
-		eventCols := EventColumns
-		if cp.HashSchemaVersion == controlplanev1.HashSchemaVersion3 {
-			eventCols = EventColumnsV3
+		// This binary recomputes leaves at hash_schema_version 2, 3 and 4.
+		//
+		// Three field sets rather than one, which migration 013 went to some
+		// trouble to avoid. The trade is deliberate and migrations 016 and 018
+		// record it: 013 DROPPED a hashed column, so keeping version 1
+		// verifiable was impossible; 016 and 018 only add, so a version-2 or
+		// version-3 leaf still recomputes byte-for-byte and refusing to carry
+		// them would have forced every deployment to archive its chain before
+		// upgrading.
+		//
+		// A version-1 checkpoint still cannot be reached from a schema that has
+		// run 013, which refuses while one exists. Report any other version as
+		// unverifiable rather than guessing: the failure mode worth designing
+		// against is not the impossible state, it is silently hashing the wrong
+		// field set and calling the resulting mismatch tampering.
+		//
+		// Decided before the query, so an unknown version costs no read and the
+		// columns selected are always the ones the version hashes. A later
+		// version's leaf computed from a row whose newer fields were never
+		// selected hashes nulls and mismatches.
+		fields, ok := leafFieldSetFor(cp.HashSchemaVersion)
+		if !ok {
+			result.Anomalies = append(result.Anomalies,
+				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes versions %s). Not a chain break: this checkpoint is attested but unverifiable here.",
+					cp.ID, cp.HashSchemaVersion, leafVersionsSupported))
+			continue
 		}
+
 		rows, err := conn.Query(ctx, `
-			SELECT `+eventCols+`
+			SELECT `+fields.columns+`
 			FROM audit_events
 			WHERE id >= $1 AND id <= $2
 			ORDER BY id ASC
@@ -312,12 +331,7 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 		if err != nil {
 			return fmt.Errorf("verify: query events for checkpoint %d: %w", cp.ID, err)
 		}
-		var events []AuditEventRow
-		if cp.HashSchemaVersion == controlplanev1.HashSchemaVersion3 {
-			events, err = scanEventRowsV3(rows)
-		} else {
-			events, err = scanEventRows(rows)
-		}
+		events, err := fields.scan(rows)
 		if err != nil {
 			return fmt.Errorf("verify: scan events for checkpoint %d: %w", cp.ID, err)
 		}
@@ -329,39 +343,9 @@ func verifyFull(ctx context.Context, conn *pgx.Conn, checkpoints []CheckpointRec
 			continue
 		}
 
-		// This binary recomputes leaves at hash_schema_version 2 and 3.
-		//
-		// Two field sets rather than one, which migration 013 went to some
-		// trouble to avoid. The trade is deliberate and migration 016 records
-		// it: 013 DROPPED a hashed column, so keeping version 1 verifiable was
-		// impossible; 016 only adds, so a version-2 leaf still recomputes
-		// byte-for-byte and refusing to carry it would have forced every
-		// deployment to archive its chain before upgrading.
-		//
-		// A version-1 checkpoint still cannot be reached from a schema that has
-		// run 013, which refuses while one exists. Report any other version as
-		// unverifiable rather than guessing: the failure mode worth designing
-		// against is not the impossible state, it is silently hashing the wrong
-		// field set and calling the resulting mismatch tampering.
-		switch cp.HashSchemaVersion {
-		case controlplanev1.HashSchemaVersion2, controlplanev1.HashSchemaVersion3:
-		default:
-			result.Anomalies = append(result.Anomalies,
-				fmt.Sprintf("checkpoint %d: sealed at hash_schema_version=%d, which this build cannot recompute (it computes versions %d and %d). Not a chain break: this checkpoint is attested but unverifiable here.",
-					cp.ID, cp.HashSchemaVersion,
-					controlplanev1.HashSchemaVersion2, controlplanev1.HashSchemaVersion3))
-			continue
-		}
-
 		leaves := make([][]byte, len(events))
 		for i, ev := range events {
-			var lh []byte
-			var err error
-			if cp.HashSchemaVersion == controlplanev1.HashSchemaVersion3 {
-				lh, err = EventLeafHashV3(ev)
-			} else {
-				lh, err = EventLeafHash(ev)
-			}
+			lh, err := fields.leaf(ev)
 			if err != nil {
 				return fmt.Errorf("verify: leaf hash event %d: %w", ev.ID, err)
 			}
@@ -404,7 +388,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 
 	// Same guard as the full verification path, for the same reason and stated
 	// before any work is done: this build recomputes leaves at
-	// hash_schema_version 2 and 3, and hashing a checkpoint sealed under a
+	// hash_schema_version 2, 3 and 4, and hashing a checkpoint sealed under a
 	// different field set produces a root that will not match. Without this the
 	// mismatch below reports that the audit rows have been altered, which would
 	// be a false accusation of tampering against an operator whose data is
@@ -413,25 +397,18 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 	// The version is already loaded, and already returned in the result. Refusing
 	// on it costs nothing and is the difference between "this build cannot check
 	// that" and "someone tampered with your audit trail".
-	switch cp.HashSchemaVersion {
-	case controlplanev1.HashSchemaVersion2, controlplanev1.HashSchemaVersion3:
-	default:
+	fields, ok := leafFieldSetFor(cp.HashSchemaVersion)
+	if !ok {
 		return nil, fmt.Errorf(
 			"verify: event %d is in checkpoint %d, which is sealed at hash_schema_version=%d; "+
-				"this build recomputes leaves at versions %d and %d and cannot produce a proof "+
+				"this build recomputes leaves at versions %s and cannot produce a proof "+
 				"against that checkpoint. It is attested but unverifiable here, not tampered",
-			eventID, cp.ID, cp.HashSchemaVersion,
-			controlplanev1.HashSchemaVersion2, controlplanev1.HashSchemaVersion3)
-	}
-	proofCols := EventColumns
-	proofV3 := cp.HashSchemaVersion == controlplanev1.HashSchemaVersion3
-	if proofV3 {
-		proofCols = EventColumnsV3
+			eventID, cp.ID, cp.HashSchemaVersion, leafVersionsSupported)
 	}
 
 	// Load all events in the checkpoint range.
 	rows, err := conn.Query(ctx, `
-		SELECT `+proofCols+`
+		SELECT `+fields.columns+`
 		FROM audit_events
 		WHERE id >= $1 AND id <= $2
 		ORDER BY id ASC
@@ -439,12 +416,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 	if err != nil {
 		return nil, fmt.Errorf("verify: load events for proof: %w", err)
 	}
-	var events []AuditEventRow
-	if proofV3 {
-		events, err = scanEventRowsV3(rows)
-	} else {
-		events, err = scanEventRows(rows)
-	}
+	events, err := fields.scan(rows)
 	if err != nil {
 		return nil, fmt.Errorf("verify: scan events for proof: %w", err)
 	}
@@ -453,13 +425,7 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 	leafIdx := -1
 	leaves := make([][]byte, len(events))
 	for i, ev := range events {
-		var lh []byte
-		var err error
-		if proofV3 {
-			lh, err = EventLeafHashV3(ev)
-		} else {
-			lh, err = EventLeafHash(ev)
-		}
+		lh, err := fields.leaf(ev)
 		if err != nil {
 			return nil, fmt.Errorf("verify: leaf hash event %d: %w", ev.ID, err)
 		}
@@ -505,6 +471,42 @@ func buildInclusionProof(ctx context.Context, conn *pgx.Conn, eventID int64) (*I
 		SiblingHashes:        sibHex,
 		MerkleRoot:           hex.EncodeToString(cp.MerkleRoot),
 	}, nil
+}
+
+// leafFieldSet is everything that differs between hash_schema_versions on the
+// leaf side: which columns to select, how to scan them, and how to encode a row.
+//
+// The three travel together because getting any one of them wrong for a given
+// version is the same failure: a leaf computed over a different field set than
+// the one sealed, and a Merkle mismatch reported as tampering. Selecting them
+// as a unit, by version, in one place, is what keeps the sealer, the full
+// verifier and the inclusion proof from each carrying their own switch and
+// drifting apart.
+type leafFieldSet struct {
+	columns string
+	scan    func(pgx.Rows) ([]AuditEventRow, error)
+	leaf    func(AuditEventRow) ([]byte, error)
+}
+
+// leafVersionsSupported names the versions leafFieldSetFor answers, for error
+// text. Kept beside the switch so the two are edited together.
+const leafVersionsSupported = "2, 3 and 4"
+
+// leafFieldSetFor returns the leaf field set for a hash_schema_version, or false
+// for a version this build cannot recompute. Version 1 is absent on purpose:
+// migration 013 refuses to run while a version-1 checkpoint exists, so a schema
+// this build runs against has none.
+func leafFieldSetFor(version int32) (leafFieldSet, bool) {
+	switch version {
+	case controlplanev1.HashSchemaVersion2:
+		return leafFieldSet{EventColumns, scanEventRows, EventLeafHash}, true
+	case controlplanev1.HashSchemaVersion3:
+		return leafFieldSet{EventColumnsV3, scanEventRowsV3, EventLeafHashV3}, true
+	case controlplanev1.HashSchemaVersion4:
+		return leafFieldSet{EventColumnsV4, scanEventRowsV4, EventLeafHashV4}, true
+	default:
+		return leafFieldSet{}, false
+	}
 }
 
 func loadCheckpoints(ctx context.Context, conn *pgx.Conn, fromID, toID int64) ([]CheckpointRecord, error) {

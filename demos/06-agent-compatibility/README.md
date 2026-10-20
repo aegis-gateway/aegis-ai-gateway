@@ -19,7 +19,7 @@ added, and checks what the gateway refuses to carry.
 - **The filter chain reads the widened request.** Act 4c hides a credential in a tool call's arguments, in a tool result, and in a structured content part, then hides a prompt injection in a tool result. All four are blocked before the provider sees them
 
 **Refused by design, and shown as refusals rather than hidden:**
-- **A non-text content part.** An image part returns 400 `unsupported_content_part`. AEGIS cannot scan an image and will not forward to a provider what no filter has read
+- **Content AEGIS cannot scan.** An audio part returns 400 `unsupported_content_part`, and a remote image URL returns 400 `unsupported_image_part`. AEGIS cannot scan either and will not forward to a provider what no filter has read. A base64 image is carried only on a route an operator opted into `unscanned_parts`, which this demo configures none of
 - **An unsupported request field.** `seed`, `n` and everything else outside the allowlist return 400 naming the field. This used to be a silent discard, which is how tool calling was lost in the first place
 
 **Still broken:**

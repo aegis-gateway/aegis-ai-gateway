@@ -260,7 +260,9 @@ func TestChatCompletions_RefusesUnsupportedField(t *testing.T) {
 
 // TestChatCompletions_RefusesImageContentPart is the Part 5 guarantee asserted
 // through the handler: an image part is an egress path AEGIS cannot inspect, so
-// it is refused rather than forwarded.
+// it is refused unless the alias has a route an operator opted into carrying
+// unscanned parts. aegis-tools has none. image_handler_test.go covers the
+// opted-in path.
 func TestChatCompletions_RefusesImageContentPart(t *testing.T) {
 	adapter := &recordingAdapter{name: "test-provider", supportsTool: true}
 	h := newToolHandler(adapter, nil)
@@ -270,14 +272,32 @@ func TestChatCompletions_RefusesImageContentPart(t *testing.T) {
 		{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
 	]}]}`)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	if w.Code != 451 {
+		t.Fatalf("status = %d, want 451; body: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "unsupported_content_part") {
-		t.Errorf("the 400 carries no machine-readable code: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
+		t.Errorf("the 451 carries no machine-readable code: %s", w.Body.String())
 	}
 	if adapter.sentBody != nil {
 		t.Error("a request carrying an image part was still dispatched to the provider")
+	}
+}
+
+// TestChatCompletions_RefusesUnscannablePartKinds: kinds with no gate at all
+// are refused at decode whatever the route.
+func TestChatCompletions_RefusesUnscannablePartKinds(t *testing.T) {
+	adapter := &recordingAdapter{name: "test-provider", supportsTool: true}
+	h := newToolHandler(adapter, nil)
+
+	w := postTools(t, h, `{"model":"aegis-tools","messages":[{"role":"user","content":[
+		{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}
+	]}]}`)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unsupported_content_part") {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	if adapter.sentBody != nil {
+		t.Error("an audio part was dispatched to the provider")
 	}
 }
 

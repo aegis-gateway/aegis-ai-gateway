@@ -9,6 +9,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Image content parts, gated rather than scanned.** `{"type":"image_url"}` parts are accepted as inline base64 data URLs (PNG, JPEG, GIF, WebP, bytes checked against the declared type) on user messages, and routed only to a route that lists `image` in its new `unscanned_parts` field in `configs/models.yaml`. No route does as shipped. No filter reads an image. Each route opts in on its own, so a cleared primary does not clear its fallbacks. On Anthropic routes an image becomes a base64 `image` block; on OpenAI-compatible routes it is forwarded unchanged. (`internal/types/content.go`, `router.ResolveRouteFor`, `docs/evidence/known-limitations.md` §2.7)
+- **Unscanned parts are sealed in the audit trail.** A forwarded request records the number of unscanned parts, their decoded bytes and their media types in `audit_events` at `hash_schema_version` 4. No content and no content hash.
+- **`input.request.unscanned_parts` in the policy input**: count, bytes, kinds and media types, so a Rego rule can narrow the image gate.
+- **Request body cap.** `server.max_request_bytes` (default 32 MiB) bounds a chat completion body; a larger one is a 413 `request_too_large`. Bodies were previously read without a limit.
+
+### Changed
+- An image part on an alias with no cleared route returns **451 `unscanned_parts_not_cleared`**, sealed as a filter block, where it previously returned 400 `unsupported_content_part`. A remote image URL returns 400 `unsupported_image_part`. Audio, file and other part types still return 400 `unsupported_content_part`.
+- Image limits: 10 MiB per image decoded, 16 image parts per request, user messages only.
+
 ## [0.1.1] - 2026-09-07
 
 > Bookkeeping note: some entries below this heading predate the `v0.1.0` tag and

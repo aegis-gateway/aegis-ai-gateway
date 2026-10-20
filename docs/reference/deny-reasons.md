@@ -41,8 +41,10 @@ request**, it is the join key to the audit trail.
 | 400 | `invalid_request_error` | Malformed or out-of-limits request |
 | 401 | `authentication_error` | Key missing, malformed, or unknown |
 | 402 | `budget_error` | Daily spend limit reached |
+| 403 | `permission_error` | Model outside the key's allowlist |
+| 413 | `invalid_request_error` | Request body over `server.max_request_bytes` |
 | 429 | `rate_limit_error` | Requests-per-minute limit reached |
-| **451** | `content_filter_error` | **Blocked by a filter or by policy** |
+| **451** | `content_filter_error` | **Blocked by a filter or by policy**, or image parts on an alias not cleared for them |
 | 500 | `server_error` | Internal fault |
 | 503 | `server_error` | Dependency unavailable, failing closed |
 
@@ -93,7 +95,11 @@ Validation errors are `field: message`, joined with `; ` when several fail at on
 | `messages is required` | `messages` absent or empty |
 | `model name too long (max %d characters)` | Model name over the configured limit |
 | `Invalid JSON: <parser error>` | Body is not valid JSON |
-| `Failed to read request body` | Body could not be read (client disconnect, size cap) |
+| `Failed to read request body` | Body could not be read (client disconnect) |
+| `request body exceeds %d bytes (server.max_request_bytes)` | **413**, code `request_too_large`. Body over the cap, default 32 MiB. Raise `server.max_request_bytes` in `configs/gateway.yaml` if clients legitimately send larger images |
+| `messages[%d].content: image parts are accepted only on user messages, not role '%s'` | An image part on a system, assistant or tool message |
+| `messages[%d].content: image too large (max %d bytes decoded)` | One image over 10 MiB after base64 decoding |
+| `messages: too many image parts (max %d per request)` | More than 16 image parts across the whole request. Chat clients resend every earlier image on each turn, so a long conversation with images reaches this |
 
 Fields validated with configurable limits: `model`, `messages`, `temperature`,
 `max_tokens`, `top_p`, `stop`, `tools`. Each failure also increments an invalid-field
@@ -110,7 +116,8 @@ accept, as opposed to something out of range.
 | Literal string | Code | Trigger | Operator action |
 |---|---|---|---|
 | `unsupported request field "<field>": <reason>` | `unsupported_field` | The body carries a field outside the accepted allowlist | Client should remove the field. The reason states what accepting and ignoring it would have cost. Full table in [request field support](request-field-support.md). |
-| `content[<n>] has type "<type>": AEGIS accepts only text content parts, …` | `unsupported_content_part` | A content array carries an image, audio or file part | AEGIS cannot scan it and will not forward it. Send text. See [known limitations §2.7](../evidence/known-limitations.md). |
+| `content[<n>] has type "<type>": AEGIS accepts only text and image_url content parts, …` | `unsupported_content_part` | A content array carries an audio, file or other non-text, non-image part | AEGIS cannot scan it and will not forward it. Send text. See [known limitations §2.7](../evidence/known-limitations.md). |
+| `content[<n>] is an image_url part AEGIS will not carry: <reason>` | `unsupported_image_part` | The image is a remote URL, not base64, not PNG/JPEG/GIF/WebP, has bytes that do not match its declared type, or has an unknown `detail` | Send the image inline as `data:image/<type>;base64,…`. The reason never quotes the URL. |
 
 Both are **behaviour changes**. Requests carrying an unsupported field previously
 returned 200 with the field discarded. Metric: `aegis_unsupported_field_total`, labelled
@@ -124,6 +131,26 @@ Stage: [`internal/gateway/handler.go`](../../internal/gateway/handler.go), after
 | Literal string | Code | Trigger | Operator action |
 |---|---|---|---|
 | `model <alias> routes to provider <name>, whose adapter (<type>) does not carry tool definitions, tool calls or tool results. AEGIS refuses the request rather than forwarding it without its tools. …` | `tools_unsupported_by_provider` | A tool-bearing request resolved to an adapter whose `SupportsTools()` is false, currently the Anthropic adapter | Route the alias to an OpenAI-compatible provider, or drop the tool fields. Metric: `aegis_tool_requests_refused_total`. See [known limitations §2.8](../evidence/known-limitations.md). |
+
+### 3.3 Unscanned content parts: 451
+
+Stage: `internal/gateway/handler.go`, after the model allowlist and before routing.
+Type `content_filter_error`.
+
+| Literal string | Code | Trigger | Operator action |
+|---|---|---|---|
+| `model <alias> is not cleared to carry image content parts. AEGIS cannot scan an image …` | `unscanned_parts_not_cleared` | The request carries an image part and no route of the alias, primary or fallback, lists `image` in `unscanned_parts` | Use an alias cleared for images. To clear one, add `unscanned_parts: [image]` to that route in `configs/models.yaml`, and only for a provider you are willing to let see content AEGIS did not inspect. See [known limitations §2.7](../evidence/known-limitations.md). |
+
+This refusal is **sealed** as a filter block, `filter_type = unscanned_parts`, with the
+fixed reason `unscanned_parts_not_cleared: alias has no route listing the part kind in
+unscanned_parts`, and the sealed `status_code` is 451, the status the client receives.
+It is 451 rather than 503 because it is permanent: retrying cannot
+succeed until the configuration changes. If the alias *does* have a cleared route and
+that route is down, the request is a 503 from routing instead (section 6), and it never
+fails over to a route that is not cleared. An alias that is not configured at all is
+not this refusal: an image request to it gets the same unknown-model 503 from routing a
+text request gets, and no filter block is sealed
+(`TestChatCompletions_ImageOnUnknownAliasIs503NotSealed`).
 
 ## 4. Content filters: 451
 
@@ -202,7 +229,8 @@ Type `server_error`, code `service_unavailable`.
 | `No provider available: no eligible provider for model %s at classification %s` | Every route for the alias was skipped | Three distinct causes, below. |
 
 A route is skipped when: the model alias is unknown; the route's
-`classification_ceiling` does not allow the key's classification; or the provider's
+`classification_ceiling` does not allow the key's classification; the request carries
+image parts and the route does not list `image` in `unscanned_parts`; or the provider's
 circuit breaker is open. **Check `/aegis/v1/health` first**, it reports circuit breaker
 state per provider, which distinguishes "provider is down" from "key is not cleared for
 this data".

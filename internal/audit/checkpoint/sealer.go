@@ -37,6 +37,15 @@ func init() {
 	aegisSealLockKey = int64(binary.LittleEndian.Uint64(h[:8]))
 }
 
+// sealVersion is the hash_schema_version this build seals new checkpoints at.
+//
+// One name for the version selected, hashed and stored. Version 4 is the field
+// set migration 018 established; a database that has not run 018 has no
+// unscanned_* columns, and the seal query fails rather than sealing a field set
+// it cannot read, which is the failure mode wanted: a stalled sealer is visible
+// on aegis_audit_last_seal_age_seconds, a wrong field set is not.
+const sealVersion = controlplanev1.HashSchemaVersion4
+
 // SealerVersion is embedded in checkpoint rows as unauthenticated debug metadata.
 // Set via ldflags: -X github.com/aegis-gateway/aegis-ai-gateway/internal/audit/checkpoint.SealerVersion=1.2.3
 var SealerVersion = "dev"
@@ -181,9 +190,16 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	// Visibility watermark: only seal events older than LagSeconds.
 	watermark := time.Now().UTC().Add(-time.Duration(s.opts.lagSeconds()) * time.Second)
 
-	// Load up to BatchSize eligible events.
+	// Load up to BatchSize eligible events, with the columns the version this
+	// sealer writes covers. sealVersion below names that version once, so the
+	// field set selected, the leaf encoder, the version hashed and the version
+	// stored cannot disagree.
+	fields, ok := leafFieldSetFor(sealVersion)
+	if !ok {
+		return false, fmt.Errorf("seal: no leaf field set for hash_schema_version=%d", sealVersion)
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT `+EventColumnsV3+`
+		SELECT `+fields.columns+`
 		FROM audit_events
 		WHERE id > $1 AND timestamp < $2
 		ORDER BY id ASC
@@ -193,7 +209,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		return false, fmt.Errorf("seal: query events: %w", err)
 	}
 
-	events, err := scanEventRowsV3(rows)
+	events, err := fields.scan(rows)
 	if err != nil {
 		return false, fmt.Errorf("seal: scan events: %w", err)
 	}
@@ -249,7 +265,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	// being sealed, so the root always matches the committed range.
 	leaves := make([][]byte, len(events))
 	for i, ev := range events {
-		lh, err := EventLeafHashV3(ev)
+		lh, err := fields.leaf(ev)
 		if err != nil {
 			return false, fmt.Errorf("seal: leaf hash event %d: %w", ev.ID, err)
 		}
@@ -289,8 +305,9 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 
 	// Compute checkpoint hash per docs/AUDIT-INTEGRITY.md §3.
 	// The version hashed and the version stored must be the same number. They
-	// were both the literal 1 before migration 013; they are both this constant
-	// now, so they cannot drift apart in a later edit.
+	// were both the literal 1 before migration 013; they are both sealVersion
+	// now, so they cannot drift apart in a later edit. Version 4 changed only
+	// the leaf field set, so it uses the version-3 construction.
 	// readPrevCheckpointHash reports -1 for genesis; the hash input encodes
 	// "no predecessor" as GenesisPrevCheckpointID, the same way prevHash
 	// encodes it as 32 zero bytes rather than an absent value.
@@ -300,7 +317,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	}
 	cpHash, err := controlplanev1.ComputeCheckpointHashV3(
 		merkleRoot, prevHash, rangeStart, rangeEnd, eventCount,
-		controlplanev1.HashSchemaVersion3, sealedAt, prevIDHashed)
+		sealVersion, sealedAt, prevIDHashed)
 	if err != nil {
 		return false, fmt.Errorf("seal: compute checkpoint hash: %w", err)
 	}
@@ -330,7 +347,7 @@ func (s *Sealer) sealBatch(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		prevIDArg, prevHashStored, cpHash,
 		sealedAt, SealerVersion,
 		coveredFrom, coveredTo,
-		controlplanev1.HashSchemaVersion3,
+		sealVersion,
 	)
 	if err != nil {
 		return false, fmt.Errorf("seal: insert checkpoint: %w", err)
@@ -365,6 +382,35 @@ func readPrevCheckpointHash(ctx context.Context, conn *pgx.Conn) ([]byte, int64,
 		return nil, 0, err
 	}
 	return prevHash, prevID, nil
+}
+
+// scanEventRowsV4 reads rows selected with [EventColumnsV4].
+//
+// Separate from scanEventRowsV3 for the reason that one is separate from
+// scanEventRows: pgx scans positionally, so a mismatched list binds the wrong
+// columns rather than failing.
+func scanEventRowsV4(rows pgx.Rows) ([]AuditEventRow, error) {
+	defer rows.Close()
+	var out []AuditEventRow
+	for rows.Next() {
+		var r AuditEventRow
+		if err := rows.Scan(
+			&r.ID, &r.RequestID, &r.Timestamp, &r.EventType,
+			&r.OrganizationID, &r.TeamID, &r.UserID, &r.APIKeyID,
+			&r.IPAddress, &r.UserAgent, &r.Endpoint, &r.Method,
+			&r.StatusCode, &r.ErrorMessage,
+			&r.APIKeyPrefix, &r.LimitDimension, &r.LimitValue,
+			&r.SpentCents, &r.LimitCents, &r.FilterType, &r.Reason,
+			&r.Provider, &r.Model, &r.Mode, &r.Operation, &r.ErrorDetail,
+			&r.ModelServed, &r.Classification,
+			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.DurationMs,
+			&r.UnscannedParts, &r.UnscannedBytes, &r.UnscannedPartTypes,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // computeCheckpointHash returns the checkpoint hash for the given fields.

@@ -31,6 +31,35 @@ type ProviderRoute struct {
 	Deployment            string `yaml:"deployment,omitempty"`
 	Endpoint              string `yaml:"endpoint,omitempty"`
 	ClassificationCeiling string `yaml:"classification_ceiling"`
+	// UnscannedParts names the kinds of content part this route may carry
+	// although no filter reads them. The only kind is "image". Empty, the
+	// default, means the route carries scanned text only, and a request with
+	// an image part is never routed here. Each route opts in on its own: a
+	// primary that admits images does not make its fallbacks admit them.
+	//
+	// Opting a route in is a statement that its provider may see content the
+	// gateway did not inspect, so it belongs on routes whose provider the
+	// operator trusts with that, such as an on-device model.
+	UnscannedParts []string `yaml:"unscanned_parts,omitempty"`
+}
+
+// AdmitsUnscanned reports whether the route lists every kind in kinds. An
+// unknown kind in the route's list admits nothing extra: it can only fail to
+// match, so a typo fails closed.
+func (r ProviderRoute) AdmitsUnscanned(kinds []string) bool {
+	for _, k := range kinds {
+		found := false
+		for _, allowed := range r.UnscannedParts {
+			if allowed == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // PricingConfig is loaded from configs/pricing.yaml.

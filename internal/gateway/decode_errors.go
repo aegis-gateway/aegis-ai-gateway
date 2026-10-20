@@ -62,5 +62,33 @@ func (h *Handler) writeDecodeError(w http.ResponseWriter, reqID, orgID string, e
 		return
 	}
 
+	var badImage *types.ImagePartError
+	if errors.As(err, &badImage) {
+		// The reason is a fixed string per refusal and never the URL, which
+		// may be megabytes of base64 or a remote URL carrying a credential.
+		slog.Warn("request refused: invalid image content part",
+			"request_id", reqID,
+			"part_index", badImage.Index,
+			"reason", badImage.Reason,
+			"org_id", orgID,
+		)
+		if h.metrics != nil {
+			h.metrics.RecordUnsupportedField("content_part_image")
+		}
+		httputil.WriteError(w, reqID, http.StatusBadRequest,
+			"invalid_request_error", "unsupported_image_part", err.Error())
+		return
+	}
+
 	httputil.WriteBadRequestError(w, reqID, "Invalid JSON: "+err.Error())
 }
+
+// UnscannedPartsFilter is the filter_type sealed when a request carrying
+// unscanned content parts is refused because no route of its alias is cleared
+// for them.
+const UnscannedPartsFilter = "unscanned_parts"
+
+// UnscannedPartsNotClearedReason is the sealed reason for that refusal. A
+// fixed rule identifier, never interpolated: audit_events.reason is in the
+// leaf hash and the no-payload contract covers it.
+const UnscannedPartsNotClearedReason = "unscanned_parts_not_cleared: alias has no route listing the part kind in unscanned_parts"

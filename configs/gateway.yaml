@@ -5,6 +5,10 @@ server:
   write_timeout: "120s"
   idle_timeout: "120s"
   graceful_shutdown: "30s"
+  # Request body cap in bytes; a larger body is a 413. Image parts arrive as
+  # base64 inside the JSON, so this bounds how many photos one request can
+  # carry. Default 33554432 (32 MiB).
+  max_request_bytes: ${AEGIS_MAX_REQUEST_BYTES:33554432}
 
 database:
   host: "${DB_HOST:localhost}"

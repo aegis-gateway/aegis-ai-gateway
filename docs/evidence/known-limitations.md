@@ -244,26 +244,47 @@ The integrity coverage is unchanged by this, and it is worth being precise about
 Version 1 hashed the JSONB object, so its contents were already attested. Version 2 hashes
 the same data as separate fields. The gain is typing and bounding, not more signed data.
 
-### 2.7 Non-text content parts are refused, not filtered
+### 2.7 Images are gated, not scanned; other non-text parts are refused
 
-`message.content` now accepts an array of content parts as well as a string. Only
-`{"type": "text", "text": "…"}` is admitted. An `image_url`, `input_audio` or `file`
-part returns HTTP 400 with `"code": "unsupported_content_part"`.
+`message.content` accepts an array of content parts as well as a string. Text parts are
+scanned. An `input_audio`, `file` or other non-text part returns HTTP 400 with
+`"code": "unsupported_content_part"`.
 
-**This is a refusal, not a capability.** AEGIS cannot read an image. The secrets, PII
-and injection filters operate on text, so an image part would be data that leaves the
-gateway for a provider having passed through no filter at all. Widening `content` to
-carry structured parts is what made image parts expressible for the first time;
-admitting them as a side effect of that widening would have converted a compatibility
-fix into a hole in the one claim this product is built on.
+An `image_url` part is accepted, and **no filter reads it**. AEGIS cannot read an image.
+Extracting the text from it would cover only the text, and would miss faces, handwriting,
+and text drawn to evade extraction. The secrets, PII and injection filters therefore never
+see what an image contains, and a forwarded image leaves the gateway uninspected. That
+includes a credential photographed on a screen, a scanned identity document, and a prompt
+injection written into the picture.
 
-So an operator should read this as: **AEGIS does not support multimodal requests, and
-says so at the gateway rather than forwarding what it cannot inspect.** If image
-support is wanted it needs its own decision about what inspecting an image means, not
-a struct field.
+What stands in for the scan is a gate:
 
-The refusal is asserted by `TestDecode_RejectsNonTextContentPart` and, through the
-full handler, by `TestChatCompletions_RefusesImageContentPart`.
+- **Opt-in per route.** An image is routed only to a route listing `image` in
+  `unscanned_parts` in `configs/models.yaml`. None does as shipped. An alias with no such
+  route refuses with 451 `unscanned_parts_not_cleared`, sealed as a filter block. Each
+  route opts in separately, so an outage of a cleared route cannot fail an image over to
+  an uncleared one (`TestResolveRouteFor_FallbackMustOptInSeparately`).
+- **Inline only.** Only a base64 data URL of PNG, JPEG, GIF or WebP is accepted, with the
+  bytes checked against the declared type. A remote URL is refused, because the provider
+  would fetch content the gateway never saw (`TestScanSurface_GatedFieldsAreGated`).
+- **Recorded.** Each forwarded request seals the number of unscanned parts, their decoded
+  size and their media types in `audit_events`. That records **that** an image left, how
+  large it was and where it went, and **not what it showed**. No content and no content
+  hash is stored: a hash would let anyone holding a candidate image confirm it was sent.
+- **Visible to policy.** `input.request.unscanned_parts` (count, bytes, kinds, media types)
+  lets a Rego rule narrow the gate further, for example by key classification.
+
+So an operator should read this as: **clearing a route for images is a decision to let
+that provider see content AEGIS did not inspect.** That suits a model on hardware the
+operator controls. It is a weaker guarantee than the text path gets, and it should not be
+described as image filtering.
+
+The gate is asserted by `TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSealed`,
+`TestChatCompletions_RefusesImageContentPart` and the `TestResolveRouteFor_*` tests; the
+refusal of other kinds by `TestDecode_RejectsNonTextContentPart`.
+
+§2.17 describes the audit columns that record forwarded images, and why they hold no
+content.
 
 ### 2.8 Some tool-calling constructs cannot be expressed against Anthropic
 
@@ -864,3 +885,43 @@ that may reach every model in `configs/models.yaml`, including any added later.
 The flag is required rather than defaulted because the safe default and the convenient
 default point in opposite directions: any default that lets a key be issued without a
 decision recreates exactly the situation this section described.
+
+### 2.17 Unscanned parts are recorded by count, size and type, not by content
+
+Migration `018` adds three columns to `audit_events`, sealed at `hash_schema_version`
+4: `unscanned_parts`, `unscanned_bytes` and `unscanned_part_types`. The gateway sets
+them on every request that forwarded image parts to a route opted in under §2.7
+(`TestChatCompletions_ImageForwardSealsUnscannedMetadata`). No route is opted in as
+shipped, so on the shipped configuration the three columns are `NULL` on every row.
+
+**What they record.** That unscanned parts left the gateway for a provider, how many,
+how many decoded bytes in total, and which media types, drawn only from the gateway's
+allowlist (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) or the sentinel
+`(unlisted)`. A `request_complete` row carries them whenever the request forwarded
+unscanned parts, since the provider answered. A `provider_failure` row carries them
+only when the request body was written to the provider connection, as the transport
+reports it through `net/http/httptrace` (`internal/gateway/body_egress.go`). A failure
+before the write, such as a DNS, connect or TLS failure, sent nothing and seals
+`NULL`; a failure after it, such as a provider error or a connection reset once the
+body was sent, seals the metadata (`TestBodyEgress_*` in
+`internal/gateway/body_egress_test.go`). "Written" is the transport's report that the
+request reached the connection, not an acknowledgement that the provider read it.
+`NULL` means none left the gateway; a sealed `0` is never written for "none"
+(`TestNormalizeUnscanned`, `TestLogger_WritesUnscannedPartColumns`).
+
+**What they do not record.** What the parts contained. There is no content column and
+no content hash: a digest would be a fingerprint that lets anyone holding a candidate
+image confirm it was sent, which discloses content by another route. ADR 0013 records
+the decision, and `TestNoPayload_AuditEventsHoldNoContentFingerprint` fails if a
+digest column is added to `audit_events`. The record therefore cannot answer "was
+this image sent", only "were images sent, and how many".
+
+**A size is weaker than a digest, not nothing.** `unscanned_bytes` is a sum over the
+request's parts. Many images share a size, so a match does not confirm a candidate
+was sent, but a mismatch can rule one out, and a single-part request with an unusual
+size narrows the field. Treat the column as metadata about volume, and do not
+describe it as revealing nothing about the content.
+
+**Scanning is still absent.** Recording an unscanned part is not inspecting it. A row
+with `unscanned_parts` set says the filters did not see that content, which is the
+point of recording it.
