@@ -101,6 +101,13 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 		httputil.WriteError(w, reqID, http.StatusBadRequest, "invalid_request_error", "unsupported_beta",
 			"anthropic-beta "+refused+" is not in anthropic_messages.allowed_betas. A beta switches on provider "+
 				"behaviour, and some change pricing, so AEGIS forwards only flags an operator has listed")
+		// Sealed after the response is written, so the recorded status is one
+		// the gateway sent. A governance refusal, so it is audited where the
+		// compatibility 400s around it are not; the flag itself is not sealed.
+		if h.auditLogger != nil {
+			h.auditLogger.LogFeatureDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
+				authInfo.KeyPrefix, audit.ReasonBetaNotAllowed, audit.SourceOf(r))
+		}
 		return
 	}
 

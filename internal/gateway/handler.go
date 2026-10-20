@@ -40,9 +40,10 @@ import (
 
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).
 type AuditLogger interface {
-	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string)
-	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string)
-	LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, ip string)
+	LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, src audit.Source)
+	LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, src audit.Source)
+	LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, src audit.Source)
+	LogFeatureDenied(requestID, orgID, teamID, keyID, keyPrefix, reason string, src audit.Source)
 	LogRequestComplete(req audit.CompletedRequest)
 	LogProviderFailure(req audit.CompletedRequest, reason string)
 }

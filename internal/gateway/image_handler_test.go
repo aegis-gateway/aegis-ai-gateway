@@ -66,12 +66,12 @@ type imageAuditSpy struct {
 	failures  []audit.CompletedRequest
 }
 
-func (s *imageAuditSpy) LogFilterBlock(_, _, _, _, filterType, reason string, _ string) {
+func (s *imageAuditSpy) LogFilterBlock(_, _, _, _, filterType, reason string, _ audit.Source) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blocks = append(s.blocks, struct{ Filter, Reason string }{filterType, reason})
 }
-func (s *imageAuditSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ string) {}
+func (s *imageAuditSpy) LogPricingDenied(_, _, _, _, _, _, _ string, _ audit.Source) {}
 func (s *imageAuditSpy) LogRequestComplete(c audit.CompletedRequest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -82,7 +82,8 @@ func (s *imageAuditSpy) LogProviderFailure(c audit.CompletedRequest, _ string) {
 	defer s.mu.Unlock()
 	s.failures = append(s.failures, c)
 }
-func (s *imageAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ string) {}
+func (s *imageAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ audit.Source)   {}
+func (s *imageAuditSpy) LogFeatureDenied(_, _, _, _, _, _ string, _ audit.Source) {}
 
 // newImageTestHandler serves two aliases: aegis-local, whose only route opts
 // into images, and aegis-cloud, whose route does not.

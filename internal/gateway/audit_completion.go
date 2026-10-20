@@ -148,7 +148,7 @@ func completedRequest(
 		UserID:         authInfo.UserID,
 		KeyID:          authInfo.KeyID,
 		KeyPrefix:      authInfo.KeyPrefix,
-		Endpoint:       r.URL.Path,
+		Endpoint:       audit.SourceOf(r).Endpoint,
 		RequestedModel: requestedModel,
 		ProviderKey:    providerKey,
 		StatusCode:     statusCode,

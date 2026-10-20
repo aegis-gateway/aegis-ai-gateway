@@ -16,6 +16,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"net/http"
 	"time"
 
@@ -143,7 +144,7 @@ func (h *Handler) runPolicyCheck(r *http.Request, reqID string, parsedReq *Parse
 
 	if result.Action == filter.ActionBlock {
 		if h.auditLogger != nil {
-			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, r.RemoteAddr)
+			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, result.FilterName, result.Message, audit.SourceOf(r))
 		}
 		if h.metrics != nil {
 			h.metrics.RecordFilterAction(result.FilterName, string(result.Action))

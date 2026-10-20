@@ -168,7 +168,21 @@ Written by `audit.Logger`. Since 2026-08-29 the table records **both permitted a
 requests**.
 
 Emitted on refusal: `auth_failure`, `model_denied`, `rate_limit_violation`,
-`budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`.
+`budget_violation`, `filter_block`, `pricing_denied`, `redis_failure`, `feature_denied`.
+
+Every row records the endpoint and method it arrived on, refusals included, so a
+refusal on `/v1/messages` is distinguishable from one on `/v1/chat/completions`. The
+endpoint is the matched route pattern from `cmd/gateway/main.go` (`audit.SourceOf`), never
+the path as the caller spelled it, because the column is sealed. Before 2026-10-20
+refusal rows other than `auth_failure` left it `NULL`, and `auth_failure` recorded the
+literal `/v1/*`.
+
+`feature_denied` is a request refused for asking for a provider feature outside an
+operator allowlist: today, an `anthropic-beta` flag missing from
+`anthropic_messages.allowed_betas`, with `reason = 'anthropic_beta_not_allowed'`. The
+flag is not sealed; it is caller-chosen header text no filter reads. Other 400s (an
+unknown field, an unsupported `anthropic-version`) are compatibility errors and remain
+unaudited, as before.
 
 `auth_failure` and `model_denied` are separate types deliberately. The first is a
 credential that did not verify; the second is a valid credential used outside its model

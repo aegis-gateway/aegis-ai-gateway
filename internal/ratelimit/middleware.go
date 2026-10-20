@@ -16,6 +16,7 @@ package ratelimit
 
 import (
 	"fmt"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -38,9 +39,9 @@ const (
 
 // AuditLogger defines the interface for audit logging (to avoid circular dependency).
 type AuditLogger interface {
-	LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, ip string)
-	LogBudgetViolation(requestID, orgID, teamID, keyID string, spentCents, limitCents int64, ip string)
-	LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, ip string)
+	LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, src audit.Source)
+	LogBudgetViolation(requestID, orgID, teamID, keyID string, spentCents, limitCents int64, src audit.Source)
+	LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, src audit.Source)
 }
 
 // Middleware returns chi middleware that enforces per-key rate limits and budget.
@@ -74,7 +75,7 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 					"error", err,
 				)
 				if auditLogger != nil {
-					auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rate_limit_check", err, r.RemoteAddr)
+					auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rate_limit_check", err, audit.SourceOf(r))
 				}
 				if metrics != nil {
 					metrics.RecordRateLimitHit("redis_unavailable", authInfo.OrganizationID)
@@ -98,7 +99,7 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 					"limit", rpm,
 				)
 				if auditLogger != nil {
-					auditLogger.LogRateLimitViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rpm", int64(rpm), r.RemoteAddr)
+					auditLogger.LogRateLimitViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "rpm", int64(rpm), audit.SourceOf(r))
 				}
 				if metrics != nil {
 					metrics.RecordRateLimitHit("rpm", authInfo.OrganizationID)
@@ -122,7 +123,7 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 						"error", budgetErr,
 					)
 					if auditLogger != nil {
-						auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "budget_check", budgetErr, r.RemoteAddr)
+						auditLogger.LogRedisFailure(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, "budget_check", budgetErr, audit.SourceOf(r))
 					}
 					if metrics != nil {
 						metrics.RecordRateLimitHit("redis_unavailable", authInfo.TeamID)
@@ -141,7 +142,7 @@ func Middleware(limiter *Limiter, budget *BudgetTracker, metrics *telemetry.Metr
 						"limit_cents", budgetResult.LimitCents,
 					)
 					if auditLogger != nil {
-						auditLogger.LogBudgetViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, budgetResult.SpentCents, budgetResult.LimitCents, r.RemoteAddr)
+						auditLogger.LogBudgetViolation(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID, budgetResult.SpentCents, budgetResult.LimitCents, audit.SourceOf(r))
 					}
 					if metrics != nil {
 						metrics.RecordRateLimitHit("budget", authInfo.TeamID)

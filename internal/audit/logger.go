@@ -56,7 +56,19 @@ const (
 	// hash_schema_version bump is required. audit_events has no CHECK on it.
 	EventModelDenied     EventType = "model_denied"
 	EventRequestComplete EventType = "request_complete"
+	// EventFeatureDenied is a request refused because it asked for a provider
+	// feature outside an operator-configured allowlist, such as an
+	// anthropic-beta flag missing from anthropic_messages.allowed_betas. A
+	// governance refusal, like model_denied, and unlike the compatibility 400s
+	// that are not audited: a beta switches on provider behaviour, and some
+	// change what a request costs.
+	EventFeatureDenied EventType = "feature_denied"
 )
+
+// ReasonBetaNotAllowed is the sealed reason for a refused anthropic-beta flag.
+// The flag itself is never sealed: it is caller-chosen header text no filter
+// reads, and audit_events is the no-payload record.
+const ReasonBetaNotAllowed = "anthropic_beta_not_allowed"
 
 // Event represents a security-relevant audit event.
 type Event struct {
@@ -336,17 +348,17 @@ func (l *Logger) writeEvent(event Event) {
 const UnattributedOrg = "unknown"
 
 // LogAuthFailure logs an authentication failure.
-func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string) {
+func (l *Logger) LogAuthFailure(requestID string, src Source, userAgent, apiKey, reason string) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
 		EventType:      EventAuthFailure,
 		OrganizationID: UnattributedOrg,
 		TeamID:         UnattributedOrg,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
 		UserAgent:      userAgent,
-		Endpoint:       "/v1/*",
-		Method:         "POST",
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     401,
 		ErrorMessage:   reason,
 		APIKeyPrefix:   strPtr(truncateAPIKey(apiKey)),
@@ -354,7 +366,7 @@ func (l *Logger) LogAuthFailure(requestID, ip, userAgent, apiKey, reason string)
 }
 
 // LogRateLimitViolation logs a rate limit violation.
-func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, ip string) {
+func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimension string, limit int64, src Source) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -362,7 +374,9 @@ func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimensio
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     429,
 		ErrorMessage:   fmt.Sprintf("Rate limit exceeded: %s", dimension),
 		LimitDimension: strPtr(dimension),
@@ -371,7 +385,7 @@ func (l *Logger) LogRateLimitViolation(requestID, orgID, teamID, keyID, dimensio
 }
 
 // LogBudgetViolation logs a budget limit violation.
-func (l *Logger) LogBudgetViolation(requestID, orgID, teamID, keyID string, spentCents, limitCents int64, ip string) {
+func (l *Logger) LogBudgetViolation(requestID, orgID, teamID, keyID string, spentCents, limitCents int64, src Source) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -379,7 +393,9 @@ func (l *Logger) LogBudgetViolation(requestID, orgID, teamID, keyID string, spen
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     402,
 		ErrorMessage:   "Daily budget exceeded",
 		SpentCents:     i64Ptr(spentCents),
@@ -388,7 +404,7 @@ func (l *Logger) LogBudgetViolation(requestID, orgID, teamID, keyID string, spen
 }
 
 // LogFilterBlock logs a content filter block.
-func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, ip string) {
+func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, reason string, src Source) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -396,7 +412,9 @@ func (l *Logger) LogFilterBlock(requestID, orgID, teamID, keyID, filterType, rea
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     451,
 		ErrorMessage:   fmt.Sprintf("Content blocked by %s filter", filterType),
 		FilterType:     strPtr(filterType),
@@ -431,7 +449,7 @@ const UnconfiguredModel = "(unconfigured)"
 // sealed, and an unknown model name here is caller-controlled text: validation
 // does not check that a model exists, and this denial happens before
 // ResolveRoute would. See UnconfiguredModel.
-func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, ip string) {
+func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, model string, src Source) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -444,11 +462,34 @@ func (l *Logger) LogModelDenied(requestID, orgID, teamID, keyID, keyPrefix, mode
 		// operator reading the trail can match an allow to a key at a glance
 		// and has to resolve a UUID to do the same for a refusal.
 		APIKeyPrefix: strPtr(keyPrefix),
-		IPAddress:    ip,
+		IPAddress:    src.IP,
+		Endpoint:     src.Endpoint,
+		Method:       src.Method,
 		StatusCode:   403,
 		ErrorMessage: "Model not permitted for this API key",
 		Model:        strPtr(model),
 		Reason:       strPtr("model_not_allowed"),
+	})
+}
+
+// LogFeatureDenied records a request refused for asking for a provider
+// feature outside an operator allowlist. reason must be one of the Reason
+// constants; it is sealed and must never carry the refused value.
+func (l *Logger) LogFeatureDenied(requestID, orgID, teamID, keyID, keyPrefix, reason string, src Source) {
+	l.Log(Event{
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventFeatureDenied,
+		OrganizationID: orgID,
+		TeamID:         teamID,
+		APIKeyID:       &keyID,
+		APIKeyPrefix:   strPtr(keyPrefix),
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
+		StatusCode:     400,
+		ErrorMessage:   "Provider feature not permitted by gateway configuration",
+		Reason:         strPtr(reason),
 	})
 }
 
@@ -694,7 +735,7 @@ func streamMode(stream bool) string {
 // provider/model has no usable pricing entry. Without this, a pricing denial
 // existed only as a process log line and was absent from audit exports — unlike
 // every other governance denial.
-func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, ip string) {
+func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, model, mode string, src Source) {
 	// Only deny mode refuses the request. Recording 402 for a flagged request
 	// that actually reached the provider would misrepresent the outcome in
 	// audit exports — the trail has to say what happened, not what the feature
@@ -710,7 +751,9 @@ func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, mod
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     status,
 		ErrorMessage:   fmt.Sprintf("no pricing entry for %s/%s", provider, model),
 		Provider:       strPtr(provider),
@@ -719,7 +762,7 @@ func (l *Logger) LogPricingDenied(requestID, orgID, teamID, keyID, provider, mod
 	})
 }
 
-func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, ip string) {
+func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation string, err error, src Source) {
 	l.Log(Event{
 		RequestID:      requestID,
 		Timestamp:      time.Now(),
@@ -727,7 +770,9 @@ func (l *Logger) LogRedisFailure(requestID, orgID, teamID, keyID, operation stri
 		OrganizationID: orgID,
 		TeamID:         teamID,
 		APIKeyID:       &keyID,
-		IPAddress:      ip,
+		IPAddress:      src.IP,
+		Endpoint:       src.Endpoint,
+		Method:         src.Method,
 		StatusCode:     503,
 		ErrorMessage:   "Redis unavailable - failed closed",
 		Operation:      strPtr(operation),

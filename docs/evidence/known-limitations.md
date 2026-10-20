@@ -955,3 +955,19 @@ Responses are relayed, not scanned, as on every route (§1).
 
 The policy input does not say which endpoint a request arrived on, so a Rego rule cannot
 yet treat Claude Code traffic differently from chat completions except by alias or key.
+
+### 2.19 Which refusals are audited, and what a refusal row says about where it came from
+
+Every `audit_events` row records the endpoint and method of the request, as the matched
+route pattern (`audit.SourceOf`; `TestRefusalRowsRecordTheEndpoint`). Rows written before
+2026-10-20 do not: refusal rows other than `auth_failure` have `endpoint` `NULL`, and
+`auth_failure` rows say `/v1/*`. Sealed rows are not rewritten, so the trail is
+inconsistent across that date.
+
+Governance refusals are audited: authentication, rate and budget limits, filters, policy,
+the model allowlist, the image gate, pricing, and since 2026-10-20 an `anthropic-beta` flag
+outside the operator allowlist (`feature_denied`; `TestRefusedBetaIsSealedWithoutTheFlag`).
+Compatibility refusals are not: a malformed body, an unknown field or block type, an
+unsupported `anthropic-version` or query parameter, a validation limit, a provider that
+cannot express a construct. Those are rejected before any governance decision is made and
+before anything is forwarded, and leave only a process log line.
