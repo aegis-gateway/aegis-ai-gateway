@@ -373,6 +373,16 @@ func main() {
 		r.Get("/aegis/v1/audit/logs", auditHandler.Logs)
 	})
 
+	// Anthropic Messages API, for Claude Code and the Anthropic SDKs. Its own
+	// group because these clients send the key in x-api-key; the gates past
+	// authentication are the same.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.AnthropicMiddleware(keyStore, auditLogger, keyPepper))
+		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics, auditLogger))
+		r.Post("/v1/messages", handler.Messages)
+		r.Post("/v1/messages/count_tokens", handler.CountTokens)
+	})
+
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,

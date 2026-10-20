@@ -49,19 +49,22 @@ type AuditLogger interface {
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry         *router.Registry
-	healthTracker    *router.HealthTracker
-	modelsCfg        func() *config.ModelsConfig
-	cfg              func() *config.Config
-	filterChain      *filter.Chain
-	policyEvaluator  *policy.Evaluator
-	metrics          *telemetry.Metrics
-	costCalc         *cost.Calculator
-	usageRecorder    *storage.UsageRecorder
-	auditLogger      AuditLogger
-	retryExecutor    *retry.Executor
-	contextMonitor   *retry.ContextMonitor
-	validator        *validation.Validator
+	registry        *router.Registry
+	healthTracker   *router.HealthTracker
+	modelsCfg       func() *config.ModelsConfig
+	cfg             func() *config.Config
+	filterChain     *filter.Chain
+	policyEvaluator *policy.Evaluator
+	metrics         *telemetry.Metrics
+	costCalc        *cost.Calculator
+	usageRecorder   *storage.UsageRecorder
+	auditLogger     AuditLogger
+	retryExecutor   *retry.Executor
+	contextMonitor  *retry.ContextMonitor
+	validator       *validation.Validator
+	// agentValidator checks /v1/messages requests, with limits sized for a
+	// coding agent's history (validation.AgentLimits).
+	agentValidator   *validation.Validator
 	streamingHandler *StreamingHandler
 }
 
@@ -83,6 +86,7 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 	}
 
 	// Initialize streaming handler with configuration
+	h.agentValidator = validation.NewValidator(validation.AgentLimits(), metrics)
 	h.streamingHandler = NewStreamingHandler(h, DefaultStreamingConfig())
 
 	return h

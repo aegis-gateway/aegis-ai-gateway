@@ -62,6 +62,18 @@ func (h *Handler) writeDecodeError(w http.ResponseWriter, reqID, orgID string, e
 		return
 	}
 
+	var badBlock *types.MessagesImageError
+	if errors.As(err, &badBlock) {
+		slog.Warn("request refused: invalid image block",
+			"request_id", reqID, "path", badBlock.Path, "reason", badBlock.Reason, "org_id", orgID)
+		if h.metrics != nil {
+			h.metrics.RecordUnsupportedField("content_part_image")
+		}
+		httputil.WriteError(w, reqID, http.StatusBadRequest,
+			"invalid_request_error", "unsupported_image_part", err.Error())
+		return
+	}
+
 	var badImage *types.ImagePartError
 	if errors.As(err, &badImage) {
 		// The reason is a fixed string per refusal and never the URL, which

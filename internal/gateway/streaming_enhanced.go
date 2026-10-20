@@ -401,38 +401,7 @@ func (sh *StreamingHandler) HandleStream(
 			// response-header latency and would disagree with the usage row and
 			// the metrics for exactly the slow providers worth investigating.
 			totalDuration)
-		switch metrics.Outcome {
-		case StreamOutcomeUnset:
-			// A path out of the monitoring loop set no outcome. The event is
-			// still written, because dropping it would be a hole in the record,
-			// but it is recorded as interrupted rather than guessed as a
-			// success, and it says loudly that the gateway has a bug.
-			slog.Error("stream ended with no outcome set; attesting it as interrupted",
-				"request_id", reqID,
-				"chunks", metrics.ChunkCount,
-				"fix", "every return from streamWithMonitoring must set metrics.Outcome",
-			)
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
-		case StreamCompleted:
-			sh.handler.auditLogger.LogRequestComplete(rec)
-		case StreamNotStarted:
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamNotStarted)
-		case StreamHeaderUndelivered:
-			// The header went out and the flush did not, so nothing of the
-			// stream reached the caller. response_not_delivered is exactly
-			// that, and clientStatusFor leaves the status at the committed 200.
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
-		case StreamTruncated:
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
-		case StreamClientDisconnected:
-			// Not the provider's fault, and the reason says so. It is recorded
-			// as a failure because the response was not delivered in full, and
-			// a partial delivery attested as a completion would be a false
-			// record of what the gateway delivered.
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonClientDisconnected)
-		default:
-			sh.handler.auditLogger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
-		}
+		attestStreamOutcome(sh.handler.auditLogger, rec, metrics.Outcome, reqID, metrics.ChunkCount)
 	}
 
 	// Record usage asynchronously
@@ -459,6 +428,44 @@ func (sh *StreamingHandler) HandleStream(
 			Project:            aegisReq.Project,
 			Stream:             true,
 		})
+	}
+}
+
+// attestStreamOutcome writes the one audit event a streamed request produces,
+// chosen by how the stream ended. Shared by the chat completions relay and the
+// native /v1/messages relay so the two cannot seal the same ending differently.
+func attestStreamOutcome(logger AuditLogger, rec audit.CompletedRequest, outcome StreamOutcome, reqID string, chunks int) {
+	switch outcome {
+	case StreamOutcomeUnset:
+		// A path out of the monitoring loop set no outcome. The event is
+		// still written, because dropping it would be a hole in the record,
+		// but it is recorded as interrupted rather than guessed as a
+		// success, and it says loudly that the gateway has a bug.
+		slog.Error("stream ended with no outcome set; attesting it as interrupted",
+			"request_id", reqID,
+			"chunks", chunks,
+			"fix", "every return from streamWithMonitoring must set outcome",
+		)
+		logger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
+	case StreamCompleted:
+		logger.LogRequestComplete(rec)
+	case StreamNotStarted:
+		logger.LogProviderFailure(rec, audit.ReasonStreamNotStarted)
+	case StreamHeaderUndelivered:
+		// The header went out and the flush did not, so nothing of the
+		// stream reached the caller. response_not_delivered is exactly
+		// that, and clientStatusFor leaves the status at the committed 200.
+		logger.LogProviderFailure(rec, audit.ReasonResponseNotDelivered)
+	case StreamTruncated:
+		logger.LogProviderFailure(rec, audit.ReasonStreamTruncated)
+	case StreamClientDisconnected:
+		// Not the provider's fault, and the reason says so. It is recorded
+		// as a failure because the response was not delivered in full, and
+		// a partial delivery attested as a completion would be a false
+		// record of what the gateway delivered.
+		logger.LogProviderFailure(rec, audit.ReasonClientDisconnected)
+	default:
+		logger.LogProviderFailure(rec, audit.ReasonStreamInterrupted)
 	}
 }
 

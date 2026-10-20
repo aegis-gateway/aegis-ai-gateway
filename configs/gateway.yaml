@@ -84,3 +84,10 @@ anthropic_messages:
     - context-management-2025-06-27
     - prompt-caching-scope-2026-01-05
     - effort-2025-11-24
+  # One streamed response may run this long. Claude Code turns with extended
+  # thinking routinely stream for many minutes. The connection's write
+  # deadline is extended to match for these streams only.
+  stream_total_timeout: "30m"
+  # Longest gap allowed between lines of the provider stream. The provider
+  # sends ping events while it works, so a live stream never reaches this.
+  stream_idle_timeout: "60s"

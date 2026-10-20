@@ -214,7 +214,7 @@ func (a *MockAdapter) sendNative(req *http.Request) (*http.Response, error) {
 	w := bufio.NewWriter(&buf)
 	event := func(name string, payload any) {
 		data, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
 	}
 	event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
 		"id": "msg_aegis_mock", "type": "message", "role": "assistant", "model": sent.Model, "content": []any{},

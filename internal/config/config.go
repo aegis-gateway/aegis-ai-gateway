@@ -38,6 +38,13 @@ type AnthropicMessagesConfig struct {
 	// context is billed at long-context rates), so the gateway forwards only
 	// flags an operator has listed rather than whatever a client asks for.
 	AllowedBetas []string `yaml:"allowed_betas"`
+	// StreamTotalTimeout bounds one streamed response. A coding agent's turn
+	// can think and write for many minutes, far past the chat default.
+	StreamTotalTimeout time.Duration `yaml:"stream_total_timeout"`
+	// StreamIdleTimeout bounds the gap between two lines of the provider's
+	// event stream. The provider sends ping events while it works, so a
+	// healthy stream is never idle this long.
+	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
 }
 
 // DefaultAnthropicBetas are the flags Claude Code 2.1.150 sends on every
@@ -189,7 +196,9 @@ type CircuitBreakerConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		AnthropicMessages: AnthropicMessagesConfig{
-			AllowedBetas: append([]string(nil), DefaultAnthropicBetas...),
+			AllowedBetas:       append([]string(nil), DefaultAnthropicBetas...),
+			StreamTotalTimeout: 30 * time.Minute,
+			StreamIdleTimeout:  60 * time.Second,
 		},
 		Server: ServerConfig{
 			Host:             "0.0.0.0",
