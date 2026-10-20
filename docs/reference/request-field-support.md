@@ -84,7 +84,11 @@ accepted only:
 
 A forwarded image is recorded in the sealed audit trail as a count, a decoded size and a
 media type, never as content or a content hash. On OpenAI-compatible routes the part is
-forwarded unchanged; on Anthropic routes it becomes a base64 `image` block. See
+forwarded unchanged; on Anthropic routes it becomes a base64 `image` block. `detail`
+(`auto`, `low` or `high`) is not carried to Anthropic: it is a resolution and cost hint
+with no equivalent in the Anthropic Messages API, so the block is sent without it and
+Anthropic applies its own image handling. Dropping it changes no conversation content:
+the image bytes and every text part are sent unchanged. See
 [known limitations §2.7](../evidence/known-limitations.md).
 
 ---

@@ -353,6 +353,14 @@ type anthropicImageSource struct {
 // anthropicUserBlocks converts a user turn carrying image parts into content
 // blocks in part order. A text-only turn is left to the string form, so its
 // wire shape does not change.
+//
+// An image part's detail is not carried. It is a resolution and cost hint with
+// no equivalent in the Anthropic Messages API, so the block is sent without it
+// and Anthropic applies its own image handling. Dropping it changes no
+// conversation content: the image bytes and every text part are sent
+// unchanged. This is deliberate and documented in
+// docs/reference/request-field-support.md, unlike the constructs refused with
+// UnmappableError above, which would change what the model is asked.
 func anthropicUserBlocks(c types.Content) []anthropicContentBlock {
 	blocks := make([]anthropicContentBlock, 0, len(c.Parts))
 	for _, p := range c.Parts {
