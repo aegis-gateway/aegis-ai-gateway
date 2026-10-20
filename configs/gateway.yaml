@@ -70,3 +70,17 @@ routing:
     error_rate_window: "30s"
     recovery_probe_interval: "15s"
   health_check_interval: "10s"
+
+# POST /v1/messages (Anthropic Messages API, used by Claude Code).
+anthropic_messages:
+  # anthropic-beta flags forwarded to the provider. A request naming any other
+  # flag is refused with 400 naming it. Betas switch on provider behaviour and
+  # some change pricing, so only listed flags pass. The default is the set
+  # Claude Code 2.1.150 sends; a newer Claude Code may need a line added here.
+  allowed_betas:
+    - claude-code-20250219
+    - context-1m-2025-08-07
+    - interleaved-thinking-2025-05-14
+    - context-management-2025-06-27
+    - prompt-caching-scope-2026-01-05
+    - effort-2025-11-24

@@ -67,6 +67,12 @@ type Limits struct {
 	MaxImageParts int
 	// MaxImageBytes bounds one image after base64 decoding.
 	MaxImageBytes int
+	// AllowControlCharsInToolResults admits C0 control characters other than
+	// NUL in tool results. A tool result is the output of a command or a file
+	// the agent read, and terminal output carries ANSI escape sequences as a
+	// matter of course; refusing them would end an agent session on its first
+	// colourised command. NUL is refused everywhere.
+	AllowControlCharsInToolResults bool
 }
 
 // DefaultLimits returns sensible default validation limits
@@ -102,6 +108,24 @@ func DefaultLimits() Limits {
 		MaxImageParts: 16,
 		MaxImageBytes: 10 << 20,
 	}
+}
+
+// AgentLimits are the limits for the /v1/messages ingress, sized for a coding
+// agent rather than a chat client. A Claude Code session resends its whole
+// history every turn, and that history holds file reads and command output: a
+// single tool result passes 100K characters routinely, a long session passes
+// 1000 messages, and MCP tool names run past 64 characters. The request body
+// cap (server.max_request_bytes) still bounds the total.
+func AgentLimits() Limits {
+	l := DefaultLimits()
+	l.MaxMessagesCount = 10000
+	l.MaxMessageLength = 8 << 20
+	l.MaxTotalContentLength = 32 << 20
+	l.MaxTools = 512
+	l.MaxToolNameLength = 128
+	l.MaxToolCallsPerMsg = 256
+	l.AllowControlCharsInToolResults = true
+	return l
 }
 
 // Validator validates incoming requests
@@ -251,7 +275,11 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 		contentLength := 0
 		for _, seg := range msg.TextSegments(i) {
 			contentLength += utf8.RuneCountInString(seg.Text)
-			if containsDangerousChars(seg.Text) {
+			dangerous := containsDangerousChars(seg.Text)
+			if dangerous && v.limits.AllowControlCharsInToolResults && seg.Kind == types.SegmentToolResult {
+				dangerous = strings.ContainsRune(seg.Text, 0)
+			}
+			if dangerous {
 				errs = append(errs, ValidationError{
 					Field:   segmentField(i, seg),
 					Message: "message content contains invalid control characters",

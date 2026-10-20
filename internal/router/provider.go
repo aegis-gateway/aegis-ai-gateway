@@ -269,6 +269,15 @@ func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, healthTrac
 // primary, an outage of a cleared on-device route would fail the request over
 // to a cloud route that was never cleared to see an unscanned image.
 func ResolveRouteFor(modelsCfg *config.ModelsConfig, registry *Registry, healthTracker *HealthTracker, modelName string, classification string, unscannedKinds []string) (Route, error) {
+	return ResolveRouteWhere(modelsCfg, registry, healthTracker, modelName, classification, unscannedKinds, nil)
+}
+
+// ResolveRouteWhere is ResolveRouteFor restricted to routes whose adapter
+// satisfies accept, checked on the primary and every fallback alike. A nil
+// accept admits every adapter. /v1/messages passes
+// adapters.SupportsAnthropicNative, so an alias whose primary is an Anthropic
+// provider can never fail over to one that would need the body translated.
+func ResolveRouteWhere(modelsCfg *config.ModelsConfig, registry *Registry, healthTracker *HealthTracker, modelName string, classification string, unscannedKinds []string, accept func(adapters.ProviderAdapter) bool) (Route, error) {
 	mapping, ok := modelsCfg.Models[modelName]
 	if !ok {
 		return Route{}, fmt.Errorf("unknown model: %s", modelName)
@@ -278,10 +287,11 @@ func ResolveRouteFor(modelsCfg *config.ModelsConfig, registry *Registry, healthT
 		return routeEligible(r, classification) && r.AdmitsUnscanned(unscannedKinds) &&
 			providerHealthy(healthTracker, r.Provider)
 	}
+	usable := func(a adapters.ProviderAdapter) bool { return accept == nil || accept(a) }
 
 	// Try primary provider (must be registered, classification-eligible, and healthy)
 	if eligible(mapping.Primary) {
-		if adapter, ok := registry.Get(mapping.Primary.Provider); ok {
+		if adapter, ok := registry.Get(mapping.Primary.Provider); ok && usable(adapter) {
 			return Route{Adapter: adapter, ProviderKey: mapping.Primary.Provider, Model: mapping.Primary.Model}, nil
 		}
 	}
@@ -289,13 +299,30 @@ func ResolveRouteFor(modelsCfg *config.ModelsConfig, registry *Registry, healthT
 	// Try fallbacks in order
 	for _, fb := range mapping.Fallback {
 		if eligible(fb) {
-			if adapter, ok := registry.Get(fb.Provider); ok {
+			if adapter, ok := registry.Get(fb.Provider); ok && usable(adapter) {
 				return Route{Adapter: adapter, ProviderKey: fb.Provider, Model: fb.Model}, nil
 			}
 		}
 	}
 
 	return Route{}, fmt.Errorf("no eligible provider for model %s at classification %s", modelName, classification)
+}
+
+// AnyRouteAdapterMatches reports whether any route of the alias, primary or
+// fallback, is served by a registered adapter satisfying accept, regardless
+// of health or classification. Like AnyRouteAdmitsUnscanned, it separates a
+// permanent configuration refusal from an outage.
+func AnyRouteAdapterMatches(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, accept func(adapters.ProviderAdapter) bool) bool {
+	mapping, ok := modelsCfg.Models[modelName]
+	if !ok {
+		return false
+	}
+	for _, r := range append([]config.ProviderRoute{mapping.Primary}, mapping.Fallback...) {
+		if a, ok := registry.Get(r.Provider); ok && accept(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // AnyRouteAdmitsUnscanned reports whether any route of the alias, primary or
