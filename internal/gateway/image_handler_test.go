@@ -167,6 +167,28 @@ func TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSealed(t *testing.T) {
 	}
 }
 
+// An image request to an alias that is not configured at all gets the same
+// unknown-model 503 a text request gets, not the 451 that says the alias
+// exists but is not cleared, and no filter block is sealed for it.
+func TestChatCompletions_ImageOnUnknownAliasIs503NotSealed(t *testing.T) {
+	spy := &imageAuditSpy{}
+	h, local, cloud := newImageTestHandler(t, spy, 0)
+
+	w := doImageRequest(t, h, imageChatBody("aegis-nonexistent"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
+		t.Error("an unknown alias was reported as configured but not cleared for images")
+	}
+	if len(spy.blocks) != 0 {
+		t.Errorf("audit blocks = %+v, want none for an unconfigured alias", spy.blocks)
+	}
+	if len(local.sent) != 0 || len(cloud.sent) != 0 {
+		t.Error("a provider was called for an unknown alias")
+	}
+}
+
 // A text request to the same uncleared alias is unaffected.
 func TestChatCompletions_TextOnUnclearedAliasUnaffected(t *testing.T) {
 	h, _, cloud := newImageTestHandler(t, &imageAuditSpy{}, 0)

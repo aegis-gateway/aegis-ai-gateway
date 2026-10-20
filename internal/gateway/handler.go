@@ -255,9 +255,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// decision, sealed and answered like a filter block, and not the retryable 503 a cleared
 	// route being down produces from ResolveRouteFor below. The sealed reason
 	// is a fixed rule identifier and never quotes the request.
+	//
+	// The gate applies only to a configured alias. An unknown alias is not
+	// "uncleared for images", it does not exist: it falls through to
+	// ResolveRouteFor and gets the same unknown-model 503 a text request
+	// gets, and no filter block is sealed for an alias nobody configured.
+	// The request is refused either way.
 	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	if !unscanned.Empty() && !router.AnyRouteAdmitsUnscanned(modelsCfg, aegisReq.Model, unscanned.Kinds) {
+	_, aliasConfigured := modelsCfg.Models[aegisReq.Model]
+	if !unscanned.Empty() && aliasConfigured && !router.AnyRouteAdmitsUnscanned(modelsCfg, aegisReq.Model, unscanned.Kinds) {
 		slog.Warn("request refused: unscanned content parts on an uncleared alias",
 			"request_id", reqID,
 			"model", aegisReq.Model,

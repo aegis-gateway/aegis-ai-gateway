@@ -147,7 +147,10 @@ unscanned_parts`, and the sealed `status_code` is 451, the status the client rec
 It is 451 rather than 503 because it is permanent: retrying cannot
 succeed until the configuration changes. If the alias *does* have a cleared route and
 that route is down, the request is a 503 from routing instead (section 6), and it never
-fails over to a route that is not cleared.
+fails over to a route that is not cleared. An alias that is not configured at all is
+not this refusal: an image request to it gets the same unknown-model 503 from routing a
+text request gets, and no filter block is sealed
+(`TestChatCompletions_ImageOnUnknownAliasIs503NotSealed`).
 
 ## 4. Content filters: 451
 
