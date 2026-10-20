@@ -118,7 +118,8 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 	registry := NewRegistry()
 	for name, cfg := range provCfg.Providers {
 		if mockAll {
-			registry.Register(name, adapters.NewMockAdapter(name, cfg))
+			adapter, _ := adapterFor(name, cfg, nil, true)
+			registry.Register(name, adapter)
 			continue
 		}
 
@@ -158,25 +159,11 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 			},
 		}
 
-		var adapter adapters.ProviderAdapter
-		switch cfg.Type {
-		case "openai":
-			adapter = adapters.NewOpenAIAdapter(cfg, client)
-		case "anthropic":
-			adapter = adapters.NewAnthropicAdapter(cfg, client)
-		case adapters.MockAdapterName:
-			// A provider typed "mock" without the opt-in is not quietly
-			// downgraded to an OpenAI-compatible adapter by the default branch
-			// below: that would send real traffic, with real credentials, to
-			// whatever base_url the mock entry happened to carry. It is left
-			// unregistered instead, so any alias routing to it resolves to "no
-			// eligible provider" and fails closed.
+		adapter, ok := adapterFor(name, cfg, client, false)
+		if !ok {
 			slog.Error("provider is typed mock but "+MockProviderEnvVar+" is not \"true\"; leaving it unregistered",
 				"provider", name)
 			continue
-		default:
-			// Fall back to OpenAI-compatible for unknown types
-			adapter = adapters.NewOpenAIAdapter(cfg, client)
 		}
 		registry.Register(name, adapter)
 	}
@@ -188,6 +175,53 @@ func BuildFromConfig(provCfg *config.ProvidersConfig) *Registry {
 		)
 	}
 	return registry
+}
+
+// adapterFor is the one mapping from a provider's configured type to the
+// adapter that serves it. BuildFromConfig registers what it returns, and
+// ProviderIsAnthropicNative asks it which adapter a provider would get, so
+// the registry and the configuration-only checks cannot disagree. ok is false
+// for a provider that is never served.
+func adapterFor(name string, cfg config.ProviderConfig, client *http.Client, mockAll bool) (adapters.ProviderAdapter, bool) {
+	if mockAll {
+		return adapters.NewMockAdapter(name, cfg), true
+	}
+	switch cfg.Type {
+	case "openai":
+		return adapters.NewOpenAIAdapter(cfg, client), true
+	case "anthropic":
+		return adapters.NewAnthropicAdapter(cfg, client), true
+	case adapters.MockAdapterName:
+		// A provider typed "mock" without the opt-in is not quietly
+		// downgraded to an OpenAI-compatible adapter by the default branch
+		// below: that would send real traffic, with real credentials, to
+		// whatever base_url the mock entry happened to carry. It is left
+		// unregistered instead, so any alias routing to it resolves to "no
+		// eligible provider" and fails closed.
+		return nil, false
+	default:
+		// Fall back to OpenAI-compatible for unknown types
+		return adapters.NewOpenAIAdapter(cfg, client), true
+	}
+}
+
+// ProviderIsAnthropicNative reports, from providers.yaml alone, whether the
+// named provider is served by an adapters.AnthropicNative adapter. It does not
+// consult the live registry: a provider left unregistered for want of an API
+// key is still an Anthropic route by configuration, and its absence is an
+// outage, not a refusal. An unknown provider, or a type that is never served,
+// is not native (fail closed). With MockProviderEnabled every provider is the
+// mock, which is native.
+func ProviderIsAnthropicNative(provCfg *config.ProvidersConfig, name string) bool {
+	if provCfg == nil {
+		return false
+	}
+	cfg, ok := provCfg.Providers[name]
+	if !ok {
+		return false
+	}
+	a, ok := adapterFor(name, cfg, nil, MockProviderEnabled())
+	return ok && adapters.SupportsAnthropicNative(a)
 }
 
 // UsesMockProvider reports whether every registered adapter is a mock. It backs
@@ -308,17 +342,18 @@ func ResolveRouteWhere(modelsCfg *config.ModelsConfig, registry *Registry, healt
 	return Route{}, fmt.Errorf("no eligible provider for model %s at classification %s", modelName, classification)
 }
 
-// AnyRouteAdapterMatches reports whether any route of the alias, primary or
-// fallback, is served by a registered adapter satisfying accept, regardless
-// of health or classification. Like AnyRouteAdmitsUnscanned, it separates a
-// permanent configuration refusal from an outage.
-func AnyRouteAdapterMatches(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, accept func(adapters.ProviderAdapter) bool) bool {
+// AnyRouteMatches reports whether any route of the alias, primary or
+// fallback, names a provider satisfying accept, regardless of health,
+// registration or classification. Like AnyRouteAdmitsUnscanned, it separates
+// a permanent configuration refusal from an outage, so accept should judge
+// configuration (see ProviderIsAnthropicNative), not the live registry.
+func AnyRouteMatches(modelsCfg *config.ModelsConfig, modelName string, accept func(provider string) bool) bool {
 	mapping, ok := modelsCfg.Models[modelName]
 	if !ok {
 		return false
 	}
 	for _, r := range append([]config.ProviderRoute{mapping.Primary}, mapping.Fallback...) {
-		if a, ok := registry.Get(r.Provider); ok && accept(a) {
+		if accept(r.Provider) {
 			return true
 		}
 	}
@@ -349,14 +384,16 @@ func AnyRouteAdmitsUnscanned(modelsCfg *config.ModelsConfig, modelName string, u
 }
 
 // AnyRouteAdmitsUnscannedWhere is AnyRouteAdmitsUnscanned restricted to
-// routes served by a registered adapter satisfying accept. A nil accept is
+// routes whose provider satisfies accept. A nil accept is
 // AnyRouteAdmitsUnscanned exactly.
 //
-// /v1/messages passes adapters.SupportsAnthropicNative: a route it can never
-// use does not clear the alias for it, so an alias whose only cleared route
-// is OpenAI-type is the same permanent refusal as one with no cleared route,
-// not an outage. Clearance and adapter are judged on the same route.
-func AnyRouteAdmitsUnscannedWhere(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, unscannedKinds []string, accept func(adapters.ProviderAdapter) bool) bool {
+// /v1/messages passes a ProviderIsAnthropicNative predicate: a route it can
+// never use does not clear the alias for it, so an alias whose only cleared
+// route is OpenAI-type is the same permanent refusal as one with no cleared
+// route, not an outage. Clearance and provider type are judged on the same
+// route, and both from configuration: a cleared Anthropic route whose
+// provider is unregistered still clears the alias, and routing answers 503.
+func AnyRouteAdmitsUnscannedWhere(modelsCfg *config.ModelsConfig, modelName string, unscannedKinds []string, accept func(provider string) bool) bool {
 	if accept == nil {
 		return AnyRouteAdmitsUnscanned(modelsCfg, modelName, unscannedKinds)
 	}
@@ -365,10 +402,7 @@ func AnyRouteAdmitsUnscannedWhere(modelsCfg *config.ModelsConfig, registry *Regi
 		return false
 	}
 	for _, r := range append([]config.ProviderRoute{mapping.Primary}, mapping.Fallback...) {
-		if !r.AdmitsUnscanned(unscannedKinds) {
-			continue
-		}
-		if a, ok := registry.Get(r.Provider); ok && accept(a) {
+		if r.AdmitsUnscanned(unscannedKinds) && accept(r.Provider) {
 			return true
 		}
 	}

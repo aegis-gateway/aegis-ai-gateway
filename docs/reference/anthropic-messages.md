@@ -37,7 +37,10 @@ and 5 against a stand-in provider; `messages_scan_coverage_test.go` asserts step
 Only an alias routed to an Anthropic-type provider can serve this endpoint, because the
 body is forwarded rather than translated. Routes whose adapter cannot take it are not
 eligible, on the primary and on every fallback (`router.ResolveRouteWhere`). An alias
-with no Anthropic provider at all is a 400 `model_not_anthropic`. See
+with no Anthropic provider at all is a 400 `model_not_anthropic`. Whether a provider is
+Anthropic-type is read from its `type` in `configs/providers.yaml`
+(`router.ProviderIsAnthropicNative`), so an Anthropic route that is only unregistered,
+for example with no API key, is a retryable 503 rather than either refusal. See
 [ADR 0014](../adr/0014-messages-are-forwarded-natively-not-translated.md).
 
 ## Field support

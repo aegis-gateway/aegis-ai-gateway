@@ -148,7 +148,7 @@ Decode refusals (`unsupported_field`, `unsupported_image_part`) are as in 3.1, r
 | `anthropic-beta <flag> is not in anthropic_messages.allowed_betas. …` | `unsupported_beta` | The client sent a beta flag not on the list | Review the flag, then add it to `anthropic_messages.allowed_betas` in `configs/gateway.yaml`. A newer Claude Code may send flags the default list lacks. |
 | `anthropic-version <v> is not supported; AEGIS forwards 2023-06-01` | `unsupported_anthropic_version` | Any version but `2023-06-01` | Client bug or a future API version. |
 | `query parameter <k> is not supported on this endpoint` | `unsupported_query_parameter` | Anything but `?beta=true` | Client bug. |
-| `model <alias> routes to no Anthropic provider. …` | `model_not_anthropic` | No route of the alias, primary or fallback, is an Anthropic-type provider | Use `/v1/chat/completions` for the alias, or route it to an Anthropic provider. A provider error status on this endpoint is relayed as the provider sent it, not rewritten. |
+| `model <alias> routes to no Anthropic provider. …` | `model_not_anthropic` | No route of the alias, primary or fallback, is an Anthropic-type provider. The type is read from `type` in `configs/providers.yaml`, not from which providers are registered, so a route to an Anthropic provider with no API key is the routing 503, not this refusal (`TestMessages_UnregisteredAnthropicRouteIsOutageNotRefusal`) | Use `/v1/chat/completions` for the alias, or route it to an Anthropic provider. A provider error status on this endpoint is relayed as the provider sent it, not rewritten. |
 
 ### 3.4 Unscanned content parts: 451
 
@@ -175,7 +175,14 @@ On `/v1/messages` a route clears the alias only if it both lists the kind in
 `unscanned_parts` and is served by an Anthropic-type provider, the only routes that
 endpoint can use. An alias whose only cleared route is OpenAI-type gets this same sealed
 451 there, not a 503 from routing (`TestMessages_ImageClearedOnlyOnNonNativeRouteIsSealed451`).
-`/v1/chat/completions` counts every route, as above.
+Whether a route is Anthropic-type is read from `type` in `configs/providers.yaml`
+(`router.ProviderIsAnthropicNative`), not from the live registry: clearance is a
+configuration fact. A cleared Anthropic route whose provider is unregistered, for
+example because its API key is unset, still clears the alias, and the request gets the
+retryable 503 from routing with nothing sealed
+(`TestMessages_UnregisteredAnthropicRouteIsOutageNotRefusal`). An unknown or unserved
+type counts as not Anthropic. With `AEGIS_MOCK_PROVIDER=true` every provider is the mock,
+which counts as Anthropic. `/v1/chat/completions` counts every route, as above.
 
 ## 4. Content filters: 451
 

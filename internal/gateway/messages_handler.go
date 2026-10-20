@@ -144,7 +144,7 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 	}
 	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned, adapters.SupportsAnthropicNative) {
+	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned, h.isAnthropicRoute) {
 		return
 	}
 
@@ -153,10 +153,12 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 	if err != nil {
 		// A configured alias with no Anthropic provider anywhere in its routes
 		// can never serve this endpoint: say so, as a 400, rather than a 503
-		// that invites a retry. Anything else is the same no-provider 503 the
-		// chat path returns.
+		// that invites a retry. Provider type is read from providers.yaml, so
+		// an Anthropic route that is only unregistered (no API key) is an
+		// outage, not this refusal. Anything else is the same no-provider 503
+		// the chat path returns.
 		if _, configured := modelsCfg.Models[aegisReq.Model]; configured &&
-			!router.AnyRouteAdapterMatches(modelsCfg, h.registry, aegisReq.Model, adapters.SupportsAnthropicNative) {
+			!router.AnyRouteMatches(modelsCfg, aegisReq.Model, h.isAnthropicRoute) {
 			httputil.WriteError(w, reqID, http.StatusBadRequest, "invalid_request_error", "model_not_anthropic",
 				"model "+aegisReq.Model+" routes to no Anthropic provider. /v1/messages forwards the request "+
 					"unchanged and so serves only aliases routed to an Anthropic-type provider; use "+

@@ -49,8 +49,12 @@ type AuditLogger interface {
 
 // Handler holds dependencies for the gateway HTTP handlers.
 type Handler struct {
-	registry        *router.Registry
-	healthTracker   *router.HealthTracker
+	registry      *router.Registry
+	healthTracker *router.HealthTracker
+	// providersCfg reads providers.yaml. /v1/messages uses it to judge from
+	// configuration, not the live registry, whether a route is Anthropic.
+	// Nil means no provider is known to be Anthropic (fail closed).
+	providersCfg    func() *config.ProvidersConfig
 	modelsCfg       func() *config.ModelsConfig
 	cfg             func() *config.Config
 	filterChain     *filter.Chain
@@ -90,6 +94,21 @@ func NewHandler(registry *router.Registry, healthTracker *router.HealthTracker, 
 	h.streamingHandler = NewStreamingHandler(h, DefaultStreamingConfig())
 
 	return h
+}
+
+// SetProvidersConfig gives the handler an accessor for providers.yaml, read
+// on every request so a hot reload is seen.
+func (h *Handler) SetProvidersConfig(fn func() *config.ProvidersConfig) {
+	h.providersCfg = fn
+}
+
+// isAnthropicRoute reports, from providers.yaml, whether a provider is served
+// by an Anthropic-native adapter. See router.ProviderIsAnthropicNative.
+func (h *Handler) isAnthropicRoute(provider string) bool {
+	if h.providersCfg == nil {
+		return false
+	}
+	return router.ProviderIsAnthropicNative(h.providersCfg(), provider)
 }
 
 // ChatCompletions handles POST /v1/chat/completions

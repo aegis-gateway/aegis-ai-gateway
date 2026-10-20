@@ -148,6 +148,14 @@ func newMessagesHandlerWithClient(t *testing.T, f *fakeAnthropic, spy AuditLogge
 				Primary:  config.ProviderRoute{Provider: "openai", Model: "gpt-x"},
 				Fallback: []config.ProviderRoute{{Provider: "anthropic", Model: "claude-haiku-4-5-20251001"}},
 			},
+			// Routed to an Anthropic provider that providers.yaml lists but
+			// that is not registered, as when its API key is unset.
+			"aegis-claude-nokey": {Primary: config.ProviderRoute{
+				Provider: "anthropic_nokey", Model: "claude-haiku-4-5-20251001",
+			}},
+			"aegis-claude-nokey-image": {Primary: config.ProviderRoute{
+				Provider: "anthropic_nokey", Model: "claude-haiku-4-5-20251001", UnscannedParts: []string{"image"},
+			}},
 			// Cleared for images only on the OpenAI route, which /v1/messages
 			// can never use.
 			"aegis-mixed-image": {
@@ -169,9 +177,19 @@ func newMessagesHandlerWithClient(t *testing.T, f *fakeAnthropic, spy AuditLogge
 			return config.InjectionFilterConfig{Enabled: true, BlockThreshold: 0.8, FlagThreshold: 0.5}
 		}),
 	)
-	return NewHandler(reg, nil, modelsCfg, cfg, chain, nil, nil, nil, nil, spy,
+	h := NewHandler(reg, nil, modelsCfg, cfg, chain, nil, nil, nil, nil, spy,
 		nil, nil, validation.NewValidator(validation.DefaultLimits(), nil))
+	h.SetProvidersConfig(func() *config.ProvidersConfig { return messagesProviders })
+	return h
 }
+
+// messagesProviders is providers.yaml for the handler above. anthropic_nokey
+// is configured but never registered.
+var messagesProviders = &config.ProvidersConfig{Providers: map[string]config.ProviderConfig{
+	"anthropic":       {Type: "anthropic"},
+	"openai":          {Type: "openai"},
+	"anthropic_nokey": {Type: "anthropic"},
+}}
 
 func postMessages(t *testing.T, h *Handler, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -454,6 +472,36 @@ func TestMessages_ImageClearedOnlyOnNonNativeRouteIsSealed451(t *testing.T) {
 	}
 }
 
+// Whether a route is Anthropic is read from providers.yaml, not the live
+// registry. An Anthropic route left unregistered (no API key) is an outage:
+// the retryable 503 from routing, with nothing sealed as uncleared and no
+// model_not_anthropic.
+func TestMessages_UnregisteredAnthropicRouteIsOutageNotRefusal(t *testing.T) {
+	cases := []struct {
+		name, body string
+	}{
+		{"text, not model_not_anthropic", `{"model":"aegis-claude-nokey","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`},
+		{"cleared image, not unscanned_parts_not_cleared", `{"model":"aegis-claude-nokey-image","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + handlerPNG + `"}}]}]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeAnthropic(t)
+			spy := &messagesAuditSpy{}
+			h := newMessagesHandler(t, f, spy)
+			w := postMessages(t, h, "/v1/messages", c.body, nil)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status %d, want the routing 503: %s", w.Code, w.Body)
+			}
+			if len(spy.blocks) != 0 {
+				t.Errorf("sealed blocks %v, want none", spy.blocks)
+			}
+			if f.calls() != 0 {
+				t.Error("provider was called")
+			}
+		})
+	}
+}
+
 // An alias whose primary is OpenAI is served by its Anthropic fallback, and
 // never translated for the primary.
 func TestMessages_SkipsNonNativePrimary(t *testing.T) {
@@ -504,6 +552,12 @@ func TestMessages_MockProviderAnswersNatively(t *testing.T) {
 	cfg := func() *config.Config { c := config.DefaultConfig(); c.Cost.OnMissingPricing = "allow"; return c }
 	spy := &messagesAuditSpy{}
 	h := NewHandler(reg, nil, modelsCfg, cfg, nil, nil, nil, nil, nil, spy, nil, nil, nil)
+	// As under AEGIS_MOCK_PROVIDER=true: providers.yaml keeps its real types
+	// and every provider is the mock, which is native.
+	t.Setenv(router.MockProviderEnvVar, "true")
+	h.SetProvidersConfig(func() *config.ProvidersConfig {
+		return &config.ProvidersConfig{Providers: map[string]config.ProviderConfig{"anthropic": {Type: "anthropic"}}}
+	})
 
 	w := postMessages(t, h, "/v1/messages", `{"model":"aegis-claude","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "event: message_stop") {

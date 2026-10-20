@@ -349,6 +349,9 @@ func main() {
 	}, func() *config.Config {
 		return loader.Config()
 	}, filterChain, policyEvaluator, metrics, costCalc, usageRecorder, auditLogger, retryExecutor, contextMonitor, validator)
+	// /v1/messages judges whether a route is Anthropic from providers.yaml,
+	// not from the registry, so an unregistered provider is an outage there.
+	handler.SetProvidersConfig(loader.Providers)
 
 	// Router setup
 	r := chi.NewRouter()
