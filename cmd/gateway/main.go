@@ -349,6 +349,9 @@ func main() {
 	}, func() *config.Config {
 		return loader.Config()
 	}, filterChain, policyEvaluator, metrics, costCalc, usageRecorder, auditLogger, retryExecutor, contextMonitor, validator)
+	// /v1/messages judges whether a route is Anthropic from providers.yaml,
+	// not from the registry, so an unregistered provider is an outage there.
+	handler.SetProvidersConfig(loader.Providers)
 
 	// Router setup
 	r := chi.NewRouter()
@@ -371,6 +374,16 @@ func main() {
 		// handler has to remember to apply.
 		r.Get("/aegis/v1/audit/events", auditHandler.Events)
 		r.Get("/aegis/v1/audit/logs", auditHandler.Logs)
+	})
+
+	// Anthropic Messages API, for Claude Code and the Anthropic SDKs. Its own
+	// group because these clients send the key in x-api-key; the gates past
+	// authentication are the same.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.AnthropicMiddleware(keyStore, auditLogger, keyPepper))
+		r.Use(ratelimit.Middleware(rateLimiter, budgetTracker, metrics, auditLogger))
+		r.Post("/v1/messages", handler.Messages)
+		r.Post("/v1/messages/count_tokens", handler.CountTokens)
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

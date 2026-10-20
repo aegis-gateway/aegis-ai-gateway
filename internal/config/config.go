@@ -25,6 +25,38 @@ type Config struct {
 	Routing   RoutingConfig   `yaml:"routing"`
 	Cost      CostConfig      `yaml:"cost"`
 	Audit     AuditConfig     `yaml:"audit"`
+	// AnthropicMessages configures the /v1/messages ingress.
+	AnthropicMessages AnthropicMessagesConfig `yaml:"anthropic_messages"`
+}
+
+// AnthropicMessagesConfig governs what the /v1/messages ingress forwards beyond
+// the request body.
+type AnthropicMessagesConfig struct {
+	// AllowedBetas are the anthropic-beta flags forwarded to the provider. A
+	// request naming any other flag is refused with a 400 naming it. A beta
+	// switches on provider behaviour, and some change the price (a 1M-token
+	// context is billed at long-context rates), so the gateway forwards only
+	// flags an operator has listed rather than whatever a client asks for.
+	AllowedBetas []string `yaml:"allowed_betas"`
+	// StreamTotalTimeout bounds one streamed response. A coding agent's turn
+	// can think and write for many minutes, far past the chat default.
+	StreamTotalTimeout time.Duration `yaml:"stream_total_timeout"`
+	// StreamIdleTimeout bounds the gap between two lines of the provider's
+	// event stream. The provider sends ping events while it works, so a
+	// healthy stream is never idle this long.
+	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
+}
+
+// DefaultAnthropicBetas are the flags Claude Code 2.1.150 sends on every
+// request, observed by capturing its traffic. Without them Claude Code cannot
+// run through the gateway at all.
+var DefaultAnthropicBetas = []string{
+	"claude-code-20250219",
+	"context-1m-2025-08-07",
+	"interleaved-thinking-2025-05-14",
+	"context-management-2025-06-27",
+	"prompt-caching-scope-2026-01-05",
+	"effort-2025-11-24",
 }
 
 // CostConfig controls how the gateway handles pricing.
@@ -163,6 +195,11 @@ type CircuitBreakerConfig struct {
 
 func DefaultConfig() *Config {
 	return &Config{
+		AnthropicMessages: AnthropicMessagesConfig{
+			AllowedBetas:       append([]string(nil), DefaultAnthropicBetas...),
+			StreamTotalTimeout: 30 * time.Minute,
+			StreamIdleTimeout:  60 * time.Second,
+		},
 		Server: ServerConfig{
 			Host:             "0.0.0.0",
 			Port:             8080,

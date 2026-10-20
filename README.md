@@ -85,7 +85,7 @@ Both run in CI on every push, in a dedicated Audit Conformance job that greps fo
 
 ## What runs on every call
 
-`POST /v1/chat/completions`, in order. Each stage can refuse, and each refusal is audited.
+`POST /v1/chat/completions` and `POST /v1/messages`, in order. Each stage can refuse, and each refusal is audited.
 
 | # | Stage | Package | Notes |
 |---|-------|---------|-------|
@@ -101,12 +101,16 @@ Both run in CI on every push, in a dedicated Audit Conformance job that greps fo
 
 Streaming branches at step 8 into `internal/gateway/streaming_enhanced.go`, an SSE relay with per-chunk and total timeouts, TTFT metrics, and its own cost and usage recording.
 
+`/v1/messages` runs the same stages over a projection of the request (`internal/gateway/gates.go` holds them once for both), then forwards the client's own body to an Anthropic-type route and relays the response as it came. See [Anthropic Messages API](docs/reference/anthropic-messages.md).
+
 ### Endpoints
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/aegis/v1/health` | No | Health, including whether the mock provider is active |
 | POST | `/v1/chat/completions` | Yes | Chat completions — an OpenAI-compatible **subset**, see below |
+| POST | `/v1/messages` | Yes | Anthropic Messages API, for Claude Code and the Anthropic SDKs. Key in `x-api-key` or `Authorization: Bearer`. Anthropic-type routes only, see [the reference](docs/reference/anthropic-messages.md) |
+| POST | `/v1/messages/count_tokens` | Yes | Token counting; governed like `/v1/messages`, not priced |
 | GET | `/v1/models` | Yes | List available models |
 | GET | `/aegis/v1/audit/events` | Yes | Read the denial and failure record. `?format=csv` to export |
 | GET | `/aegis/v1/audit/logs` | Yes | **Retired**, returns 410. `audit_logs` was never written and the table was dropped by migration 017; use `/aegis/v1/audit/events` |

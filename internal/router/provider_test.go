@@ -406,3 +406,59 @@ func TestResolveRoute_FailsClosedWhenNoProviderHasAKey(t *testing.T) {
 		t.Error("resolved a route with no credentialed provider; the request would 401 upstream")
 	}
 }
+
+// ProviderIsAnthropicNative reads the type from providers.yaml, never the
+// registry, and fails closed on anything it cannot place.
+func TestProviderIsAnthropicNative(t *testing.T) {
+	provs := &config.ProvidersConfig{Providers: map[string]config.ProviderConfig{
+		"anthropic_nokey": {Type: "anthropic"}, // no API key: never registered
+		"openai":          {Type: "openai", APIKey: "k"},
+		"vllm":            {Type: "something-new", APIKey: "k"},
+		"stub":            {Type: adapters.MockAdapterName, APIKey: "k"},
+	}}
+	want := map[string]bool{"anthropic_nokey": true, "openai": false, "vllm": false, "stub": false, "absent": false}
+	for name, w := range want {
+		if got := ProviderIsAnthropicNative(provs, name); got != w {
+			t.Errorf("%s: got %v, want %v", name, got, w)
+		}
+	}
+	if ProviderIsAnthropicNative(nil, "anthropic_nokey") {
+		t.Error("nil providers config judged native")
+	}
+
+	// The mock replaces every provider and is native.
+	t.Setenv(MockProviderEnvVar, "true")
+	for _, name := range []string{"openai", "vllm", "stub"} {
+		if !ProviderIsAnthropicNative(provs, name) {
+			t.Errorf("%s under the mock: not native", name)
+		}
+	}
+}
+
+// The configuration-only route checks see a provider the registry lacks.
+func TestAnyRouteChecksIgnoreRegistration(t *testing.T) {
+	provs := &config.ProvidersConfig{Providers: map[string]config.ProviderConfig{
+		"anthropic_nokey": {Type: "anthropic"},
+		"openai":          {Type: "openai", APIKey: "k"},
+	}}
+	native := func(p string) bool { return ProviderIsAnthropicNative(provs, p) }
+	models := &config.ModelsConfig{Models: map[string]config.ModelMapping{
+		"claude": {Primary: config.ProviderRoute{Provider: "anthropic_nokey", UnscannedParts: []string{"image"}}},
+		"mixed": {
+			Primary:  config.ProviderRoute{Provider: "openai", UnscannedParts: []string{"image"}},
+			Fallback: []config.ProviderRoute{{Provider: "anthropic_nokey"}},
+		},
+	}}
+	if !AnyRouteMatches(models, "claude", native) || !AnyRouteMatches(models, "mixed", native) {
+		t.Error("an unregistered Anthropic route was not counted as Anthropic")
+	}
+	if !AnyRouteAdmitsUnscannedWhere(models, "claude", []string{"image"}, native) {
+		t.Error("a cleared, unregistered Anthropic route did not clear the alias")
+	}
+	if AnyRouteAdmitsUnscannedWhere(models, "mixed", []string{"image"}, native) {
+		t.Error("a cleared OpenAI route cleared the alias for an Anthropic-only check")
+	}
+	if !AnyRouteAdmitsUnscannedWhere(models, "mixed", []string{"image"}, nil) {
+		t.Error("nil accept changed AnyRouteAdmitsUnscanned")
+	}
+}

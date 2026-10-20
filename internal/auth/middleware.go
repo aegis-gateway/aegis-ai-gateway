@@ -31,15 +31,47 @@ type AuditLogger interface {
 // pepper is the AEGIS_KEY_PEPPER value; it is used to verify HMAC-SHA256 (v2) keys first,
 // with a fallback to SHA-256 (v1) for keys issued before the migration.
 func Middleware(store KeyStore, auditLogger AuditLogger, pepper string) func(http.Handler) http.Handler {
+	return middleware(store, auditLogger, pepper, false)
+}
+
+// AnthropicMiddleware is Middleware for the Anthropic Messages routes, which
+// also accept the key in the x-api-key header. That is where the Anthropic
+// SDKs, Claude Code among them, put ANTHROPIC_API_KEY; ANTHROPIC_AUTH_TOKEN
+// arrives as a Bearer token, which is accepted as everywhere else.
+//
+// Both headers at once must agree. Two different keys on one request would
+// leave it ambiguous which identity the request ran under, and the audit
+// record names one.
+func AnthropicMiddleware(store KeyStore, auditLogger AuditLogger, pepper string) func(http.Handler) http.Handler {
+	return middleware(store, auditLogger, pepper, true)
+}
+
+func middleware(store KeyStore, auditLogger AuditLogger, pepper string, acceptAPIKeyHeader bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reqID := w.Header().Get("X-Request-ID")
 
 			// Extract Bearer token
 			authHeader := r.Header.Get("Authorization")
+			if acceptAPIKeyHeader {
+				if apiKey := r.Header.Get("X-Api-Key"); apiKey != "" {
+					if authHeader != "" && authHeader != "Bearer "+apiKey {
+						if auditLogger != nil {
+							auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "conflicting credentials")
+						}
+						httputil.WriteAuthError(w, reqID, "x-api-key and Authorization carry different keys. Send one key")
+						return
+					}
+					authHeader = "Bearer " + apiKey
+				}
+			}
 			if authHeader == "" {
 				if auditLogger != nil {
 					auditLogger.LogAuthFailure(reqID, r.RemoteAddr, r.UserAgent(), "", "missing authorization header")
+				}
+				if acceptAPIKeyHeader {
+					httputil.WriteAuthError(w, reqID, "Missing API key. Use x-api-key: <api-key> or Authorization: Bearer <api-key>")
+					return
 				}
 				httputil.WriteAuthError(w, reqID, "Missing Authorization header. Use: Authorization: Bearer <api-key>")
 				return

@@ -183,6 +183,9 @@ func (a *MockAdapter) TransformStreamChunk(chunk []byte) ([]byte, error) {
 // outgoing body so the reply reflects the request that was actually made, and
 // so a caller inspecting token counts sees numbers that move with input size.
 func (a *MockAdapter) SendRequest(req *http.Request) (*http.Response, error) {
+	if req.Header.Get(mockNativeHeader) != "" {
+		return a.sendNative(req)
+	}
 	var sent openAIRequestBody
 	if req.Body != nil {
 		raw, err := io.ReadAll(req.Body)

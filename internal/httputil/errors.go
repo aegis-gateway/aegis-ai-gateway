@@ -39,8 +39,14 @@ func NewHTTPError(statusCode int, message string) *HTTPError {
 	}
 }
 
-// APIError matches the OpenAI error response format.
+// APIError is the error envelope. It is the OpenAI format with a top-level
+// "type":"error" added, which is the one field the Anthropic format has that
+// OpenAI's lacks: {"type":"error","error":{"type":...,"message":...}}. With it,
+// one body parses as an error in both SDKs, so a refusal on /v1/messages (or
+// from the auth and rate-limit middleware in front of it) reads as an error to
+// Claude Code, and OpenAI clients ignore the extra key.
 type APIError struct {
+	Type  string       `json:"type"`
 	Error APIErrorBody `json:"error"`
 }
 
@@ -56,6 +62,7 @@ func WriteError(w http.ResponseWriter, requestID string, statusCode int, errType
 	w.Header().Set("X-Request-ID", requestID)
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(APIError{
+		Type: "error",
 		Error: APIErrorBody{
 			Message:    message,
 			Type:       errType,
