@@ -415,8 +415,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer cleanupMonitor()
 	}
 
-	// Transform and send to provider
-	providerReq, err := adapter.TransformRequest(r.Context(), &aegisReq)
+	// Transform and send to provider. Every attempt is built from egressCtx,
+	// so bodyEgress sees whether any of them wrote the body; a provider
+	// failure seals the unscanned-part metadata only if one did.
+	egress := &bodyEgress{}
+	egressCtx := withBodyEgress(r.Context(), egress)
+	providerReq, err := adapter.TransformRequest(egressCtx, &aegisReq)
 	if err != nil {
 		// A construct the provider cannot express is the caller's input, not a
 		// gateway failure. Reporting it as a 500 tells an agent to retry a
@@ -452,7 +456,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Send request with retry logic
 	var providerResp *http.Response
 	if h.retryExecutor != nil {
-		providerResp, err = h.retryExecutor.Execute(r.Context(), adapter.Name(), func(ctx context.Context, attempt int) (*http.Response, error) {
+		providerResp, err = h.retryExecutor.Execute(egressCtx, adapter.Name(), func(ctx context.Context, attempt int) (*http.Response, error) {
 			// Re-create request for each attempt with fresh context
 			retryReq, transformErr := adapter.TransformRequest(ctx, &aegisReq)
 			if transformErr != nil {
@@ -501,7 +505,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false, unscanned),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerStatus, failureReason))
 		}
@@ -535,7 +539,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false, unscanned),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
 		}
@@ -708,7 +712,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// event, not the status.
 	if h.auditLogger != nil {
 		rec := withOutcome(
-			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false, unscanned),
+			// The provider answered, which proves the body was sent.
+			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false, unscanned, true),
 			aegisResp.Model,
 			aegisResp.UsageReported,
 			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,

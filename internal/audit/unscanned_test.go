@@ -107,9 +107,11 @@ func deref64(p *int64) any {
 	return *p
 }
 
-// Both forwarding paths must carry the unscanned-part fields through. A
-// failure still sent the parts to the provider, so recording them only on
-// success would understate what left the gateway.
+// Both forwarding paths must carry the unscanned-part fields through when the
+// gateway sets them. The gateway sets them on a provider failure only when the
+// request body was written to the provider (TestBodyEgress_* in
+// internal/gateway/body_egress_test.go); when it did, dropping them here would
+// understate what left the gateway.
 func TestCompletionEvents_CarryUnscannedParts(t *testing.T) {
 	req := CompletedRequest{
 		RequestID:          "req-1",

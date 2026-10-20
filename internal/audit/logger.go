@@ -546,8 +546,12 @@ type CompletedRequest struct {
 	// the allowlist with [UnlistedMediaType], so a type a caller declared can
 	// never be sealed.
 	//
-	// Both paths record these, success and provider failure: either way the
-	// parts were sent to the provider, and the trail has to say what left.
+	// A request_complete record carries these whenever the request forwarded
+	// unscanned parts: the provider answered, which proves the body was sent.
+	// A provider_failure record carries them only when the request body was
+	// written to the provider, as observed by the transport through
+	// net/http/httptrace (bodyEgress in internal/gateway). A failure before
+	// the body was written leaves them nil, because nothing left.
 	UnscannedParts     *int64
 	UnscannedBytes     *int64
 	UnscannedPartTypes string
@@ -666,9 +670,11 @@ func providerFailureEvent(req CompletedRequest, reason string) Event {
 		TotalTokens:      req.TotalTokens,
 		DurationMs:       req.DurationMs,
 
-		// A failed request still sent its parts to the provider. Recording
-		// them only on success would make the trail understate what left the
-		// gateway whenever the provider errored afterwards.
+		// Set by the gateway only when the request body was written to the
+		// provider (bodyEgress in internal/gateway). A provider that errored
+		// after receiving the body did receive the parts, so leaving them off
+		// would understate what left; a failure before the write (DNS,
+		// connect, TLS) sent nothing, and the gateway leaves them nil.
 		UnscannedParts:     req.UnscannedParts,
 		UnscannedBytes:     req.UnscannedBytes,
 		UnscannedPartTypes: strPtr(req.UnscannedPartTypes),

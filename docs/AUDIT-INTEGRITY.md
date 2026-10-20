@@ -323,8 +323,13 @@ to `audit_events`.
 
 Both forwarding events carry the fields: `request_complete` and `provider_failure`
 (`LogRequestComplete` and `LogProviderFailure` in `internal/audit/logger.go`). A
-failure at the provider still sent the parts, so recording them only on success
-would understate what left the gateway.
+`request_complete` row carries them whenever the request forwarded unscanned parts.
+A `provider_failure` row carries them only when the request body was written to the
+provider, as the transport reports it through `net/http/httptrace`
+(`internal/gateway/body_egress.go`): a failure before the write, such as a refused
+connection, sent nothing and leaves the columns `NULL`, and a failure after it, such
+as a provider error or a reset once the body was sent, carries them
+(`TestBodyEgress_*` in `internal/gateway/body_egress_test.go`).
 
 ### Why version 4 does not force a re-seal either
 

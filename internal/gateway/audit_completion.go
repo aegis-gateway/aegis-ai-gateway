@@ -139,6 +139,7 @@ func completedRequest(
 	statusCode int,
 	stream bool,
 	unscanned types.UnscannedSummary,
+	bodySent bool,
 ) audit.CompletedRequest {
 	rec := audit.CompletedRequest{
 		RequestID:      reqID,
@@ -158,10 +159,13 @@ func completedRequest(
 		// it. The outcome fields are attached separately by withOutcome.
 		Classification: string(authInfo.MaxClassification),
 	}
-	// What left unscanned, as metadata. Known before dispatch, so it is
-	// recorded on a provider failure as well as on success: a failed request
-	// still sent its parts. Left nil when there were none, which seals NULL.
-	if !unscanned.Empty() {
+	// What left unscanned, as metadata, and only if it left. bodySent is true
+	// when the provider answered, since a response proves the body was sent,
+	// and on a provider failure it is what bodyEgress observed: a failure
+	// before the body was written (DNS, connect, TLS) sent nothing, and
+	// sealing the parts then would attest an egress that did not happen.
+	// Left nil when there were none or nothing left, which seals NULL.
+	if bodySent && !unscanned.Empty() {
 		parts, bytes := int64(unscanned.Parts), unscanned.Bytes
 		rec.UnscannedParts = &parts
 		rec.UnscannedBytes = &bytes

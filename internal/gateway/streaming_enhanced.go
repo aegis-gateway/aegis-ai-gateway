@@ -195,7 +195,11 @@ func (sh *StreamingHandler) HandleStream(
 	ctx, cancel := context.WithTimeout(r.Context(), sh.config.TotalTimeout)
 	defer cancel()
 
-	// Update provider request with timeout context
+	// Update provider request with timeout context. The context also carries
+	// the body-egress trace, so a provider failure seals the unscanned-part
+	// metadata only if the body was written.
+	egress := &bodyEgress{}
+	ctx = withBodyEgress(ctx, egress)
 	providerReq = providerReq.WithContext(ctx)
 
 	// Send request to provider
@@ -217,7 +221,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true, unscanned),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
 		}
@@ -255,7 +259,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true, unscanned),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true, unscanned, egress.Written()),
 					time.Since(receivedAt)),
 				// Not providerFailureReason: this branch runs only when the
 				// provider returned a non-200, so its failure is already
@@ -383,7 +387,9 @@ func (sh *StreamingHandler) HandleStream(
 		// chunk, because that is how long the request occupied the gateway.
 		rec := withOutcome(
 			completedRequest(reqID, authInfo, r, originalModel, providerKey,
-				clientStatusFor(metrics.Outcome), true, unscanned),
+				// true: the provider answered 200 and the stream began, which
+				// proves the body was sent, whatever happened to the stream.
+				clientStatusFor(metrics.Outcome), true, unscanned, true),
 			// ReportedModel, not Model: the latter falls back to the routed name
 			// so an early return still attributes the usage row, and sealing
 			// that would attest a model the provider never named.

@@ -897,9 +897,17 @@ shipped, so on the shipped configuration the three columns are `NULL` on every r
 **What they record.** That unscanned parts left the gateway for a provider, how many,
 how many decoded bytes in total, and which media types, drawn only from the gateway's
 allowlist (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) or the sentinel
-`(unlisted)`. Both `request_complete` and `provider_failure` carry them, since a
-failed request still sent its parts. `NULL` means none; a sealed `0` is never written
-for "none" (`TestNormalizeUnscanned`, `TestLogger_WritesUnscannedPartColumns`).
+`(unlisted)`. A `request_complete` row carries them whenever the request forwarded
+unscanned parts, since the provider answered. A `provider_failure` row carries them
+only when the request body was written to the provider connection, as the transport
+reports it through `net/http/httptrace` (`internal/gateway/body_egress.go`). A failure
+before the write, such as a DNS, connect or TLS failure, sent nothing and seals
+`NULL`; a failure after it, such as a provider error or a connection reset once the
+body was sent, seals the metadata (`TestBodyEgress_*` in
+`internal/gateway/body_egress_test.go`). "Written" is the transport's report that the
+request reached the connection, not an acknowledgement that the provider read it.
+`NULL` means none left the gateway; a sealed `0` is never written for "none"
+(`TestNormalizeUnscanned`, `TestLogger_WritesUnscannedPartColumns`).
 
 **What they do not record.** What the parts contained. There is no content column and
 no content hash: a digest would be a fingerprint that lets anyone holding a candidate

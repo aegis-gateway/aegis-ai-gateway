@@ -63,6 +63,7 @@ type imageAuditSpy struct {
 	mu        sync.Mutex
 	blocks    []struct{ Filter, Reason string }
 	completes []audit.CompletedRequest
+	failures  []audit.CompletedRequest
 }
 
 func (s *imageAuditSpy) LogFilterBlock(_, _, _, _, filterType, reason string, _ string) {
@@ -76,8 +77,12 @@ func (s *imageAuditSpy) LogRequestComplete(c audit.CompletedRequest) {
 	defer s.mu.Unlock()
 	s.completes = append(s.completes, c)
 }
-func (s *imageAuditSpy) LogProviderFailure(_ audit.CompletedRequest, _ string) {}
-func (s *imageAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ string)      {}
+func (s *imageAuditSpy) LogProviderFailure(c audit.CompletedRequest, _ string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures = append(s.failures, c)
+}
+func (s *imageAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ string) {}
 
 // newImageTestHandler serves two aliases: aegis-local, whose only route opts
 // into images, and aegis-cloud, whose route does not.
