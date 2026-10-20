@@ -50,3 +50,4 @@ What this costs, and what it forecloses.
 | [0011](0011-tool-names-wait-for-a-hash-schema-bump.md) | Tool names wait for a hash schema bump rather than causing one | Superseded by its own amendment |
 | [0012](0012-an-allowlist-refusal-is-403-not-503.md) | A per-key model refusal is 403, not 503 | Accepted |
 | [0013](0013-unscanned-parts-are-sealed-as-metadata-only.md) | Unscanned parts are sealed as metadata, never as content or a content hash | Accepted |
+| [0014](0014-messages-are-forwarded-natively-not-translated.md) | `/v1/messages` is governed through a projection and forwarded natively, not translated | Accepted |

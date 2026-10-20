@@ -925,3 +925,27 @@ describe it as revealing nothing about the content.
 **Scanning is still absent.** Recording an unscanned part is not inspecting it. A row
 with `unscanned_parts` set says the filters did not see that content, which is the
 point of recording it.
+
+### 2.18 `/v1/messages` serves Anthropic routes only, and scans assistant history too
+
+`/v1/messages` forwards the client's body rather than translating it
+([ADR 0014](../adr/0014-messages-are-forwarded-natively-not-translated.md)), so it serves
+only aliases routed to an Anthropic-type provider. Claude Code cannot be pointed at an
+OpenAI-compatible or local model through it; such an alias is refused with 400
+`model_not_anthropic`.
+
+The filters read a projection of the request, and the projection includes the assistant
+turns Claude Code resends every turn: earlier answers, thinking text, tool calls. A
+filter that blocks on something the model itself wrote earlier ends the session at the
+next turn, since the history is resent unchanged. This is the same treatment assistant
+history already gets on `/v1/chat/completions`, and a coding agent's history makes it
+far more likely to matter.
+
+The decoder is an allowlist. A Claude Code release that adds a request field, block type
+or beta flag is refused by name until the allowlist or `anthropic_messages.allowed_betas`
+is extended. Verified against Claude Code 2.1.150.
+
+Responses are relayed, not scanned, as on every route (§1).
+
+The policy input does not say which endpoint a request arrived on, so a Rego rule cannot
+yet treat Claude Code traffic differently from chat completions except by alias or key.

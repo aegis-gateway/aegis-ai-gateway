@@ -24,6 +24,12 @@ accepted by the validator. Test 4 below now passes.
 Messages API at `POST /v1/messages`, and AEGIS exposes no such route. That is a
 separate piece of work, described under Subject B.
 
+*Update, 2026-10-20:* `/v1/messages` now exists, on Anthropic-type routes. Claude Code
+2.1.150 completed a turn through a gateway on the mock provider, and its refusals reached
+Claude Code as readable API errors. See
+[the reference](../reference/anthropic-messages.md). The assessment above records the
+state on its own date.
+
 **Tool calling now works on every shipped alias.** The first version of this fix
 covered OpenAI-compatible routes only, which meant a tool request to `aegis-fast` with
 a real `ANTHROPIC_API_KEY` was refused, since every alias lists Anthropic first. The

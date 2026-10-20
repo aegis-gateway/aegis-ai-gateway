@@ -10,6 +10,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`POST /v1/messages` and `/v1/messages/count_tokens`, the Anthropic Messages API, so Claude Code runs through AEGIS.** Requests pass the same gates as chat completions over a projection of the body, then the client's own body is forwarded (model replaced) to an Anthropic-type route and the response relayed verbatim, event stream included. Thinking signatures, `cache_control`, effort and context management keep full fidelity. Key accepted in `x-api-key`. (`internal/gateway/messages_handler.go`, `internal/types/messages_request.go`, `docs/reference/anthropic-messages.md`, ADR 0014)
+- `anthropic_messages.allowed_betas` (default: the six flags Claude Code 2.1.150 sends), `stream_total_timeout` (30m) and `stream_idle_timeout` (60s) in `configs/gateway.yaml`.
+
+### Changed
+- The error envelope gains a top-level `"type": "error"`, so a refusal parses as an error in the Anthropic SDKs as well as the OpenAI ones.
+- The request gates moved from `ChatCompletions` into `internal/gateway/gates.go`, shared by both ingresses. No behaviour change on `/v1/chat/completions`.
+
+### Added
 - **Image content parts, gated rather than scanned.** `{"type":"image_url"}` parts are accepted as inline base64 data URLs (PNG, JPEG, GIF, WebP, bytes checked against the declared type) on user messages, and routed only to a route that lists `image` in its new `unscanned_parts` field in `configs/models.yaml`. No route does as shipped. No filter reads an image. Each route opts in on its own, so a cleared primary does not clear its fallbacks. On Anthropic routes an image becomes a base64 `image` block; on OpenAI-compatible routes it is forwarded unchanged. (`internal/types/content.go`, `router.ResolveRouteFor`, `docs/evidence/known-limitations.md` §2.7)
 - **Unscanned parts are sealed in the audit trail.** A forwarded request records the number of unscanned parts, their decoded bytes and their media types in `audit_events` at `hash_schema_version` 4. No content and no content hash.
 - **`input.request.unscanned_parts` in the policy input**: count, bytes, kinds and media types, so a Rego rule can narrow the image gate.

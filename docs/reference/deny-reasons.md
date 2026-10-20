@@ -16,11 +16,13 @@ in `VERIFICATION.md` §6.
 
 ## The envelope
 
-Every refusal uses the same OpenAI-shaped body
+Every refusal uses the same body: the OpenAI error shape with a top-level `"type": "error"`,
+which makes it parse as an error in the Anthropic SDKs too
 ([`internal/httputil/errors.go`](https://github.com/aegis-gateway/aegis-ai-gateway/blob/ea72971186eb5c316966b065bf710f2d85f578b1/internal/httputil/errors.go)):
 
 ```json
 {
+  "type": "error",
   "error": {
     "message": "<reason>",
     "type": "<error class>",
@@ -63,6 +65,8 @@ All emit `type: authentication_error`, `code: invalid_api_key`.
 | `Missing Authorization header. Use: Authorization: Bearer <api-key>` | No `Authorization` header | Client bug. Add the header. |
 | `Invalid Authorization format. Use: Authorization: Bearer <api-key>` | Header present but not `Bearer <key>` | Client bug. Check for a missing `Bearer ` prefix. |
 | `Empty API key` | `Bearer` with nothing after it | Usually an unset env var interpolating to empty. |
+| `Missing API key. Use x-api-key: <api-key> or Authorization: Bearer <api-key>` | `/v1/messages` with neither header | Set `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) to the AEGIS key. |
+| `x-api-key and Authorization carry different keys. Send one key` | `/v1/messages` with both headers, disagreeing | The client has both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set to different values. Unset one. |
 | `Invalid API key` | SHA-256 of the key matches no active row in `api_keys` | Key is wrong, revoked, or expired. Reissue with `mise run keygen`. **The key is never logged**; identify it by `aegis_request_id`. |
 | `Internal error during authentication` | Key store lookup failed (Redis **and** Postgres unreachable) | **Not a client error**, this is a 500. Check database and Redis health. |
 
@@ -132,7 +136,20 @@ Stage: [`internal/gateway/handler.go`](../../internal/gateway/handler.go), after
 |---|---|---|---|
 | `model <alias> routes to provider <name>, whose adapter (<type>) does not carry tool definitions, tool calls or tool results. AEGIS refuses the request rather than forwarding it without its tools. …` | `tools_unsupported_by_provider` | A tool-bearing request resolved to an adapter whose `SupportsTools()` is false, currently the Anthropic adapter | Route the alias to an OpenAI-compatible provider, or drop the tool fields. Metric: `aegis_tool_requests_refused_total`. See [known limitations §2.8](../evidence/known-limitations.md). |
 
-### 3.3 Unscanned content parts: 451
+### 3.3 `/v1/messages` refusals: 400
+
+Stage: `internal/gateway/messages_handler.go`, before dispatch. Type `invalid_request_error`.
+Decode refusals (`unsupported_field`, `unsupported_image_part`) are as in 3.1, raised by
+`types.DecodeMessages`. See [the reference](anthropic-messages.md).
+
+| Literal string | Code | Trigger | Operator action |
+|---|---|---|---|
+| `anthropic-beta <flag> is not in anthropic_messages.allowed_betas. …` | `unsupported_beta` | The client sent a beta flag not on the list | Review the flag, then add it to `anthropic_messages.allowed_betas` in `configs/gateway.yaml`. A newer Claude Code may send flags the default list lacks. |
+| `anthropic-version <v> is not supported; AEGIS forwards 2023-06-01` | `unsupported_anthropic_version` | Any version but `2023-06-01` | Client bug or a future API version. |
+| `query parameter <k> is not supported on this endpoint` | `unsupported_query_parameter` | Anything but `?beta=true` | Client bug. |
+| `model <alias> routes to no Anthropic provider. …` | `model_not_anthropic` | No route of the alias, primary or fallback, is an Anthropic-type provider | Use `/v1/chat/completions` for the alias, or route it to an Anthropic provider. A provider error status on this endpoint is relayed as the provider sent it, not rewritten. |
+
+### 3.4 Unscanned content parts: 451
 
 Stage: `internal/gateway/handler.go`, after the model allowlist and before routing.
 Type `content_filter_error`.

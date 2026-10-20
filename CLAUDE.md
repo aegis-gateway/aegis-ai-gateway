@@ -93,6 +93,14 @@ Streaming (`"stream": true`) branches at step 8 into
 [streaming_enhanced.go](internal/gateway/streaming_enhanced.go) — SSE relay with per-chunk
 and total timeouts, TTFT/tokens-per-second metrics, and its own cost/usage recording.
 
+Steps 4–7 live in [gates.go](internal/gateway/gates.go) as helpers, shared with the
+second ingress, `POST /v1/messages` ([messages_handler.go](internal/gateway/messages_handler.go)).
+That one decodes the Anthropic Messages API (`types.DecodeMessages`), runs the same gates
+over `MessagesRequest.Projection()`, and forwards the client's own body to an
+`adapters.AnthropicNative` route, relaying the response verbatim. A new gate goes in
+gates.go and is called from both handlers. A new string field on either request type
+must be classified in its scan coverage test.
+
 ### Config and hot-reload
 
 `internal/config.Loader` reads `configs/{gateway,models,providers}.yaml`, expanding
