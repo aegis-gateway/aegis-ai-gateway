@@ -81,6 +81,23 @@ const HashSchemaVersion2 int32 = 2
 // mistaken for tampering.
 const HashSchemaVersion3 int32 = 3
 
+// HashSchemaVersion4 extends the leaf field set with the unscanned-part
+// metadata migration 018 added, defined in docs/AUDIT-INTEGRITY.md section 5.3.
+//
+// The checkpoint hash CONSTRUCTION is unchanged from [HashSchemaVersion3]: the
+// same 104-byte input from [CheckpointHashInputV3], with this number in the
+// version scalar. Only the set of columns the leaf hash covers differs, which
+// is the relationship version 2 had to version 1. A verifier therefore selects
+// the version-3 construction for a version-4 checkpoint and the version-4 field
+// set for its leaves.
+//
+// The three new leaf fields record that a request forwarded content parts the
+// filters did not scan: how many, how many decoded bytes, and which media
+// types from a gateway allowlist. They carry no content and no content hash.
+// A content hash would be a fingerprint: anyone holding a candidate image
+// could confirm it was sent. ADR 0013 records that decision.
+const HashSchemaVersion4 int32 = 4
+
 // CheckpointHashInputLenV3 is the length of the version-3 checkpoint hash
 // input: the 96 bytes of [CheckpointHashInputLen] plus 8 for the predecessor's
 // identity.
@@ -295,7 +312,9 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 		recomputed, err = ComputeCheckpointHash(
 			merkleRoot, prevHash, sub.RangeStart, sub.RangeEnd,
 			sub.EventCount, sub.HashSchemaVersion, sub.SealedAt.Time)
-	case HashSchemaVersion3:
+	case HashSchemaVersion3, HashSchemaVersion4:
+		// Version 4 changed the leaf field set only, so its checkpoint hash is
+		// the version-3 construction with 4 in the version scalar.
 		prevID := GenesisPrevCheckpointID
 		if sub.PrevCheckpointID != nil {
 			prevID = *sub.PrevCheckpointID
@@ -306,15 +325,15 @@ func VerifyCheckpointHash(sub *CheckpointSubmission) error {
 	default:
 		// Refuse rather than guess. The version now selects the construction,
 		// so falling back to the 96-byte input for an unknown version would
-		// recompute a version-4 checkpoint with version-2 rules; if the two
+		// recompute, say, a version-5 checkpoint with version-2 rules; if the two
 		// happened to agree this function would return success, reporting a
 		// digest as verified that it never checked. An unverifiable checkpoint
 		// and a verified one must not be the same answer.
 		return fmt.Errorf(
 			"cannot verify checkpoint %d: hash_schema_version %d is not supported by this build, "+
-				"which verifies versions %d, %d and %d",
+				"which verifies versions %d, %d, %d and %d",
 			sub.CheckpointID, sub.HashSchemaVersion,
-			HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3)
+			HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3, HashSchemaVersion4)
 	}
 	if err != nil {
 		return fmt.Errorf("checkpoint %d: %w", sub.CheckpointID, err)
