@@ -143,6 +143,7 @@ var scanSurface = map[string]fieldRule{
 	"AegisRequest.Tools[].Function.Description":              {scanned, "", ""},
 	"AegisRequest.Tools[].Function.Parameters":               {scanned, "", ""},
 	"AegisRequest.ToolChoice.Function":                       {scanned, "", ""},
+	"AegisRequest.IngressMetadata":                           {scanned, "", ""},
 }
 
 // TestScanSurface_EveryStringFieldIsClassified walks AegisRequest and fails on
@@ -323,11 +324,17 @@ func TestScanSurface_ScannedFieldsReachTextSegments(t *testing.T) {
 			"If a field was renamed or the allowlist tightened, update the fixture. Do not delete the case.", err)
 	}
 
+	// No chat completions field reaches IngressMetadata; /v1/messages fills it
+	// (messages_scan_coverage_test.go proves which fields). It is planted here
+	// so this test still proves TextSegments reads it.
+	req.IngressMetadata = []string{"SENTINEL_ingress_metadata"}
+
 	// Map each scanned field path to the sentinel that field carries in the
 	// fixture. A scanned field with no sentinel here is a hole in the test
 	// rather than in the code, and is reported as such.
 	sentinels := map[string]string{
 		"AegisRequest.Stop":                                      "SENTINEL_stop_sequence",
+		"AegisRequest.IngressMetadata":                           "SENTINEL_ingress_metadata",
 		"AegisRequest.Messages[].ToolCallID":                     "SENTINEL_toolcallid",
 		"AegisRequest.Messages[].ToolCalls[].ID":                 "SENTINEL_toolcall_id",
 		"AegisRequest.Messages[].Content.Str":                    "SENTINEL_content_str",

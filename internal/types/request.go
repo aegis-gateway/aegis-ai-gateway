@@ -51,6 +51,12 @@ type AegisRequest struct {
 	ToolChoice        ToolChoice `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool      `json:"parallel_tool_calls,omitempty"`
 
+	// IngressMetadata is request-level client text from an ingress whose
+	// shape has fields AegisRequest does not model, such as metadata.user_id
+	// and the configuration objects on /v1/messages. Scan-only: it is never
+	// forwarded from here, because that ingress forwards the client's own body.
+	IngressMetadata []string `json:"-"`
+
 	// Metadata
 	Project      string `json:"project,omitempty"`
 	TraceContext string `json:"trace_context,omitempty"`
@@ -113,6 +119,9 @@ const (
 	// access key id verbatim. Treating a name as unscannable metadata let a
 	// credential egress through the one field the filters never looked at.
 	SegmentToolName SegmentKind = "tool_name"
+	// SegmentIngressMetadata is request-level client text carried in
+	// AegisRequest.IngressMetadata.
+	SegmentIngressMetadata SegmentKind = "ingress_metadata"
 	// SegmentParticipantName is a message's optional `name` field. Like a tool
 	// name it looked like routing metadata, and like a tool name it is
 	// client-supplied text marshalled straight through to the provider — the
@@ -287,6 +296,15 @@ func (r *AegisRequest) TextSegments() []TextSegment {
 	if r.ToolChoice.Function != "" {
 		segs = append(segs, TextSegment{
 			Kind: SegmentToolName, MessageIndex: -1, Ref: "tool_choice", Text: r.ToolChoice.Function,
+		})
+	}
+
+	for i, text := range r.IngressMetadata {
+		if text == "" {
+			continue
+		}
+		segs = append(segs, TextSegment{
+			Kind: SegmentIngressMetadata, MessageIndex: -1, Ref: strconv.Itoa(i), Text: text,
 		})
 	}
 
