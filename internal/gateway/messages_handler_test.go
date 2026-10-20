@@ -322,6 +322,27 @@ func TestMessages_StreamOutlivesProviderClientTimeout(t *testing.T) {
 	}
 }
 
+// A refused anthropic-beta value is caller text no filter has seen, so it is
+// returned to the caller but kept out of the log.
+func TestMessages_RefusedBetaValueNotLogged(t *testing.T) {
+	logs := captureLogs(t)
+	f := newFakeAnthropic(t)
+	h := newMessagesHandler(t, f, &messagesAuditSpy{})
+	const marker = "sk-ant-api03-LEAKED-IN-A-HEADER"
+
+	w := postMessages(t, h, "/v1/messages", `{"model":"aegis-claude","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"anthropic-beta": marker})
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unsupported_beta") {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(logs.String(), "anthropic-beta not in the allowlist") {
+		t.Fatalf("refusal not logged: %s", logs)
+	}
+	if strings.Contains(logs.String(), marker) {
+		t.Errorf("the refused beta value reached the log: %s", logs)
+	}
+}
+
 func TestMessages_TruncatedStreamSealedAsFailure(t *testing.T) {
 	f := newFakeAnthropic(t)
 	f.sse = true

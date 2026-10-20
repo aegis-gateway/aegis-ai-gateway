@@ -94,8 +94,10 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 	}
 	betas, refused := h.allowedBetas(r)
 	if refused != "" {
+		// The value is caller-controlled header text that no filter has seen,
+		// so only its length is logged. The caller gets it back in the error.
 		slog.Warn("request refused: anthropic-beta not in the allowlist",
-			"request_id", reqID, "beta", refused, "org_id", authInfo.OrganizationID)
+			"request_id", reqID, "beta_length", len(refused), "org_id", authInfo.OrganizationID)
 		httputil.WriteError(w, reqID, http.StatusBadRequest, "invalid_request_error", "unsupported_beta",
 			"anthropic-beta "+refused+" is not in anthropic_messages.allowed_betas. A beta switches on provider "+
 				"behaviour, and some change pricing, so AEGIS forwards only flags an operator has listed")
