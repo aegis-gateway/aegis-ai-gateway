@@ -122,6 +122,8 @@ func TestSchemaLimitsMatchMigration(t *testing.T) {
 		"mode":            MaxMode,
 		"operation":       MaxOperation,
 		"error_detail":    MaxErrorDetail,
+		// Migration 018.
+		"unscanned_part_types": MaxUnscannedPartTypes,
 	} {
 		got, ok := added[col]
 		if !ok {
