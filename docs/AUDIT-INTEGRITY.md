@@ -116,6 +116,17 @@ What the chain does is reduce "detect any tampering" to "hold a small number of 
 
 Version 3 brings that field inside the commitment. After it, everything a verifier reads about chain structure is covered by the digest an external party can hold. That is what closes ADR 0006 and issue #38: not offline detection, which remains impossible against an attacker who can recompute, but the removal of a field that anchoring did not reach.
 
+### Hash input (schema version 4)
+
+Unchanged from version 3: the same 104 bytes in the same order, carrying `4` in the
+version scalar. Version 4 changed the leaf field set (Section 5.3) and nothing in
+this construction. A verifier selects the 104-byte input for both 3 and 4, and the
+version scalar keeps a version-3 digest and a version-4 digest over otherwise
+identical inputs apart. `VerifyCheckpointHash` in `api/controlplane/v1/hash.go`
+implements the selection; `TestVerifyCheckpointHash_Version4UsesTheV3Construction`
+and `TestCheckpointHashInputV4_IsTheV3Construction` in
+`api/controlplane/v1/hash_v4_test.go` pin it.
+
 ---
 
 ## 4. Leaf and node hashing (RFC 6962)
@@ -272,6 +283,67 @@ not destroy old evidence.
 
 ---
 
+## 5.3 Field set, schema version 4
+
+Version 4 is the field set migration 018 established. It adds three columns
+recording that a forwarded request carried content parts the filters did not scan.
+The checkpoint hash construction of Section 3 is **unchanged** from version 3.
+
+**Everything in Section 5 still applies unchanged**: RFC 8785, keys in Unicode code
+point order, microsecond UTC timestamps, ECMAScript numbers, JSON `null` for absent
+values. The canonicalization spec identifier is still `"rfc8785-v1"`.
+
+The leaf is the SHA-256 of `0x00 || JCS(event)` over **thirty-five** fields: the
+thirty-two of version 3, unchanged in name and encoding, plus these three.
+
+| Field | Source | Notes |
+|---|---|---|
+| `unscanned_bytes` | **v4** | total decoded bytes of the unscanned parts, measured by the gateway |
+| `unscanned_part_types` | **v4** | sorted, de-duplicated, comma-joined media types, e.g. `image/jpeg,image/png`; only `image/png`, `image/jpeg`, `image/gif`, `image/webp`, or the sentinel `(unlisted)` |
+| `unscanned_parts` | **v4** | number of content parts forwarded without being scanned |
+
+All three are `null` when the request carried no unscanned parts, and on every event
+type that does not record them. A sealed `0` is never written for "none": the
+logger writes all three as `null` whenever the part count is absent or not
+positive (`normalizeUnscanned` in `internal/audit/unscanned.go`, tested by
+`TestNormalizeUnscanned`).
+
+**Every version-4 field is gateway-derived.** Two are measurements. The third is
+built only from the gateway's media type allowlist: `normalizeMediaTypes` maps any
+value outside it to `(unlisted)` before the insert, so a type a caller declared
+cannot reach the sealed column (`TestNormalizeMediaTypes_NeverEmitsCallerText`).
+
+**No content, and no content hash.** A digest of an unscanned part would be a
+fingerprint: anyone holding a candidate image could hash it and confirm from the
+sealed, exported record that it was sent. The fields say that unscanned parts left
+the gateway, how many and how big, and nothing about what they contained.
+ADR 0013 records the decision; `TestNoPayload_AuditEventsHoldNoContentFingerprint`
+in `internal/audit/unscanned_no_payload_test.go` fails if a digest column is added
+to `audit_events`.
+
+Both forwarding events carry the fields: `request_complete` and `provider_failure`
+(`LogRequestComplete` and `LogProviderFailure` in `internal/audit/logger.go`). A
+failure at the provider still sent the parts, so recording them only on success
+would understate what left the gateway.
+
+### Why version 4 does not force a re-seal either
+
+The reasoning of Section 5.2 applies unchanged. Migration 018 only adds columns.
+The version-2 and version-3 leaves cover explicit field lists, so both still
+recompute byte-for-byte on a database that has run 018, and a chain may hold
+version-2, version-3 and version-4 checkpoints side by side.
+`TestEventLeafHash_V2AndV3AreUnaffectedByTheV4Columns` pins the property on the
+encoders, and `TestCheckpointIntegration_MixedV3AndV4ChainVerifies` pins it on a
+real chain that crosses the upgrade. The verifier now computes three field sets,
+selected in one place (`leafFieldSetFor` in
+`internal/audit/checkpoint/verifier.go`).
+
+Rolling migration 018 back is refused while any version-4 checkpoint exists,
+because dropping the columns would make those leaves unrecomputable, exactly as
+016's down refuses for version 3.
+
+---
+
 ## 6. Sealer (`aegis-migrate seal`)
 
 ### Visibility watermark
@@ -355,6 +427,8 @@ Both are written in the same transaction as the delete. If the transaction rolls
 
 - **Version 1:** columns defined in the initial `audit_events` migration, using JCS/RFC 8785 with the field rules in Section 5.
 - **Version 2:** the field set in Section 5.1, established by migration 013.
+- **Version 3:** the field set in Section 5.2, established by migration 016, and the 104-byte checkpoint hash input of Section 3 that binds `prev_checkpoint_id`.
+- **Version 4:** the field set in Section 5.3, established by migration 018. It adds `unscanned_parts`, `unscanned_bytes` and `unscanned_part_types`. The checkpoint hash input is the version-3 construction with `4` in the version scalar. This is the version the sealer writes (`sealVersion` in `internal/audit/checkpoint/sealer.go`).
 - **When a new column is added to `audit_events`:** increment `hash_schema_version`, define the new serialization rules in a new section of this document, and note in the migration file which schema version takes effect for events from that migration forward.
 - **When a column the leaf hash reads is removed or renamed:** the same, plus one thing more. Older checkpoints become unverifiable rather than merely old, because their leaves cannot be recomputed from a schema that no longer has the column. Such a migration must refuse to run while checkpoints at the older version exist, as 013 does, so the loss is a blocked upgrade a human decides about rather than a chain break discovered months later.
 - Events sealed before the schema change remain under their original version. The sealer writes new checkpoints under the new version.
