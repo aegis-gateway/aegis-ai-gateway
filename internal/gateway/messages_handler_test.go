@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
@@ -49,6 +50,9 @@ type fakeAnthropic struct {
 	sse      bool
 	srv      *httptest.Server
 	extraHdr map[string]string
+	// eventGap, when set, sends an SSE body one event at a time with this
+	// pause between events, as a slow model turn would.
+	eventGap time.Duration
 }
 
 func newFakeAnthropic(t *testing.T) *fakeAnthropic {
@@ -59,7 +63,7 @@ func newFakeAnthropic(t *testing.T) *fakeAnthropic {
 		f.paths = append(f.paths, r.URL.Path)
 		f.headers = append(f.headers, r.Header.Clone())
 		f.bodies = append(f.bodies, b)
-		status, body, sse := f.status, f.body, f.sse
+		status, body, sse, gap := f.status, f.body, f.sse, f.eventGap
 		f.mu.Unlock()
 		for k, v := range f.extraHdr {
 			w.Header().Set(k, v)
@@ -70,6 +74,14 @@ func newFakeAnthropic(t *testing.T) *fakeAnthropic {
 			w.Header().Set("Content-Type", "application/json")
 		}
 		w.WriteHeader(status)
+		if sse && gap > 0 {
+			for _, ev := range strings.SplitAfter(body, "\n\n") {
+				_, _ = io.WriteString(w, ev)
+				w.(http.Flusher).Flush()
+				time.Sleep(gap)
+			}
+			return
+		}
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(f.srv.Close)
@@ -111,10 +123,15 @@ func (s *messagesAuditSpy) LogModelDenied(_, _, _, _, _, _ string, _ string) {}
 
 func newMessagesHandler(t *testing.T, f *fakeAnthropic, spy AuditLogger) *Handler {
 	t.Helper()
+	return newMessagesHandlerWithClient(t, f, spy, f.srv.Client())
+}
+
+func newMessagesHandlerWithClient(t *testing.T, f *fakeAnthropic, spy AuditLogger, client *http.Client) *Handler {
+	t.Helper()
 	reg := router.NewRegistry()
 	reg.Register("anthropic", adapters.NewAnthropicAdapter(config.ProviderConfig{
 		BaseURL: f.srv.URL + "/v1", APIKey: providerSecretKey,
-	}, f.srv.Client()))
+	}, client))
 	reg.Register("openai", adapters.NewOpenAIAdapter(config.ProviderConfig{BaseURL: "http://openai.invalid/v1"}, nil))
 
 	modelsCfg := func() *config.ModelsConfig {
@@ -284,6 +301,27 @@ func TestMessages_ProviderErrorRelayedWithStatus(t *testing.T) {
 }
 
 // A stream the provider ends without message_stop is not a completion.
+// The provider client's Timeout (providers.yaml timeout, 30s as shipped)
+// covers the whole exchange. A stream that outlives it must still complete:
+// for a stream it bounds only the wait for headers.
+func TestMessages_StreamOutlivesProviderClientTimeout(t *testing.T) {
+	f := newFakeAnthropic(t)
+	f.sse, f.body = true, anthropicSSE
+	f.eventGap = 40 * time.Millisecond // seven events, about 280ms in all
+	spy := &messagesAuditSpy{}
+	client := f.srv.Client()
+	client.Timeout = 100 * time.Millisecond
+	h := newMessagesHandlerWithClient(t, f, spy, client)
+
+	w := postMessages(t, h, "/v1/messages", claudeCodeTurn, nil)
+	if w.Code != http.StatusOK || w.Body.String() != anthropicSSE {
+		t.Fatalf("status %d, stream cut short:\n%s", w.Code, w.Body)
+	}
+	if len(spy.completes) != 1 || len(spy.failures) != 0 {
+		t.Errorf("completes %d failures %v", len(spy.completes), spy.failures)
+	}
+}
+
 func TestMessages_TruncatedStreamSealedAsFailure(t *testing.T) {
 	f := newFakeAnthropic(t)
 	f.sse = true

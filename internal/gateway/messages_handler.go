@@ -268,6 +268,9 @@ func (c *nativeCall) run() {
 		if err != nil {
 			return nil, err
 		}
+		if c.stream {
+			return c.adapter.SendNativeStream(req)
+		}
 		return c.adapter.SendRequest(req)
 	}
 	var resp *http.Response

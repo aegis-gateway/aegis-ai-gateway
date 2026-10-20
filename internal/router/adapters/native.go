@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
@@ -43,6 +44,10 @@ type AnthropicNative interface {
 	// NativeRequest builds a request for endpoint carrying body as is, with
 	// the provider's credential, anthropic-version, and the given betas.
 	NativeRequest(ctx context.Context, endpoint string, body []byte, betas []string) (*http.Request, error)
+	// SendNativeStream sends a streaming request built by NativeRequest. It
+	// bounds only the wait for response headers; the caller's context, with
+	// the stream's total and idle timeouts, bounds the body.
+	SendNativeStream(req *http.Request) (*http.Response, error)
 }
 
 // SupportsAnthropicNative reports whether a can serve /v1/messages.
@@ -73,6 +78,56 @@ func (a *AnthropicAdapter) NativeRequest(ctx context.Context, endpoint string, b
 		httpReq.Header.Del("anthropic-beta")
 	}
 	return httpReq, nil
+}
+
+// SendNativeStream implements AnthropicNative.
+//
+// The provider client's Timeout covers the whole exchange, body included, so
+// SendRequest would cut a stream off at the providers.yaml timeout (30s as
+// shipped), long before anthropic_messages.stream_total_timeout. Here that
+// timeout bounds only the wait for response headers, and the stream is left to
+// the caller's context and the relay's idle timer.
+func (a *AnthropicAdapter) SendNativeStream(req *http.Request) (*http.Response, error) {
+	client := http.DefaultClient
+	if a.client != nil {
+		client = a.client
+	}
+	headerTimeout := client.Timeout
+	streaming := *client
+	streaming.Timeout = 0
+	if headerTimeout <= 0 {
+		return streaming.Do(req)
+	}
+	ctx, cancel := context.WithCancel(req.Context())
+	timer := time.AfterFunc(headerTimeout, cancel)
+	resp, err := streaming.Do(req.WithContext(ctx))
+	if !timer.Stop() {
+		// The header deadline fired. Even a response that raced it is unusable:
+		// its body reads from the context just cancelled.
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, fmt.Errorf("provider sent no response headers within %s: %w", headerTimeout, context.DeadlineExceeded)
+	}
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelOnClose releases a stream's context when its body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // NativeUsage is what the gateway reads back from a Messages API response:
@@ -180,6 +235,12 @@ func (a *MockAdapter) NativeRequest(ctx context.Context, endpoint string, body [
 	}
 	req.Header.Set(mockNativeHeader, endpoint)
 	return req, nil
+}
+
+// SendNativeStream implements AnthropicNative. The mock answers in memory, so
+// there is no client timeout to work around.
+func (a *MockAdapter) SendNativeStream(req *http.Request) (*http.Response, error) {
+	return a.SendRequest(req)
 }
 
 func (a *MockAdapter) sendNative(req *http.Request) (*http.Response, error) {

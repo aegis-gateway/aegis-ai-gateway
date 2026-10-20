@@ -16,7 +16,12 @@ package adapters
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
 )
@@ -62,5 +67,72 @@ func TestAnthropicNativeRequest_ConfiguredHeadersCannotOverride(t *testing.T) {
 	if req.URL.String() != "https://api.invalid/v1/messages" || req.Header.Get("x-api-key") != "real" ||
 		req.Header.Get("anthropic-beta") != "b1,b2" {
 		t.Errorf("url %s key %q beta %q", req.URL, req.Header.Get("x-api-key"), req.Header.Get("anthropic-beta"))
+	}
+}
+
+// A provider that answers but never sends headers is still bounded by the
+// client timeout on the streaming path, and the failure is a retryable
+// deadline rather than a cancellation.
+func TestSendNativeStream_HeaderWaitBoundedByClientTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	client := srv.Client()
+	client.Timeout = 50 * time.Millisecond
+	a := NewAnthropicAdapter(config.ProviderConfig{BaseURL: srv.URL, APIKey: "k"}, client)
+
+	req, err := a.NativeRequest(context.Background(), NativeMessages, []byte(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp, err := a.SendNativeStream(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want a deadline", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("header wait took %s", time.Since(start))
+	}
+}
+
+// Once headers arrive, the body may outlast the client timeout.
+func TestSendNativeStream_BodyOutlivesClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 4; i++ {
+			_, _ = io.WriteString(w, "data: x\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(40 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Timeout = 50 * time.Millisecond
+	a := NewAnthropicAdapter(config.ProviderConfig{BaseURL: srv.URL, APIKey: "k"}, client)
+
+	req, err := a.NativeRequest(context.Background(), NativeMessages, []byte(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := a.SendNativeStream(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || len(b) != 4*len("data: x\n\n") {
+		t.Fatalf("read %d bytes, err %v", len(b), err)
+	}
+	if client.Timeout != 50*time.Millisecond {
+		t.Error("the shared provider client was modified")
 	}
 }
