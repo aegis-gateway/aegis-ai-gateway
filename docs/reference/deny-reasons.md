@@ -98,6 +98,7 @@ Validation errors are `field: message`, joined with `; ` when several fail at on
 | `model is required` | `model` absent or empty |
 | `messages is required` | `messages` absent or empty |
 | `model name too long (max %d characters)` | Model name over the configured limit |
+| `messages[%d].tool_calls[%d].function.name: tool call function name too long (max %d characters)` | A tool call in message history names a tool longer than the tool-name limit: 64 on `/v1/chat/completions`, 128 on `/v1/messages` (a `tool_use` block). The name is not quoted |
 | `Invalid JSON: <parser error>` | Body is not valid JSON |
 | `Failed to read request body` | Body could not be read (client disconnect) |
 | `request body exceeds %d bytes (server.max_request_bytes)` | **413**, code `request_too_large`. Body over the cap, default 32 MiB. Raise `server.max_request_bytes` in `configs/gateway.yaml` if clients legitimately send larger images |

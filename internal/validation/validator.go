@@ -450,6 +450,15 @@ func (v *Validator) validateToolFields(i int, msg types.Message) ValidationError
 				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].function.name", i, j),
 				Message: "tool call function name is required",
 			})
+		} else if len(tc.Function.Name) > v.limits.MaxToolNameLength {
+			// The same limit as a tool definition's name: a call names a
+			// tool, and history is resent on every turn. The message does
+			// not quote the name, which is client text that reaches the
+			// response and the log.
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].tool_calls[%d].function.name", i, j),
+				Message: fmt.Sprintf("tool call function name too long (max %d characters)", v.limits.MaxToolNameLength),
+			})
 		}
 	}
 

@@ -16,6 +16,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Changed
 - The error envelope gains a top-level `"type": "error"`, so a refusal parses as an error in the Anthropic SDKs as well as the OpenAI ones.
 - The request gates moved from `ChatCompletions` into `internal/gateway/gates.go`, shared by both ingresses. No behaviour change on `/v1/chat/completions`.
+- **The tool-name length limit now applies to tool calls in message history**, not only to tool definitions. On `/v1/chat/completions` an assistant `tool_calls[].function.name` over 64 characters is now a 400 where it was previously forwarded; on `/v1/messages` a `tool_use` name over 128 characters is refused. The error names the field and the limit, never the name. (`internal/validation/validator.go`, `TestToolCallNameLengthEnforcedInHistory`)
 
 ### Added
 - **Image content parts, gated rather than scanned.** `{"type":"image_url"}` parts are accepted as inline base64 data URLs (PNG, JPEG, GIF, WebP, bytes checked against the declared type) on user messages, and routed only to a route that lists `image` in its new `unscanned_parts` field in `configs/models.yaml`. No route does as shipped. No filter reads an image. Each route opts in on its own, so a cleared primary does not clear its fallbacks. On Anthropic routes an image becomes a base64 `image` block; on OpenAI-compatible routes it is forwarded unchanged. (`internal/types/content.go`, `router.ResolveRouteFor`, `docs/evidence/known-limitations.md` §2.7)

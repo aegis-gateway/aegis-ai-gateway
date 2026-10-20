@@ -51,6 +51,45 @@ func TestAgentLimits_ControlCharactersInToolResults(t *testing.T) {
 	}
 }
 
+// MaxToolNameLength applies to a tool call's name in message history, not
+// only to tool definitions: 64 on the default profile (/v1/chat/completions),
+// 128 on the agent profile (/v1/messages). The error never quotes the name.
+func TestToolCallNameLengthEnforcedInHistory(t *testing.T) {
+	withName := func(name string) *types.AegisRequest {
+		req := toolResultReq("ok")
+		req.Messages[1].ToolCalls[0].Function.Name = name
+		return req
+	}
+	cases := []struct {
+		profile string
+		limits  Limits
+		max     int
+	}{
+		{"default", DefaultLimits(), 64},
+		{"agent", AgentLimits(), 128},
+	}
+	for _, c := range cases {
+		t.Run(c.profile, func(t *testing.T) {
+			v := NewValidator(c.limits, nil)
+			if err := v.Validate(withName(strings.Repeat("a", c.max))); err != nil {
+				t.Errorf("a %d-character name was refused: %v", c.max, err)
+			}
+			marker := "MARKER" + strings.Repeat("b", c.max)
+			err := v.Validate(withName(marker))
+			if err == nil {
+				t.Fatalf("a %d-character name was admitted", len(marker))
+			}
+			if !strings.Contains(err.Error(), "messages[1].tool_calls[0].function.name") ||
+				!strings.Contains(err.Error(), "too long") {
+				t.Errorf("error does not name the field and limit: %v", err)
+			}
+			if strings.Contains(err.Error(), "MARKER") {
+				t.Errorf("error echoes the tool name: %v", err)
+			}
+		})
+	}
+}
+
 func TestAgentLimits_LargeToolResult(t *testing.T) {
 	big := strings.Repeat("x", 500_000)
 	if err := NewValidator(AgentLimits(), nil).Validate(toolResultReq(big)); err != nil {
