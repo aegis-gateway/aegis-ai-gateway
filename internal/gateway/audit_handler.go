@@ -75,7 +75,8 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 				"limit_cents", "filter_type", "reason", "provider", "model", "mode",
 				"operation", "error_detail", "user_agent",
 				"model_served", "classification", "prompt_tokens",
-				"completion_tokens", "total_tokens", "duration_ms"},
+				"completion_tokens", "total_tokens", "duration_ms",
+				"unscanned_parts", "unscanned_bytes", "unscanned_part_types"},
 			func(yield func([]string) error) error {
 				for _, e := range rows {
 					if err := yield([]string{
@@ -91,6 +92,8 @@ func (h *AuditHandler) Events(w http.ResponseWriter, r *http.Request) {
 						deref(e.ModelServed), deref(e.Classification),
 						derefInt64(e.PromptTokens), derefInt64(e.CompletionTokens),
 						derefInt64(e.TotalTokens), derefInt64(e.DurationMs),
+						derefInt64(e.UnscannedParts), derefInt64(e.UnscannedBytes),
+						deref(e.UnscannedPartTypes),
 					}); err != nil {
 						return err
 					}

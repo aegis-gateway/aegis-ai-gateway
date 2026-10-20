@@ -29,10 +29,12 @@ func TestVerifyCheckpointHash_RefusesAnUnknownVersion(t *testing.T) {
 	prev := bytes.Repeat([]byte{0xCD}, 32)
 	at := time.Date(2026, 8, 30, 12, 0, 0, 123456000, time.UTC)
 
-	// A digest built with the 96-byte construction but ADVERTISING version 4.
+	// A digest built with the 96-byte construction but ADVERTISING version 5.
 	// Before the fix this verified, because the default branch used that same
-	// construction and the two therefore agreed.
-	h, err := ComputeCheckpointHash(root, prev, 1, 10, 10, 4, at)
+	// construction and the two therefore agreed. This test used version 4 until
+	// version 4 was cut; the property is about the first version this build
+	// does not know.
+	h, err := ComputeCheckpointHash(root, prev, 1, 10, 10, 5, at)
 	if err != nil {
 		t.Fatalf("building: %v", err)
 	}
@@ -45,12 +47,12 @@ func TestVerifyCheckpointHash_RefusesAnUnknownVersion(t *testing.T) {
 		RangeEnd:           10,
 		EventCount:         10,
 		HashAlgorithm:      HashAlgorithmSHA256,
-		HashSchemaVersion:  4,
+		HashSchemaVersion:  5,
 		SealedAt:           Timestamp{Time: at},
 	}
 	err = VerifyCheckpointHash(sub)
 	if err == nil {
-		t.Fatal("a version-4 checkpoint verified against the version-2 construction; " +
+		t.Fatal("a version-5 checkpoint verified against the version-2 construction; " +
 			"this build reported a digest as verified that it cannot compute")
 	}
 	if !strings.Contains(err.Error(), "not supported") {
@@ -65,10 +67,10 @@ func TestVerifyCheckpointHash_AcceptsEverySupportedVersion(t *testing.T) {
 	at := time.Date(2026, 8, 30, 12, 0, 0, 123456000, time.UTC)
 	prevID := int64(41)
 
-	for _, v := range []int32{HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3} {
+	for _, v := range []int32{HashSchemaVersion1, HashSchemaVersion2, HashSchemaVersion3, HashSchemaVersion4} {
 		var h []byte
 		var err error
-		if v == HashSchemaVersion3 {
+		if v >= HashSchemaVersion3 {
 			h, err = ComputeCheckpointHashV3(root, prev, 1, 10, 10, v, at, prevID)
 		} else {
 			h, err = ComputeCheckpointHash(root, prev, 1, 10, 10, v, at)

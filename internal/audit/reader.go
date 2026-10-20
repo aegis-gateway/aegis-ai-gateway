@@ -100,7 +100,7 @@ type EventRow struct {
 	UserID         *string   `json:"user_id"`
 	APIKeyID       *string   `json:"api_key_id"`
 	IPAddress      *string   `json:"ip_address"`
-	// In the leaf hash at both version 2 and version 3, so a reader that cannot
+	// In the leaf hash at versions 2, 3 and 4, so a reader that cannot
 	// see it cannot reconstruct the leaf it is being asked to trust.
 	UserAgent    *string `json:"user_agent"`
 	Endpoint     *string `json:"endpoint"`
@@ -131,6 +131,14 @@ type EventRow struct {
 	CompletionTokens *int64  `json:"completion_tokens"`
 	TotalTokens      *int64  `json:"total_tokens"`
 	DurationMs       *int64  `json:"duration_ms"`
+
+	// Sealed at hash_schema_version=4 by migration 018, and exposed for the
+	// same reason as the version-3 fields: a v4 leaf cannot be reconstructed
+	// without them. Counts, a size and allowlisted media types; there is no
+	// content and no content hash to expose, because none is stored.
+	UnscannedParts     *int64  `json:"unscanned_parts"`
+	UnscannedBytes     *int64  `json:"unscanned_bytes"`
+	UnscannedPartTypes *string `json:"unscanned_part_types"`
 }
 
 // QueryEvents returns audit_events for one organization, newest first.
@@ -155,7 +163,8 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 		       user_agent,
 		       provider, model, mode, operation, error_detail,
 		       model_served, classification, prompt_tokens, completion_tokens,
-		       total_tokens, duration_ms
+		       total_tokens, duration_ms,
+		       unscanned_parts, unscanned_bytes, unscanned_part_types
 		FROM audit_events
 		WHERE organization_id = $1
 		  AND organization_id <> $8
@@ -188,7 +197,8 @@ func (r *Reader) QueryEvents(ctx context.Context, orgID string, f ReadFilter) ([
 			&e.UserAgent,
 			&e.Provider, &e.Model, &e.Mode, &e.Operation, &e.ErrorDetail,
 			&e.ModelServed, &e.Classification, &e.PromptTokens,
-			&e.CompletionTokens, &e.TotalTokens, &e.DurationMs); err != nil {
+			&e.CompletionTokens, &e.TotalTokens, &e.DurationMs,
+			&e.UnscannedParts, &e.UnscannedBytes, &e.UnscannedPartTypes); err != nil {
 			return nil, fmt.Errorf("audit read: scanning event: %w", err)
 		}
 		out = append(out, e)

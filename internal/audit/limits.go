@@ -77,6 +77,12 @@ const (
 	MaxMode           = 32
 	MaxOperation      = 64
 	MaxErrorDetail    = 512
+
+	// MaxUnscannedPartTypes matches audit_events.unscanned_part_types,
+	// VARCHAR(256), from migration 018. The longest value normalizeUnscanned
+	// can produce is every allowlisted type plus the sentinel, well under it;
+	// the clip is the backstop the other columns have, not a budget.
+	MaxUnscannedPartTypes = 256
 )
 
 // clip truncates s to at most max runes, never splitting a UTF-8 sequence, and

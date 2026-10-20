@@ -283,6 +283,10 @@ The gate is asserted by `TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSe
 `TestChatCompletions_RefusesImageContentPart` and the `TestResolveRouteFor_*` tests; the
 refusal of other kinds by `TestDecode_RejectsNonTextContentPart`.
 
+The audit schema is ready for that decision without changing what this section says:
+§2.17 describes the columns that would record unscanned parts, and why they hold no
+content.
+
 ### 2.8 Some tool-calling constructs cannot be expressed against Anthropic
 
 Tool calling now works on every shipped alias. The Anthropic adapter translates the
@@ -882,3 +886,35 @@ that may reach every model in `configs/models.yaml`, including any added later.
 The flag is required rather than defaulted because the safe default and the convenient
 default point in opposite directions: any default that lets a key be issued without a
 decision recreates exactly the situation this section described.
+
+### 2.17 Unscanned parts are recorded by count, size and type, not by content
+
+Migration `018` adds three columns to `audit_events`, sealed at `hash_schema_version`
+4: `unscanned_parts`, `unscanned_bytes` and `unscanned_part_types`. They exist for
+routes an operator opts in to forwarding image parts the filters cannot scan. **On
+this build no route does**: §2.7 still holds, nothing in `internal/gateway` sets the
+fields, and the three columns are `NULL` on every row.
+
+**What they record.** That unscanned parts left the gateway for a provider, how many,
+how many decoded bytes in total, and which media types, drawn only from the gateway's
+allowlist (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) or the sentinel
+`(unlisted)`. Both `request_complete` and `provider_failure` carry them, since a
+failed request still sent its parts. `NULL` means none; a sealed `0` is never written
+for "none" (`TestNormalizeUnscanned`, `TestLogger_WritesUnscannedPartColumns`).
+
+**What they do not record.** What the parts contained. There is no content column and
+no content hash: a digest would be a fingerprint that lets anyone holding a candidate
+image confirm it was sent, which discloses content by another route. ADR 0013 records
+the decision, and `TestNoPayload_AuditEventsHoldNoContentFingerprint` fails if a
+digest column is added to `audit_events`. The record therefore cannot answer "was
+this image sent", only "were images sent, and how many".
+
+**A size is weaker than a digest, not nothing.** `unscanned_bytes` is a sum over the
+request's parts. Many images share a size, so a match does not confirm a candidate
+was sent, but a mismatch can rule one out, and a single-part request with an unusual
+size narrows the field. Treat the column as metadata about volume, and do not
+describe it as revealing nothing about the content.
+
+**Scanning is still absent.** Recording an unscanned part is not inspecting it. A row
+with `unscanned_parts` set says the filters did not see that content, which is the
+point of recording it.

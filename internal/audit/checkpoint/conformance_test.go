@@ -173,10 +173,19 @@ func TestSealerWritesThePublishedHash(t *testing.T) {
 		// this test was written against. Using the wrong input reports intact
 		// data as tampered, which is the accusation this test exists to prevent
 		// an independent verifier from making.
+		//
+		// This build seals at version 4, so anything else here means the sealer
+		// stored a version other than the one it hashed with.
+		if hashSchemaVersion != controlplanev1.HashSchemaVersion4 {
+			t.Errorf("checkpoint %d: sealed at hash_schema_version=%d, want %d",
+				id, hashSchemaVersion, controlplanev1.HashSchemaVersion4)
+		}
 		var recomputed []byte
 		var err error
 		switch hashSchemaVersion {
-		case controlplanev1.HashSchemaVersion3:
+		case controlplanev1.HashSchemaVersion3, controlplanev1.HashSchemaVersion4:
+			// Version 4 changed the leaf field set only; its checkpoint hash is
+			// the version-3 construction.
 			hashedPrevID := controlplanev1.GenesisPrevCheckpointID
 			if prevID != nil {
 				hashedPrevID = *prevID
