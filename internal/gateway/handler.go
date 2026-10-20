@@ -252,7 +252,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// No filter reads an image, so one may leave only for a route whose
 	// operator listed its kind in unscanned_parts. This is the permanent half
 	// of that gate: the alias is never cleared, so the refusal is a governance
-	// decision, sealed like a filter block, and not the retryable 503 a cleared
+	// decision, sealed and answered like a filter block, and not the retryable 503 a cleared
 	// route being down produces from ResolveRouteFor below. The sealed reason
 	// is a fixed rule identifier and never quotes the request.
 	unscanned := aegisReq.UnscannedParts()
@@ -270,7 +270,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
 				UnscannedPartsFilter, UnscannedPartsNotClearedReason, r.RemoteAddr)
 		}
-		httputil.WriteError(w, reqID, http.StatusForbidden, "permission_error", "unscanned_parts_not_cleared",
+		// 451 like every other sealed content block: LogFilterBlock seals 451,
+		// and the record and the response must state the same status.
+		httputil.WriteError(w, reqID, 451, "content_filter_error", "unscanned_parts_not_cleared",
 			"model "+aegisReq.Model+" is not cleared to carry image content parts. AEGIS cannot scan an "+
 				"image for secrets, PII or prompt injection, so it forwards one only to a route whose "+
 				"operator has listed \"image\" in unscanned_parts in configs/models.yaml. "+
@@ -492,7 +494,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, false, unscanned),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerStatus, failureReason))
 		}
@@ -526,7 +528,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.auditLogger != nil {
 			h.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, false, unscanned),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, providerResp.StatusCode, audit.ReasonProviderError))
 		}
@@ -699,7 +701,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// event, not the status.
 	if h.auditLogger != nil {
 		rec := withOutcome(
-			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false),
+			completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusOK, false, unscanned),
 			aegisResp.Model,
 			aegisResp.UsageReported,
 			aegisResp.Usage.PromptTokens, aegisResp.Usage.CompletionTokens,

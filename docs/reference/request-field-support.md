@@ -77,7 +77,7 @@ accepted only:
   type. A remote `https://` URL is refused with `unsupported_image_part`, because the
   provider would fetch content the gateway never sees;
 - on an alias whose route lists `image` in `unscanned_parts` in `configs/models.yaml`.
-  Every other alias refuses it with 403 `unscanned_parts_not_cleared`, and a cleared
+  Every other alias refuses it with 451 `unscanned_parts_not_cleared`, and a cleared
   primary does not clear its fallbacks;
 - within the image limits: 10 MiB per image decoded, 16 per request, and the request body
   cap `server.max_request_bytes` (default 32 MiB).

@@ -272,11 +272,11 @@ func TestChatCompletions_RefusesImageContentPart(t *testing.T) {
 		{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
 	]}]}`)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+	if w.Code != 451 {
+		t.Fatalf("status = %d, want 451; body: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
-		t.Errorf("the 403 carries no machine-readable code: %s", w.Body.String())
+		t.Errorf("the 451 carries no machine-readable code: %s", w.Body.String())
 	}
 	if adapter.sentBody != nil {
 		t.Error("a request carrying an image part was still dispatched to the provider")

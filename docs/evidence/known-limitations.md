@@ -261,7 +261,7 @@ What stands in for the scan is a gate:
 
 - **Opt-in per route.** An image is routed only to a route listing `image` in
   `unscanned_parts` in `configs/models.yaml`. None does as shipped. An alias with no such
-  route refuses with 403 `unscanned_parts_not_cleared`, sealed as a filter block. Each
+  route refuses with 451 `unscanned_parts_not_cleared`, sealed as a filter block. Each
   route opts in separately, so an outage of a cleared route cannot fail an image over to
   an uncleared one (`TestResolveRouteFor_FallbackMustOptInSeparately`).
 - **Inline only.** Only a base64 data URL of PNG, JPEG, GIF or WebP is accepted, with the
@@ -283,8 +283,7 @@ The gate is asserted by `TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSe
 `TestChatCompletions_RefusesImageContentPart` and the `TestResolveRouteFor_*` tests; the
 refusal of other kinds by `TestDecode_RejectsNonTextContentPart`.
 
-The audit schema is ready for that decision without changing what this section says:
-§2.17 describes the columns that would record unscanned parts, and why they hold no
+§2.17 describes the audit columns that record forwarded images, and why they hold no
 content.
 
 ### 2.8 Some tool-calling constructs cannot be expressed against Anthropic
@@ -890,10 +889,10 @@ decision recreates exactly the situation this section described.
 ### 2.17 Unscanned parts are recorded by count, size and type, not by content
 
 Migration `018` adds three columns to `audit_events`, sealed at `hash_schema_version`
-4: `unscanned_parts`, `unscanned_bytes` and `unscanned_part_types`. They exist for
-routes an operator opts in to forwarding image parts the filters cannot scan. **On
-this build no route does**: §2.7 still holds, nothing in `internal/gateway` sets the
-fields, and the three columns are `NULL` on every row.
+4: `unscanned_parts`, `unscanned_bytes` and `unscanned_part_types`. The gateway sets
+them on every request that forwarded image parts to a route opted in under §2.7
+(`TestChatCompletions_ImageForwardSealsUnscannedMetadata`). No route is opted in as
+shipped, so on the shipped configuration the three columns are `NULL` on every row.
 
 **What they record.** That unscanned parts left the gateway for a provider, how many,
 how many decoded bytes in total, and which media types, drawn only from the gateway's

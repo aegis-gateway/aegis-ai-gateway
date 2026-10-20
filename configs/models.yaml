@@ -61,7 +61,7 @@ models:
   #
   # unscanned_parts: [image] lets this route carry image content parts, which NO
   # filter reads: the secrets, PII and injection filters see only text. Without
-  # it (the default on every route) a request with an image is refused with 403
+  # it (the default on every route) a request with an image is refused with 451
   # unscanned_parts_not_cleared. Each route opts in on its own, so a fallback
   # here would need its own unscanned_parts line to carry images. Forwarded
   # images are sealed in audit_events as count, bytes and media type only.

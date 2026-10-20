@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -116,6 +117,18 @@ var imageMagic = map[string][][]byte{
 	"image/jpeg": {[]byte{0xFF, 0xD8, 0xFF}},
 	"image/gif":  {[]byte("GIF87a"), []byte("GIF89a")},
 	"image/webp": {[]byte("RIFF")}, // and "WEBP" at offset 8, checked below
+}
+
+// ImageMediaTypes returns the media types the decoder admits, sorted. The audit
+// package keeps its own allowlist for the sealed unscanned_part_types column,
+// and a test in internal/gateway holds the two equal.
+func ImageMediaTypes() []string {
+	out := make([]string, 0, len(imageMagic))
+	for t := range imageMagic {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ErrNonTextContentPart is returned when a content array carries a part whose

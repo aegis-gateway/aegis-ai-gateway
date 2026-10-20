@@ -41,10 +41,10 @@ request**, it is the join key to the audit trail.
 | 400 | `invalid_request_error` | Malformed or out-of-limits request |
 | 401 | `authentication_error` | Key missing, malformed, or unknown |
 | 402 | `budget_error` | Daily spend limit reached |
-| 403 | `permission_error` | Model outside the key's allowlist, or image parts on an alias not cleared for them |
+| 403 | `permission_error` | Model outside the key's allowlist |
 | 413 | `invalid_request_error` | Request body over `server.max_request_bytes` |
 | 429 | `rate_limit_error` | Requests-per-minute limit reached |
-| **451** | `content_filter_error` | **Blocked by a filter or by policy** |
+| **451** | `content_filter_error` | **Blocked by a filter or by policy**, or image parts on an alias not cleared for them |
 | 500 | `server_error` | Internal fault |
 | 503 | `server_error` | Dependency unavailable, failing closed |
 
@@ -132,10 +132,10 @@ Stage: [`internal/gateway/handler.go`](../../internal/gateway/handler.go), after
 |---|---|---|---|
 | `model <alias> routes to provider <name>, whose adapter (<type>) does not carry tool definitions, tool calls or tool results. AEGIS refuses the request rather than forwarding it without its tools. …` | `tools_unsupported_by_provider` | A tool-bearing request resolved to an adapter whose `SupportsTools()` is false, currently the Anthropic adapter | Route the alias to an OpenAI-compatible provider, or drop the tool fields. Metric: `aegis_tool_requests_refused_total`. See [known limitations §2.8](../evidence/known-limitations.md). |
 
-### 3.3 Unscanned content parts: 403
+### 3.3 Unscanned content parts: 451
 
 Stage: `internal/gateway/handler.go`, after the model allowlist and before routing.
-Type `permission_error`.
+Type `content_filter_error`.
 
 | Literal string | Code | Trigger | Operator action |
 |---|---|---|---|
@@ -143,7 +143,8 @@ Type `permission_error`.
 
 This refusal is **sealed** as a filter block, `filter_type = unscanned_parts`, with the
 fixed reason `unscanned_parts_not_cleared: alias has no route listing the part kind in
-unscanned_parts`. It is 403 rather than 503 because it is permanent: retrying cannot
+unscanned_parts`, and the sealed `status_code` is 451, the status the client receives.
+It is 451 rather than 503 because it is permanent: retrying cannot
 succeed until the configuration changes. If the alias *does* have a cleared route and
 that route is down, the request is a 503 from routing instead (section 6), and it never
 fails over to a route that is not cleared.

@@ -146,14 +146,14 @@ func TestChatCompletions_ImageOnClearedAliasIsForwarded(t *testing.T) {
 	}
 }
 
-// The permanent refusal: no route of the alias is cleared. 403, sealed as a
+// The permanent refusal: no route of the alias is cleared. 451, sealed as a
 // block with a fixed reason, and the provider is never called.
 func TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSealed(t *testing.T) {
 	spy := &imageAuditSpy{}
 	h, _, cloud := newImageTestHandler(t, spy, 0)
 
 	w := doImageRequest(t, h, imageChatBody("aegis-cloud"))
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
+	if w.Code != 451 || !strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 	if len(cloud.sent) != 0 {
@@ -200,5 +200,52 @@ func TestChatCompletions_BodyOverCapIs413(t *testing.T) {
 	}
 	if len(local.sent) != 0 {
 		t.Error("provider was called")
+	}
+}
+
+// A forwarded image is sealed as metadata: one part, its decoded size, its
+// media type. Never the content.
+func TestChatCompletions_ImageForwardSealsUnscannedMetadata(t *testing.T) {
+	spy := &imageAuditSpy{}
+	h, _, _ := newImageTestHandler(t, spy, 0)
+
+	if w := doImageRequest(t, h, imageChatBody("aegis-local")); w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if len(spy.completes) != 1 {
+		t.Fatalf("got %d completion records", len(spy.completes))
+	}
+	rec := spy.completes[0]
+	if rec.UnscannedParts == nil || *rec.UnscannedParts != 1 {
+		t.Errorf("UnscannedParts = %v, want 1", rec.UnscannedParts)
+	}
+	if rec.UnscannedBytes == nil || *rec.UnscannedBytes != 70 {
+		t.Errorf("UnscannedBytes = %v, want 70 (the decoded PNG)", rec.UnscannedBytes)
+	}
+	if rec.UnscannedPartTypes != "image/png" {
+		t.Errorf("UnscannedPartTypes = %q", rec.UnscannedPartTypes)
+	}
+
+	// A text request on the same route records nothing, which seals NULL.
+	spy.completes = nil
+	doImageRequest(t, h, `{"model":"aegis-local","messages":[{"role":"user","content":"hi"}]}`)
+	if len(spy.completes) != 1 || spy.completes[0].UnscannedParts != nil || spy.completes[0].UnscannedPartTypes != "" {
+		t.Errorf("text request recorded unscanned metadata: %+v", spy.completes)
+	}
+}
+
+// The decoder admits a media type only if the audit trail can seal it by name.
+// Were the two lists to drift, an admitted image would be sealed as
+// "(unlisted)", and the record would stop saying what was sent.
+func TestImageMediaTypes_MatchAuditAllowlist(t *testing.T) {
+	for _, mt := range types.ImageMediaTypes() {
+		if !audit.IsUnscannedMediaType(mt) {
+			t.Errorf("the decoder admits %s but audit.IsUnscannedMediaType refuses it", mt)
+		}
+	}
+	for _, mt := range []string{"image/svg+xml", "image/bmp", "text/plain"} {
+		if audit.IsUnscannedMediaType(mt) {
+			t.Errorf("the audit allowlist admits %s, which the decoder refuses", mt)
+		}
 	}
 }

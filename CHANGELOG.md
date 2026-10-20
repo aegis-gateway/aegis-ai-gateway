@@ -16,7 +16,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Request body cap.** `server.max_request_bytes` (default 32 MiB) bounds a chat completion body; a larger one is a 413 `request_too_large`. Bodies were previously read without a limit.
 
 ### Changed
-- An image part on an alias with no cleared route returns **403 `unscanned_parts_not_cleared`**, sealed as a filter block, where it previously returned 400 `unsupported_content_part`. A remote image URL returns 400 `unsupported_image_part`. Audio, file and other part types still return 400 `unsupported_content_part`.
+- An image part on an alias with no cleared route returns **451 `unscanned_parts_not_cleared`**, sealed as a filter block, where it previously returned 400 `unsupported_content_part`. A remote image URL returns 400 `unsupported_image_part`. Audio, file and other part types still return 400 `unsupported_content_part`.
 - Image limits: 10 MiB per image decoded, 16 image parts per request, user messages only.
 
 ## [0.1.1] - 2026-09-07

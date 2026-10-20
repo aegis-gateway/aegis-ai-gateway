@@ -186,6 +186,7 @@ func (sh *StreamingHandler) HandleStream(
 	// Falls back only if the field is unset, which the request path does not do:
 	// handler.go sets it before either branch is chosen.
 	receivedAt := aegisReq.ReceivedAt
+	unscanned := aegisReq.UnscannedParts()
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
 	}
@@ -216,7 +217,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusServiceUnavailable, true, unscanned),
 					time.Since(receivedAt)),
 				providerFailureReason(r, err, 0, audit.ReasonProviderUnreachable))
 		}
@@ -254,7 +255,7 @@ func (sh *StreamingHandler) HandleStream(
 		if sh.handler.auditLogger != nil {
 			sh.handler.auditLogger.LogProviderFailure(
 				withDuration(
-					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true),
+					completedRequest(reqID, authInfo, r, originalModel, providerKey, http.StatusInternalServerError, true, unscanned),
 					time.Since(receivedAt)),
 				// Not providerFailureReason: this branch runs only when the
 				// provider returned a non-200, so its failure is already
@@ -382,7 +383,7 @@ func (sh *StreamingHandler) HandleStream(
 		// chunk, because that is how long the request occupied the gateway.
 		rec := withOutcome(
 			completedRequest(reqID, authInfo, r, originalModel, providerKey,
-				clientStatusFor(metrics.Outcome), true),
+				clientStatusFor(metrics.Outcome), true, unscanned),
 			// ReportedModel, not Model: the latter falls back to the routed name
 			// so an early return still attributes the usage row, and sealing
 			// that would attest a model the provider never named.

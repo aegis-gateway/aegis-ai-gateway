@@ -20,12 +20,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/retry"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 // providerFailureReason decides whether a failed request was the caller leaving
@@ -136,8 +138,9 @@ func completedRequest(
 	providerKey string,
 	statusCode int,
 	stream bool,
+	unscanned types.UnscannedSummary,
 ) audit.CompletedRequest {
-	return audit.CompletedRequest{
+	rec := audit.CompletedRequest{
 		RequestID:      reqID,
 		OrganizationID: authInfo.OrganizationID,
 		TeamID:         authInfo.TeamID,
@@ -155,6 +158,16 @@ func completedRequest(
 		// it. The outcome fields are attached separately by withOutcome.
 		Classification: string(authInfo.MaxClassification),
 	}
+	// What left unscanned, as metadata. Known before dispatch, so it is
+	// recorded on a provider failure as well as on success: a failed request
+	// still sent its parts. Left nil when there were none, which seals NULL.
+	if !unscanned.Empty() {
+		parts, bytes := int64(unscanned.Parts), unscanned.Bytes
+		rec.UnscannedParts = &parts
+		rec.UnscannedBytes = &bytes
+		rec.UnscannedPartTypes = strings.Join(unscanned.MediaTypes, ",")
+	}
+	return rec
 }
 
 // withOutcome attaches what actually ran to a completion record.
