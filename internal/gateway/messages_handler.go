@@ -144,7 +144,7 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 	}
 	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned) {
+	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned, adapters.SupportsAnthropicNative) {
 		return
 	}
 

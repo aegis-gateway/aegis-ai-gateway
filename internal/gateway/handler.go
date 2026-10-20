@@ -166,7 +166,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned) {
+	if !h.enforceUnscannedGate(w, r, reqID, authInfo, &aegisReq, modelsCfg, unscanned, nil) {
 		return
 	}
 

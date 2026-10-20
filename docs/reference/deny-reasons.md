@@ -151,8 +151,9 @@ Decode refusals (`unsupported_field`, `unsupported_image_part`) are as in 3.1, r
 
 ### 3.4 Unscanned content parts: 451
 
-Stage: `internal/gateway/handler.go`, after the model allowlist and before routing.
-Type `content_filter_error`.
+Stage: `enforceUnscannedGate` in `internal/gateway/gates.go`, called from
+`internal/gateway/handler.go` and `internal/gateway/messages_handler.go`, after the model
+allowlist and before routing. Type `content_filter_error`.
 
 | Literal string | Code | Trigger | Operator action |
 |---|---|---|---|
@@ -168,6 +169,12 @@ fails over to a route that is not cleared. An alias that is not configured at al
 not this refusal: an image request to it gets the same unknown-model 503 from routing a
 text request gets, and no filter block is sealed
 (`TestChatCompletions_ImageOnUnknownAliasIs503NotSealed`).
+
+On `/v1/messages` a route clears the alias only if it both lists the kind in
+`unscanned_parts` and is served by an Anthropic-type provider, the only routes that
+endpoint can use. An alias whose only cleared route is OpenAI-type gets this same sealed
+451 there, not a 503 from routing (`TestMessages_ImageClearedOnlyOnNonNativeRouteIsSealed451`).
+`/v1/chat/completions` counts every route, as above.
 
 ## 4. Content filters: 451
 

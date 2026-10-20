@@ -58,7 +58,11 @@ Every client string is scanned, including thinking text, thinking signatures and
 redacted thinking data. The last two are opaque values the provider verifies, but a
 client can put anything in them and it leaves the gateway before the provider rejects
 it. The one exception is image data, which is gated rather than scanned
-([known limitations §2.7](../evidence/known-limitations.md)).
+([known limitations §2.7](../evidence/known-limitations.md)). On this endpoint an image is admitted only if
+one route of the alias both lists `image` in `unscanned_parts` and is an Anthropic-type
+provider; a cleared OpenAI-type route does not count, and the request is refused with the
+sealed 451 `unscanned_parts_not_cleared`
+([deny reasons §3.4](deny-reasons.md#34-unscanned-content-parts-451)).
 
 | Refused | Why |
 |---|---|

@@ -32,6 +32,7 @@ import (
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/filter"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/httputil"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/router"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/router/adapters"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
@@ -162,9 +163,15 @@ func (h *Handler) enforceModelAllowlist(w http.ResponseWriter, r *http.Request, 
 // ResolveRouteFor and gets the same unknown-model 503 a text request
 // gets, and no filter block is sealed for an alias nobody configured.
 // The request is refused either way.
-func (h *Handler) enforceUnscannedGate(w http.ResponseWriter, r *http.Request, reqID string, authInfo *auth.AuthInfo, aegisReq *types.AegisRequest, modelsCfg *config.ModelsConfig, unscanned types.UnscannedSummary) bool {
+//
+// accept, when not nil, narrows the routes that can clear the alias to those
+// whose adapter the ingress can actually use: /v1/messages passes
+// adapters.SupportsAnthropicNative, so a cleared OpenAI-type route does not
+// clear the alias there. Chat completions passes nil and counts every route.
+func (h *Handler) enforceUnscannedGate(w http.ResponseWriter, r *http.Request, reqID string, authInfo *auth.AuthInfo, aegisReq *types.AegisRequest, modelsCfg *config.ModelsConfig, unscanned types.UnscannedSummary, accept func(adapters.ProviderAdapter) bool) bool {
 	_, aliasConfigured := modelsCfg.Models[aegisReq.Model]
-	if !unscanned.Empty() && aliasConfigured && !router.AnyRouteAdmitsUnscanned(modelsCfg, aegisReq.Model, unscanned.Kinds) {
+	if !unscanned.Empty() && aliasConfigured &&
+		!router.AnyRouteAdmitsUnscannedWhere(modelsCfg, h.registry, aegisReq.Model, unscanned.Kinds, accept) {
 		slog.Warn("request refused: unscanned content parts on an uncleared alias",
 			"request_id", reqID,
 			"model", aegisReq.Model,

@@ -148,6 +148,14 @@ func newMessagesHandlerWithClient(t *testing.T, f *fakeAnthropic, spy AuditLogge
 				Primary:  config.ProviderRoute{Provider: "openai", Model: "gpt-x"},
 				Fallback: []config.ProviderRoute{{Provider: "anthropic", Model: "claude-haiku-4-5-20251001"}},
 			},
+			// Cleared for images only on the OpenAI route, which /v1/messages
+			// can never use.
+			"aegis-mixed-image": {
+				Primary: config.ProviderRoute{Provider: "openai", Model: "gpt-x", UnscannedParts: []string{"image"}},
+				Fallback: []config.ProviderRoute{{
+					Provider: "anthropic", Model: "claude-haiku-4-5-20251001", ClassificationCeiling: "RESTRICTED",
+				}},
+			},
 		}}
 	}
 	cfg := func() *config.Config {
@@ -422,6 +430,27 @@ func TestMessages_RefusalsBeforeDispatch(t *testing.T) {
 				t.Error("provider was called")
 			}
 		})
+	}
+}
+
+// Clearance for an unscanned kind counts only on a route /v1/messages can
+// use. An alias cleared for images on its OpenAI route alone is refused with
+// the same sealed 451 as an alias cleared nowhere, not a retryable 503.
+func TestMessages_ImageClearedOnlyOnNonNativeRouteIsSealed451(t *testing.T) {
+	f := newFakeAnthropic(t)
+	spy := &messagesAuditSpy{}
+	h := newMessagesHandler(t, f, spy)
+	body := `{"model":"aegis-mixed-image","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + handlerPNG + `"}}]}]}`
+
+	w := postMessages(t, h, "/v1/messages", body, nil)
+	if w.Code != 451 || !strings.Contains(w.Body.String(), "unscanned_parts_not_cleared") {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if f.calls() != 0 {
+		t.Error("provider was called")
+	}
+	if len(spy.blocks) != 1 || spy.blocks[0] != UnscannedPartsFilter {
+		t.Errorf("sealed blocks %v, want one %s block", spy.blocks, UnscannedPartsFilter)
 	}
 }
 

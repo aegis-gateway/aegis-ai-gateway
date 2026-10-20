@@ -348,6 +348,33 @@ func AnyRouteAdmitsUnscanned(modelsCfg *config.ModelsConfig, modelName string, u
 	return false
 }
 
+// AnyRouteAdmitsUnscannedWhere is AnyRouteAdmitsUnscanned restricted to
+// routes served by a registered adapter satisfying accept. A nil accept is
+// AnyRouteAdmitsUnscanned exactly.
+//
+// /v1/messages passes adapters.SupportsAnthropicNative: a route it can never
+// use does not clear the alias for it, so an alias whose only cleared route
+// is OpenAI-type is the same permanent refusal as one with no cleared route,
+// not an outage. Clearance and adapter are judged on the same route.
+func AnyRouteAdmitsUnscannedWhere(modelsCfg *config.ModelsConfig, registry *Registry, modelName string, unscannedKinds []string, accept func(adapters.ProviderAdapter) bool) bool {
+	if accept == nil {
+		return AnyRouteAdmitsUnscanned(modelsCfg, modelName, unscannedKinds)
+	}
+	mapping, ok := modelsCfg.Models[modelName]
+	if !ok {
+		return false
+	}
+	for _, r := range append([]config.ProviderRoute{mapping.Primary}, mapping.Fallback...) {
+		if !r.AdmitsUnscanned(unscannedKinds) {
+			continue
+		}
+		if a, ok := registry.Get(r.Provider); ok && accept(a) {
+			return true
+		}
+	}
+	return false
+}
+
 // providerHealthy returns true if the provider is healthy or if no health tracker is configured.
 func providerHealthy(ht *HealthTracker, provider string) bool {
 	if ht == nil {
