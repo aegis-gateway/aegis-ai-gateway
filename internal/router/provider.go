@@ -257,13 +257,30 @@ type Route struct {
 // does not exceed what the provider route is allowed to handle.
 // If healthTracker is non-nil, providers with open circuit breakers are skipped.
 func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, healthTracker *HealthTracker, modelName string, classification string) (Route, error) {
+	return ResolveRouteFor(modelsCfg, registry, healthTracker, modelName, classification, nil)
+}
+
+// ResolveRouteFor is ResolveRoute for a request carrying unscanned content
+// parts, named by kind (types.UnscannedSummary.Kinds).
+//
+// A route is eligible only if it admits every kind the request carries, and
+// that is checked on the primary and on every fallback independently. The
+// fallback is the part that matters: were the check made once against the
+// primary, an outage of a cleared on-device route would fail the request over
+// to a cloud route that was never cleared to see an unscanned image.
+func ResolveRouteFor(modelsCfg *config.ModelsConfig, registry *Registry, healthTracker *HealthTracker, modelName string, classification string, unscannedKinds []string) (Route, error) {
 	mapping, ok := modelsCfg.Models[modelName]
 	if !ok {
 		return Route{}, fmt.Errorf("unknown model: %s", modelName)
 	}
 
+	eligible := func(r config.ProviderRoute) bool {
+		return routeEligible(r, classification) && r.AdmitsUnscanned(unscannedKinds) &&
+			providerHealthy(healthTracker, r.Provider)
+	}
+
 	// Try primary provider (must be registered, classification-eligible, and healthy)
-	if routeEligible(mapping.Primary, classification) && providerHealthy(healthTracker, mapping.Primary.Provider) {
+	if eligible(mapping.Primary) {
 		if adapter, ok := registry.Get(mapping.Primary.Provider); ok {
 			return Route{Adapter: adapter, ProviderKey: mapping.Primary.Provider, Model: mapping.Primary.Model}, nil
 		}
@@ -271,7 +288,7 @@ func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, healthTrac
 
 	// Try fallbacks in order
 	for _, fb := range mapping.Fallback {
-		if routeEligible(fb, classification) && providerHealthy(healthTracker, fb.Provider) {
+		if eligible(fb) {
 			if adapter, ok := registry.Get(fb.Provider); ok {
 				return Route{Adapter: adapter, ProviderKey: fb.Provider, Model: fb.Model}, nil
 			}
@@ -279,6 +296,29 @@ func ResolveRoute(modelsCfg *config.ModelsConfig, registry *Registry, healthTrac
 	}
 
 	return Route{}, fmt.Errorf("no eligible provider for model %s at classification %s", modelName, classification)
+}
+
+// AnyRouteAdmitsUnscanned reports whether any route of the alias, primary or
+// fallback, is configured to carry the given unscanned kinds, regardless of
+// health or classification.
+//
+// The handler uses it to tell "this alias is never cleared for images", a
+// permanent governance refusal, from "the cleared route is down", which is a
+// retryable 503 like any other outage.
+func AnyRouteAdmitsUnscanned(modelsCfg *config.ModelsConfig, modelName string, unscannedKinds []string) bool {
+	mapping, ok := modelsCfg.Models[modelName]
+	if !ok {
+		return false
+	}
+	if mapping.Primary.AdmitsUnscanned(unscannedKinds) {
+		return true
+	}
+	for _, fb := range mapping.Fallback {
+		if fb.AdmitsUnscanned(unscannedKinds) {
+			return true
+		}
+	}
+	return false
 }
 
 // providerHealthy returns true if the provider is healthy or if no health tracker is configured.

@@ -36,6 +36,11 @@ refused. Widening `content` made image parts expressible for the first time. The
 rejected at decode rather than admitted, because AEGIS cannot scan an image and will
 not forward to a provider what no filter has read.
 
+*Update, 2026-10-19:* images are now admitted, unscanned, on routes an operator opts into
+`unscanned_parts`, and refused everywhere else. Audio and file parts are still refused.
+See [known limitations §2.7](known-limitations.md). The assessment above records the state
+on its own date.
+
 **And a portability limit worth knowing.** Five tool-calling constructs are legal
 OpenAI and cannot be expressed against Anthropic, chiefly a tool call that is not
 immediately followed by its result. They are refused by name rather than approximated.

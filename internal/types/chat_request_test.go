@@ -121,14 +121,14 @@ func TestDecode_StructuredContent(t *testing.T) {
 
 // TestDecode_RejectsNonTextContentPart is the Part 5 guarantee.
 //
-// The gateway cannot inspect an image, so an image part is an egress path to a
-// provider that the secrets, PII and injection filters do not cover. Admitting
-// one as a side effect of widening content would be a hole in the one claim
-// this product is built on, so it is refused by name.
+// The gateway cannot inspect audio, files or video, so a part of that kind is
+// an egress path to a provider that the secrets, PII and injection filters do
+// not cover. It is refused by name. Images are the one non-text kind admitted,
+// and only through the route gate; content_image_test.go covers them.
 func TestDecode_RejectsNonTextContentPart(t *testing.T) {
 	t.Parallel()
 
-	for _, partType := range []string{"image_url", "input_audio", "file", ""} {
+	for _, partType := range []string{"input_audio", "file", "video_url", ""} {
 		body := []byte(`{"model":"m","messages":[{"role":"user","content":[
 			{"type":"text","text":"describe this"},
 			{"type":"` + partType + `","image_url":{"url":"https://example.invalid/x.png"}}

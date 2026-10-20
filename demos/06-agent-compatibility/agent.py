@@ -574,8 +574,26 @@ print()
 
 refusal_cases = [
     (
-        "image content part",
+        "audio content part",
         "unsupported_content_part",
+        {
+            "model": TOOL_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+                    ],
+                }
+            ],
+        },
+    ),
+    (
+        # Images are carried only as base64 data URLs, and only on routes an
+        # operator cleared for unscanned parts. A remote URL is refused on any
+        # route: the provider would fetch content the gateway never sees.
+        "remote image URL",
+        "unsupported_image_part",
         {
             "model": TOOL_MODEL,
             "messages": [

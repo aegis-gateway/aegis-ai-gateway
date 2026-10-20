@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -100,9 +101,26 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
-	body, err := io.ReadAll(r.Body)
+	// Parse request body.
+	//
+	// Bounded, because nothing bounded it before: io.ReadAll on the raw body
+	// would buffer whatever a key holder sent. Image parts made the gap matter,
+	// since they arrive as base64 inside the JSON body.
+	bodyLimit := config.DefaultMaxRequestBytes
+	if h.cfg != nil {
+		if c := h.cfg(); c != nil {
+			bodyLimit = c.Server.RequestBodyLimit()
+		}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httputil.WriteError(w, reqID, http.StatusRequestEntityTooLarge,
+				"invalid_request_error", "request_too_large",
+				fmt.Sprintf("request body exceeds %d bytes (server.max_request_bytes)", bodyLimit))
+			return
+		}
 		httputil.WriteBadRequestError(w, reqID, "Failed to read request body")
 		return
 	}
@@ -228,9 +246,41 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route to provider
+	// Refuse unscanned content parts on an alias no route of which is cleared
+	// for them.
+	//
+	// No filter reads an image, so one may leave only for a route whose
+	// operator listed its kind in unscanned_parts. This is the permanent half
+	// of that gate: the alias is never cleared, so the refusal is a governance
+	// decision, sealed like a filter block, and not the retryable 503 a cleared
+	// route being down produces from ResolveRouteFor below. The sealed reason
+	// is a fixed rule identifier and never quotes the request.
+	unscanned := aegisReq.UnscannedParts()
 	modelsCfg := h.modelsCfg()
-	route, err := router.ResolveRoute(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification))
+	if !unscanned.Empty() && !router.AnyRouteAdmitsUnscanned(modelsCfg, aegisReq.Model, unscanned.Kinds) {
+		slog.Warn("request refused: unscanned content parts on an uncleared alias",
+			"request_id", reqID,
+			"model", aegisReq.Model,
+			"unscanned_parts", unscanned.Parts,
+			"unscanned_kinds", unscanned.Kinds,
+			"org_id", authInfo.OrganizationID,
+			"team_id", authInfo.TeamID,
+		)
+		if h.auditLogger != nil {
+			h.auditLogger.LogFilterBlock(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
+				UnscannedPartsFilter, UnscannedPartsNotClearedReason, r.RemoteAddr)
+		}
+		httputil.WriteError(w, reqID, http.StatusForbidden, "permission_error", "unscanned_parts_not_cleared",
+			"model "+aegisReq.Model+" is not cleared to carry image content parts. AEGIS cannot scan an "+
+				"image for secrets, PII or prompt injection, so it forwards one only to a route whose "+
+				"operator has listed \"image\" in unscanned_parts in configs/models.yaml. "+
+				"Use a model cleared for images, or remove the image parts")
+		return
+	}
+
+	// Route to provider. Every route considered, fallbacks included, must
+	// admit the request's unscanned kinds.
+	route, err := router.ResolveRouteFor(modelsCfg, h.registry, h.healthTracker, aegisReq.Model, string(aegisReq.Classification), unscanned.Kinds)
 	if err != nil {
 		httputil.WriteServiceUnavailableError(w, reqID, "No provider available: "+err.Error())
 		return

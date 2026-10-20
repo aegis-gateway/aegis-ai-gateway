@@ -35,7 +35,7 @@ asserts every row below.
 | `model` | Resolved as an alias against `configs/models.yaml` |
 | `messages` | Scanned by the filter chain, then forwarded |
 | `messages[].role` | `system`, `user`, `assistant`, `tool`, `function` |
-| `messages[].content` | A string, or an array of `{"type":"text"}` parts. See the content parts note below |
+| `messages[].content` | A string, or an array of `{"type":"text"}` and `{"type":"image_url"}` parts. See the content parts note below |
 | `messages[].name` | Forwarded unchanged |
 | `messages[].tool_calls` | Forwarded. The `id`, `function.name` and `function.arguments` are all scanned by the filter chain; `id` is bounded to 128 characters |
 | `messages[].tool_call_id` | Forwarded. Required on a `tool` message, bounded to 128 characters, and scanned: inbound it is client text like any other |
@@ -61,14 +61,30 @@ gate remains because the next adapter added might be.
 
 ### Content parts
 
-Only `{"type": "text", "text": "…"}` is accepted inside a content array. Any other
-part type is refused with `unsupported_content_part`.
+Two part types are accepted inside a content array:
 
-This is deliberate and it is a security boundary, not a scoping decision. AEGIS
-cannot read an image, an audio clip or a file attachment, so a part of that kind would
-be an egress path to a provider that the secrets, PII and injection filters do not
-cover. Widening `content` to admit structured parts must not admit unscannable ones as
-a side effect. See
+- `{"type": "text", "text": "…"}`, scanned like any other text.
+- `{"type": "image_url", "image_url": {"url": "data:image/<type>;base64,…", "detail": "…"}}`,
+  on user messages only, and **not scanned**.
+
+Any other part type (`input_audio`, `file`, …) is refused with `unsupported_content_part`.
+
+An image part is gated, not filtered. AEGIS cannot read an image, so an image is an
+egress path that the secrets, PII and injection filters do not cover. It is therefore
+accepted only:
+
+- as an inline base64 data URL of PNG, JPEG, GIF or WebP whose bytes match the declared
+  type. A remote `https://` URL is refused with `unsupported_image_part`, because the
+  provider would fetch content the gateway never sees;
+- on an alias whose route lists `image` in `unscanned_parts` in `configs/models.yaml`.
+  Every other alias refuses it with 403 `unscanned_parts_not_cleared`, and a cleared
+  primary does not clear its fallbacks;
+- within the image limits: 10 MiB per image decoded, 16 per request, and the request body
+  cap `server.max_request_bytes` (default 32 MiB).
+
+A forwarded image is recorded in the sealed audit trail as a count, a decoded size and a
+media type, never as content or a content hash. On OpenAI-compatible routes the part is
+forwarded unchanged; on Anthropic routes it becomes a base64 `image` block. See
 [known limitations §2.7](../evidence/known-limitations.md).
 
 ---

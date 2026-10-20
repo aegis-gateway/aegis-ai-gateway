@@ -15,6 +15,7 @@
 package types
 
 import (
+	"sort"
 	"strconv"
 	"time"
 )
@@ -336,4 +337,45 @@ func (r *AegisRequest) HasTools() bool {
 		}
 	}
 	return false
+}
+
+// UnscannedSummary describes the content parts a request carries that no
+// filter reads. Counts, sizes and allowlisted media types only: it is what the
+// router gates on, what OPA sees, and what the audit trail seals, and none of
+// those may hold the parts themselves or a hash of them.
+type UnscannedSummary struct {
+	// Kinds are the unscanned_parts kinds present, e.g. ["image"]. A route
+	// must list every one of them to carry the request.
+	Kinds []string
+	// Parts is the number of unscanned parts.
+	Parts int
+	// Bytes is their total size after base64 decoding.
+	Bytes int64
+	// MediaTypes are the distinct media types, sorted.
+	MediaTypes []string
+}
+
+// Empty reports whether the request carries no unscanned parts.
+func (s UnscannedSummary) Empty() bool { return s.Parts == 0 }
+
+// UnscannedParts summarises the parts of the request that no filter reads.
+func (r *AegisRequest) UnscannedParts() UnscannedSummary {
+	var s UnscannedSummary
+	seen := make(map[string]bool)
+	for _, m := range r.Messages {
+		for _, img := range m.Content.ImageParts() {
+			s.Parts++
+			s.Bytes += int64(img.DecodedBytes())
+			seen[img.MediaType()] = true
+		}
+	}
+	if s.Parts == 0 {
+		return s
+	}
+	s.Kinds = []string{UnscannedKindImage}
+	for t := range seen {
+		s.MediaTypes = append(s.MediaTypes, t)
+	}
+	sort.Strings(s.MediaTypes)
+	return s
 }

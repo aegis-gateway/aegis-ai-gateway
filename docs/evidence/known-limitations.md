@@ -244,26 +244,44 @@ The integrity coverage is unchanged by this, and it is worth being precise about
 Version 1 hashed the JSONB object, so its contents were already attested. Version 2 hashes
 the same data as separate fields. The gain is typing and bounding, not more signed data.
 
-### 2.7 Non-text content parts are refused, not filtered
+### 2.7 Images are gated, not scanned; other non-text parts are refused
 
-`message.content` now accepts an array of content parts as well as a string. Only
-`{"type": "text", "text": "…"}` is admitted. An `image_url`, `input_audio` or `file`
-part returns HTTP 400 with `"code": "unsupported_content_part"`.
+`message.content` accepts an array of content parts as well as a string. Text parts are
+scanned. An `input_audio`, `file` or other non-text part returns HTTP 400 with
+`"code": "unsupported_content_part"`.
 
-**This is a refusal, not a capability.** AEGIS cannot read an image. The secrets, PII
-and injection filters operate on text, so an image part would be data that leaves the
-gateway for a provider having passed through no filter at all. Widening `content` to
-carry structured parts is what made image parts expressible for the first time;
-admitting them as a side effect of that widening would have converted a compatibility
-fix into a hole in the one claim this product is built on.
+An `image_url` part is accepted, and **no filter reads it**. AEGIS cannot read an image.
+Extracting the text from it would cover only the text, and would miss faces, handwriting,
+and text drawn to evade extraction. The secrets, PII and injection filters therefore never
+see what an image contains, and a forwarded image leaves the gateway uninspected. That
+includes a credential photographed on a screen, a scanned identity document, and a prompt
+injection written into the picture.
 
-So an operator should read this as: **AEGIS does not support multimodal requests, and
-says so at the gateway rather than forwarding what it cannot inspect.** If image
-support is wanted it needs its own decision about what inspecting an image means, not
-a struct field.
+What stands in for the scan is a gate:
 
-The refusal is asserted by `TestDecode_RejectsNonTextContentPart` and, through the
-full handler, by `TestChatCompletions_RefusesImageContentPart`.
+- **Opt-in per route.** An image is routed only to a route listing `image` in
+  `unscanned_parts` in `configs/models.yaml`. None does as shipped. An alias with no such
+  route refuses with 403 `unscanned_parts_not_cleared`, sealed as a filter block. Each
+  route opts in separately, so an outage of a cleared route cannot fail an image over to
+  an uncleared one (`TestResolveRouteFor_FallbackMustOptInSeparately`).
+- **Inline only.** Only a base64 data URL of PNG, JPEG, GIF or WebP is accepted, with the
+  bytes checked against the declared type. A remote URL is refused, because the provider
+  would fetch content the gateway never saw (`TestScanSurface_GatedFieldsAreGated`).
+- **Recorded.** Each forwarded request seals the number of unscanned parts, their decoded
+  size and their media types in `audit_events`. That records **that** an image left, how
+  large it was and where it went, and **not what it showed**. No content and no content
+  hash is stored: a hash would let anyone holding a candidate image confirm it was sent.
+- **Visible to policy.** `input.request.unscanned_parts` (count, bytes, kinds, media types)
+  lets a Rego rule narrow the gate further, for example by key classification.
+
+So an operator should read this as: **clearing a route for images is a decision to let
+that provider see content AEGIS did not inspect.** That suits a model on hardware the
+operator controls. It is a weaker guarantee than the text path gets, and it should not be
+described as image filtering.
+
+The gate is asserted by `TestChatCompletions_ImageOnUnclearedAliasIsRefusedAndSealed`,
+`TestChatCompletions_RefusesImageContentPart` and the `TestResolveRouteFor_*` tests; the
+refusal of other kinds by `TestDecode_RejectsNonTextContentPart`.
 
 ### 2.8 Some tool-calling constructs cannot be expressed against Anthropic
 

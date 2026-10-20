@@ -61,6 +61,12 @@ type Limits struct {
 	MaxToolNameLength     int
 	MaxToolCallsPerMsg    int
 	MaxToolCallIDLength   int
+	// MaxImageParts bounds the image parts on one request, across every
+	// message. Clients resend the whole conversation each turn, so a chat
+	// that has accumulated images resends all of them.
+	MaxImageParts int
+	// MaxImageBytes bounds one image after base64 decoding.
+	MaxImageBytes int
 }
 
 // DefaultLimits returns sensible default validation limits
@@ -90,6 +96,11 @@ func DefaultLimits() Limits {
 		// limit; this one was missed because it reads like a value the gateway
 		// issued.
 		MaxToolCallIDLength: 128,
+		// Sized for phone photos sent from chat clients, which arrive as
+		// several megabytes of base64. The request body cap
+		// (server.max_request_bytes) bounds the total independently.
+		MaxImageParts: 16,
+		MaxImageBytes: 10 << 20,
 	}
 }
 
@@ -218,6 +229,7 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 	}
 
 	totalContentLength := 0
+	imageParts := 0
 	for i, msg := range messages {
 		// Validate role
 		if msg.Role == "" {
@@ -257,7 +269,18 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 			errs = append(errs, msgErrs...)
 		}
 
+		imgErrs, n := v.validateImageParts(i, msg)
+		errs = append(errs, imgErrs...)
+		imageParts += n
+
 		totalContentLength += contentLength
+	}
+
+	if imageParts > v.limits.MaxImageParts {
+		errs = append(errs, ValidationError{
+			Field:   "messages",
+			Message: fmt.Sprintf("too many image parts (max %d per request)", v.limits.MaxImageParts),
+		})
 	}
 
 	// Check total content length
@@ -269,6 +292,36 @@ func (v *Validator) validateMessages(messages []types.Message) ValidationErrors 
 	}
 
 	return errs
+}
+
+// validateImageParts checks the image parts of one message and returns how
+// many it has.
+//
+// Images are accepted only on user messages. That is where OpenAI defines
+// them, and it keeps them out of the positions an adapter can only express as
+// a single string (the Anthropic system prompt, a tool result), where they
+// would be flattened away rather than forwarded.
+func (v *Validator) validateImageParts(i int, msg types.Message) (ValidationErrors, int) {
+	imgs := msg.Content.ImageParts()
+	if len(imgs) == 0 {
+		return nil, 0
+	}
+	var errs ValidationErrors
+	if msg.Role != types.RoleUser {
+		errs = append(errs, ValidationError{
+			Field:   fmt.Sprintf("messages[%d].content", i),
+			Message: fmt.Sprintf("image parts are accepted only on user messages, not role '%s'", msg.Role),
+		})
+	}
+	for _, img := range imgs {
+		if img.DecodedBytes() > v.limits.MaxImageBytes {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("messages[%d].content", i),
+				Message: fmt.Sprintf("image too large (max %d bytes decoded)", v.limits.MaxImageBytes),
+			})
+		}
+	}
+	return errs, len(imgs)
 }
 
 // validateTools validates the tool definitions on a request.

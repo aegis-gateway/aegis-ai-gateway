@@ -53,12 +53,15 @@ func (rp *RouterProcessor) RouteToProvider(
 	modelsCfg := rp.modelsCfg()
 
 	// Route to provider based on model and classification
-	route, err := router.ResolveRoute(
+	// Not routed (see CLAUDE.md), but gated anyway so that reviving this path
+	// cannot forward an image to a route that was never cleared for one.
+	route, err := router.ResolveRouteFor(
 		modelsCfg,
 		rp.registry,
 		rp.healthTracker,
 		aegisReq.Model,
 		string(aegisReq.Classification),
+		aegisReq.UnscannedParts().Kinds,
 	)
 	if err != nil {
 		return nil, httputil.NewHTTPError(

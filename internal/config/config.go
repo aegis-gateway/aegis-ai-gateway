@@ -54,6 +54,22 @@ type ServerConfig struct {
 	WriteTimeout     time.Duration `yaml:"write_timeout"`
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 	GracefulShutdown time.Duration `yaml:"graceful_shutdown"`
+	// MaxRequestBytes caps a chat completion request body. A larger body is a
+	// 413 before any of it is parsed. Zero means DefaultMaxRequestBytes. It is
+	// sized for image parts, which arrive as base64 inside the JSON body: a
+	// few phone photos resent with a conversation reach tens of megabytes.
+	MaxRequestBytes int64 `yaml:"max_request_bytes"`
+}
+
+// DefaultMaxRequestBytes is the request body cap when none is configured.
+const DefaultMaxRequestBytes int64 = 32 << 20
+
+// RequestBodyLimit returns the configured body cap, or the default.
+func (s ServerConfig) RequestBodyLimit() int64 {
+	if s.MaxRequestBytes > 0 {
+		return s.MaxRequestBytes
+	}
+	return DefaultMaxRequestBytes
 }
 
 type DatabaseConfig struct {
@@ -154,6 +170,7 @@ func DefaultConfig() *Config {
 			WriteTimeout:     120 * time.Second,
 			IdleTimeout:      120 * time.Second,
 			GracefulShutdown: 30 * time.Second,
+			MaxRequestBytes:  DefaultMaxRequestBytes,
 		},
 		Database: DatabaseConfig{
 			Host:            "localhost",

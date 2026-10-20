@@ -15,6 +15,8 @@
 package types
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,26 +44,84 @@ const (
 type ContentPartType string
 
 const (
-	// PartText is the only content part type AEGIS accepts. Every other type
-	// names data the filter chain cannot read; see ErrNonTextContentPart.
+	// PartText is a text part. Every filter reads it.
 	PartText ContentPartType = "text"
+	// PartImageURL is an image part. No filter reads it: the gateway has no
+	// image scanner, and text extracted from an image would cover only the
+	// text in it. It is representable so that it can be routed, and admitted
+	// only on a route whose operator has opted that route into carrying
+	// unscanned parts. See ContentPart and router.ResolveRouteFor.
+	PartImageURL ContentPartType = "image_url"
 )
+
+// UnscannedKindImage is the name an operator uses for image parts in a
+// route's unscanned_parts list in configs/models.yaml.
+const UnscannedKindImage = "image"
 
 // ContentPart is one element of a structured content array.
 //
-// Only text parts are representable. A part of any other type is refused at
-// decode by UnmarshalJSON rather than carried in a field nothing inspects,
-// because a content part that reaches a provider unread is an egress path the
-// secrets, PII and injection filters do not cover.
+// Text and image parts are representable. Any other type is refused at decode
+// by UnmarshalJSON rather than carried in a field nothing inspects, because a
+// content part that reaches a provider unread is an egress path the secrets,
+// PII and injection filters do not cover.
+//
+// An image part is exactly such an egress path, and is representable anyway
+// because it is gated rather than scanned: the router admits it only on a
+// route that lists it in unscanned_parts, and the audit trail records that it
+// left (count, decoded bytes, media type; never content or a content hash).
 type ContentPart struct {
-	Type ContentPartType `json:"type"`
-	Text string          `json:"text"`
+	Type     ContentPartType
+	Text     string
+	ImageURL *ImageURL
+}
+
+// ImageURL is the image_url object of an image part.
+//
+// URL is only ever a base64 data URL of an allowlisted image type: UnmarshalJSON
+// refuses a remote URL, because the provider would fetch content the gateway
+// never sees, and the URL itself is caller text no filter reads.
+type ImageURL struct {
+	URL    string
+	Detail string
+
+	// Set at decode from the validated URL. Unexported so they are not part of
+	// the wire shape, and so nothing outside this package can make them
+	// disagree with URL.
+	mediaType    string
+	decodedBytes int
+}
+
+// MediaType is the validated media type, e.g. "image/png".
+func (i *ImageURL) MediaType() string { return i.mediaType }
+
+// DecodedBytes is the size of the image after base64 decoding.
+func (i *ImageURL) DecodedBytes() int { return i.decodedBytes }
+
+// Base64Data is the base64 payload of the data URL, without its prefix. The
+// Anthropic adapter carries it in a base64 image source block.
+func (i *ImageURL) Base64Data() string {
+	_, data, _ := strings.Cut(i.URL, ",")
+	return data
+}
+
+// imageDetails are the values OpenAI defines for image_url.detail.
+var imageDetails = map[string]bool{"": true, "auto": true, "low": true, "high": true}
+
+// imageMagic maps each admitted media type to the leading bytes its encoding
+// must start with. The declared type is checked against the bytes, not taken on
+// trust, because the media type is sealed into the audit trail and a sealed
+// value has to be one the gateway verified.
+var imageMagic = map[string][][]byte{
+	"image/png":  {[]byte("\x89PNG\r\n\x1a\n")},
+	"image/jpeg": {[]byte{0xFF, 0xD8, 0xFF}},
+	"image/gif":  {[]byte("GIF87a"), []byte("GIF89a")},
+	"image/webp": {[]byte("RIFF")}, // and "WEBP" at offset 8, checked below
 }
 
 // ErrNonTextContentPart is returned when a content array carries a part whose
-// type is not "text". It is a named error so the HTTP layer can turn it into a
-// specific 400 rather than a generic JSON parse failure.
-var ErrNonTextContentPart = errors.New("non-text content part")
+// type AEGIS does not accept. It is a named error so the HTTP layer can turn it
+// into a specific 400 rather than a generic JSON parse failure.
+var ErrNonTextContentPart = errors.New("unsupported content part")
 
 // NonTextPartError reports the rejected part type and its position.
 type NonTextPartError struct {
@@ -74,12 +134,98 @@ func (e *NonTextPartError) Error() string {
 	if t == "" {
 		t = "(missing type)"
 	}
-	return fmt.Sprintf("content[%d] has type %q: AEGIS accepts only text content parts, "+
-		"because it cannot scan any other kind for secrets, PII or prompt injection, "+
+	return fmt.Sprintf("content[%d] has type %q: AEGIS accepts only text and image_url content parts. "+
+		"It cannot scan any other kind for secrets, PII or prompt injection, "+
 		"and an unscannable part would leave the gateway for the provider unfiltered", e.Index, t)
 }
 
 func (e *NonTextPartError) Unwrap() error { return ErrNonTextContentPart }
+
+// ErrInvalidImagePart is returned for an image_url part AEGIS will not carry.
+var ErrInvalidImagePart = errors.New("invalid image content part")
+
+// ImagePartError reports why an image part was refused. Reason never quotes the
+// URL: it can be megabytes of base64, and a remote URL is caller text that may
+// carry a credential in its query string.
+type ImagePartError struct {
+	Index  int
+	Reason string
+}
+
+func (e *ImagePartError) Error() string {
+	return fmt.Sprintf("content[%d] is an image_url part AEGIS will not carry: %s", e.Index, e.Reason)
+}
+
+func (e *ImagePartError) Unwrap() error { return ErrInvalidImagePart }
+
+// parseImageDataURL validates a data URL and returns its media type and decoded
+// size. It accepts only data:<allowlisted type>;base64,<payload>.
+func parseImageDataURL(u string) (string, int, string) {
+	rest, ok := strings.CutPrefix(u, "data:")
+	if !ok {
+		return "", 0, "only base64 data: URLs are accepted. A remote image URL is refused because the " +
+			"provider would fetch content the gateway never sees"
+	}
+	header, payload, ok := strings.Cut(rest, ",")
+	if !ok {
+		return "", 0, "malformed data URL: no comma separating the header from the data"
+	}
+	mediaType, ok := strings.CutSuffix(header, ";base64")
+	if !ok {
+		return "", 0, "data URL must be base64-encoded (data:<type>;base64,...)"
+	}
+	mediaType = strings.ToLower(mediaType)
+	magics, ok := imageMagic[mediaType]
+	if !ok {
+		return "", 0, "media type is not one of image/png, image/jpeg, image/gif, image/webp"
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", 0, "data URL payload is not valid base64"
+	}
+	matched := false
+	for _, m := range magics {
+		if bytes.HasPrefix(raw, m) {
+			matched = true
+			break
+		}
+	}
+	if mediaType == "image/webp" && (len(raw) < 12 || string(raw[8:12]) != "WEBP") {
+		matched = false
+	}
+	if !matched {
+		return "", 0, "image bytes do not match the declared media type " + mediaType
+	}
+	return mediaType, len(raw), ""
+}
+
+// MarshalJSON emits the OpenAI wire shape for the part's type.
+func (p ContentPart) MarshalJSON() ([]byte, error) {
+	switch p.Type {
+	case PartImageURL:
+		if p.ImageURL == nil {
+			return nil, errors.New("image_url part has no image_url")
+		}
+		return json.Marshal(struct {
+			Type     ContentPartType `json:"type"`
+			ImageURL *ImageURL       `json:"image_url"`
+		}{p.Type, p.ImageURL})
+	default:
+		return json.Marshal(struct {
+			Type ContentPartType `json:"type"`
+			Text string          `json:"text"`
+		}{p.Type, p.Text})
+	}
+}
+
+// MarshalJSON emits {"url":...,"detail":...}, omitting an absent detail so the
+// part leaves in the shape it arrived.
+func (i ImageURL) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		URL    string `json:"url"`
+		Detail string `json:"detail,omitempty"`
+	}{i.URL, i.Detail})
+}
 
 // Content is an OpenAI message content field: a string, an array of content
 // parts, or null.
@@ -202,21 +348,70 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(elem, &probe); err != nil {
 			return fmt.Errorf("content[%d]: %w", i, err)
 		}
-		if ContentPartType(probe.Type) != PartText {
+		switch ContentPartType(probe.Type) {
+		case PartText:
+			var part struct {
+				Type ContentPartType `json:"type"`
+				Text string          `json:"text"`
+			}
+			if err := decodeStrict(elem, &part); err != nil {
+				return fmt.Errorf("content[%d]: %w", i, err)
+			}
+			parts = append(parts, ContentPart{Type: PartText, Text: part.Text})
+
+		case PartImageURL:
+			var part struct {
+				Type     ContentPartType `json:"type"`
+				ImageURL *struct {
+					URL    string `json:"url"`
+					Detail string `json:"detail"`
+				} `json:"image_url"`
+			}
+			if err := decodeStrict(elem, &part); err != nil {
+				return fmt.Errorf("content[%d]: %w", i, err)
+			}
+			if part.ImageURL == nil {
+				return &ImagePartError{Index: i, Reason: "missing image_url object"}
+			}
+			if !imageDetails[part.ImageURL.Detail] {
+				return &ImagePartError{Index: i, Reason: `detail must be "auto", "low" or "high"`}
+			}
+			mediaType, n, reason := parseImageDataURL(part.ImageURL.URL)
+			if reason != "" {
+				return &ImagePartError{Index: i, Reason: reason}
+			}
+			parts = append(parts, ContentPart{Type: PartImageURL, ImageURL: &ImageURL{
+				URL: part.ImageURL.URL, Detail: part.ImageURL.Detail,
+				mediaType: mediaType, decodedBytes: n,
+			}})
+
+		default:
 			return &NonTextPartError{Index: i, Type: probe.Type}
 		}
-
-		var part ContentPart
-		dec := json.NewDecoder(strings.NewReader(string(elem)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&part); err != nil {
-			return fmt.Errorf("content[%d]: %w", i, err)
-		}
-		parts = append(parts, part)
 	}
 
 	*c = Content{Kind: ContentParts, Parts: parts}
 	return nil
+}
+
+func decodeStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+// ImageParts returns the content's image parts, in order.
+func (c Content) ImageParts() []*ImageURL {
+	if c.Kind != ContentParts {
+		return nil
+	}
+	var out []*ImageURL
+	for _, p := range c.Parts {
+		if p.Type == PartImageURL && p.ImageURL != nil {
+			out = append(out, p.ImageURL)
+		}
+	}
+	return out
 }
 
 // MarshalJSON re-emits the shape the content arrived in, so that what leaves
