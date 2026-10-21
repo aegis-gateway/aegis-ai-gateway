@@ -178,9 +178,11 @@ refusal rows other than `auth_failure` left it `NULL`, and `auth_failure` record
 literal `/v1/*`.
 
 `feature_denied` is a request refused for asking for a provider feature outside an
-operator allowlist: today, an `anthropic-beta` flag missing from
-`anthropic_messages.allowed_betas`, with `reason = 'anthropic_beta_not_allowed'`. The
-flag is not sealed; it is caller-chosen header text no filter reads. Other 400s (an
+operator allowlist: today, an `anthropic-beta` flag that is malformed, matches
+`anthropic_messages.denied_betas`, or is unlisted while `unlisted_betas` is `refuse`
+(`reason` is `anthropic_beta_malformed`, `anthropic_beta_denied` or
+`anthropic_beta_not_allowed`). An unlisted flag forwarded under the default
+`unlisted_betas: forward` is logged and counted, not sealed. The flag is not sealed; it is caller-chosen header text no filter reads. Other 400s (an
 unknown field, an unsupported `anthropic-version`) are compatibility errors and remain
 unaudited, as before.
 

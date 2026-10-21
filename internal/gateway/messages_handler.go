@@ -23,7 +23,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -92,24 +91,22 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 			"anthropic-version "+v+" is not supported; AEGIS forwards "+anthropicAPIVersion)
 		return
 	}
-	betas, refused := h.allowedBetas(r)
-	if refused != "" {
-		// The value is caller-controlled header text that no filter has seen,
-		// so only its length is logged. The caller gets it back in the error.
-		slog.Warn("request refused: anthropic-beta not in the allowlist",
-			"request_id", reqID, "beta_length", len(refused), "org_id", authInfo.OrganizationID)
-		httputil.WriteError(w, reqID, http.StatusBadRequest, "invalid_request_error", "unsupported_beta",
-			"anthropic-beta "+refused+" is not in anthropic_messages.allowed_betas. A beta switches on provider "+
-				"behaviour, and some change pricing, so AEGIS forwards only flags an operator has listed")
-		// Sealed after the response is written, so the recorded status is one
-		// the gateway sent. A governance refusal, so it is audited where the
-		// compatibility 400s around it are not; the flag itself is not sealed.
-		if h.auditLogger != nil {
-			h.auditLogger.LogFeatureDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
-				authInfo.KeyPrefix, audit.ReasonBetaNotAllowed, audit.SourceOf(r))
+	msgCfg := config.DefaultConfig().AnthropicMessages
+	if h.cfg != nil {
+		if c := h.cfg(); c != nil {
+			msgCfg = c.AnthropicMessages
 		}
+	}
+	if msgCfg.UnlistedBetas != config.UnlistedBetasForward && msgCfg.UnlistedBetas != config.UnlistedBetasRefuse {
+		slog.Error("anthropic_messages.unlisted_betas has an unknown value; refusing unlisted flags",
+			"request_id", reqID, "configured", msgCfg.UnlistedBetas)
+	}
+	decision := decideBetas(r.Header.Values("anthropic-beta"), msgCfg)
+	if decision.Refused != "" {
+		h.refuseBeta(w, r, reqID, authInfo, decision)
 		return
 	}
+	betas := decision.Forward
 
 	body, ok := h.readBoundedBody(w, r, reqID)
 	if !ok {
@@ -197,6 +194,11 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 		defer h.contextMonitor.Watch(r.Context(), reqID, native.Name())()
 	}
 
+	// Logged and counted only now that every gate has passed, so a request
+	// refused later is never reported as forwarding a flag and cannot use up
+	// a metric label slot.
+	h.recordUnlistedBetas(reqID, authInfo, decision.Unlisted)
+
 	call := nativeCall{
 		h: h, w: w, r: r, reqID: reqID, authInfo: authInfo, req: &aegisReq,
 		adapter: native, providerKey: providerKey, providerModel: providerModel,
@@ -206,33 +208,51 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 	call.run()
 }
 
-// allowedBetas returns the request's anthropic-beta flags, or the first one
-// outside the configured allowlist.
-func (h *Handler) allowedBetas(r *http.Request) (betas []string, refused string) {
-	allowed := config.DefaultAnthropicBetas
-	if h.cfg != nil {
-		if c := h.cfg(); c != nil {
-			allowed = c.AnthropicMessages.AllowedBetas
+// recordUnlistedBetas logs and counts each forwarded flag that is on no list.
+// It runs immediately before dispatch, after every gate.
+func (h *Handler) recordUnlistedBetas(reqID string, authInfo *auth.AuthInfo, unlisted []string) {
+	for _, b := range unlisted {
+		// Well-formed by construction (betaFlagPattern), so the name is safe to
+		// log and to use as a capped metric label.
+		slog.Warn("forwarding an anthropic-beta flag that is on no list",
+			"request_id", reqID, "beta", b, "org_id", authInfo.OrganizationID,
+			"hint", "add it to anthropic_messages.allowed_betas or denied_betas")
+		if h.metrics != nil {
+			h.metrics.AnthropicBetaUnlistedTotal.WithLabelValues(betaLabel(b)).Inc()
 		}
 	}
-	set := make(map[string]bool, len(allowed))
-	for _, b := range allowed {
-		set[b] = true
+}
+
+// refuseBeta answers and seals a refused anthropic-beta flag.
+//
+// The flag is never sealed: it is caller header text no filter reads. A
+// well-formed flag is named in the response and the log, since the pattern
+// rules out free text; a malformed value is reported by length only.
+func (h *Handler) refuseBeta(w http.ResponseWriter, r *http.Request, reqID string, authInfo *auth.AuthInfo, d betaDecision) {
+	var msg string
+	switch d.Reason {
+	case audit.ReasonBetaMalformed:
+		slog.Warn("request refused: malformed anthropic-beta value",
+			"request_id", reqID, "beta_length", len(d.Refused), "org_id", authInfo.OrganizationID)
+		msg = "an anthropic-beta value is not a well-formed flag name (lowercase name, then a YYYY-MM-DD date)"
+	case audit.ReasonBetaDenied:
+		slog.Warn("request refused: anthropic-beta in denied_betas",
+			"request_id", reqID, "beta", d.Refused, "org_id", authInfo.OrganizationID)
+		msg = "anthropic-beta " + d.Refused + " matches anthropic_messages.denied_betas. It enables a provider " +
+			"feature that moves data or execution outside the gateway"
+	default:
+		slog.Warn("request refused: anthropic-beta on no list and unlisted_betas is refuse",
+			"request_id", reqID, "beta", d.Refused, "org_id", authInfo.OrganizationID)
+		msg = "anthropic-beta " + d.Refused + " is not in anthropic_messages.allowed_betas, and " +
+			"unlisted_betas is set to refuse"
 	}
-	for _, header := range r.Header.Values("anthropic-beta") {
-		for _, b := range strings.Split(header, ",") {
-			b = strings.TrimSpace(b)
-			if b == "" {
-				continue
-			}
-			if !set[b] {
-				return nil, b
-			}
-			betas = append(betas, b)
-		}
+	httputil.WriteError(w, reqID, http.StatusBadRequest, "invalid_request_error", "unsupported_beta", msg)
+	// Sealed after the response is written, so the recorded status is one the
+	// gateway sent.
+	if h.auditLogger != nil {
+		h.auditLogger.LogFeatureDenied(reqID, authInfo.OrganizationID, authInfo.TeamID, authInfo.KeyID,
+			authInfo.KeyPrefix, d.Reason, audit.SourceOf(r))
 	}
-	sort.Strings(betas)
-	return betas, ""
 }
 
 // nativeCall is one dispatch of a governed /v1/messages request.

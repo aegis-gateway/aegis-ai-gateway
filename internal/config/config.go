@@ -32,12 +32,25 @@ type Config struct {
 // AnthropicMessagesConfig governs what the /v1/messages ingress forwards beyond
 // the request body.
 type AnthropicMessagesConfig struct {
-	// AllowedBetas are the anthropic-beta flags forwarded to the provider. A
-	// request naming any other flag is refused with a 400 naming it. A beta
-	// switches on provider behaviour, and some change the price (a 1M-token
-	// context is billed at long-context rates), so the gateway forwards only
-	// flags an operator has listed rather than whatever a client asks for.
+	// AllowedBetas are anthropic-beta flags forwarded without comment.
 	AllowedBetas []string `yaml:"allowed_betas"`
+	// DeniedBetas are flags always refused, and sealed as feature_denied. An
+	// entry ending in * matches by prefix, so "files-api-*" covers every
+	// dated release of that feature.
+	DeniedBetas []string `yaml:"denied_betas"`
+	// UnlistedBetas decides a well-formed flag on neither list: "forward"
+	// forwards it, logs it by name and counts it in
+	// aegis_anthropic_beta_unlisted_total; "refuse" refuses it as
+	// feature_denied. Any other value is treated as "refuse".
+	//
+	// Forward is the default because Claude Code's flags vary by release,
+	// mode, command and install, so an exact list breaks it on every
+	// release. It is safe as a default because a beta mostly switches on
+	// request constructs (block types, tool types, fields), and the
+	// /v1/messages decoder refuses every construct it does not allowlist
+	// whatever flags are set. The flags that move data or execution to the
+	// provider are refused by family in DeniedBetas.
+	UnlistedBetas string `yaml:"unlisted_betas"`
 	// StreamTotalTimeout bounds one streamed response. A coding agent's turn
 	// can think and write for many minutes, far past the chat default.
 	StreamTotalTimeout time.Duration `yaml:"stream_total_timeout"`
@@ -47,9 +60,17 @@ type AnthropicMessagesConfig struct {
 	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
 }
 
-// DefaultAnthropicBetas are the flags Claude Code 2.1.150 sends on every
-// request, observed by capturing its traffic. Without them Claude Code cannot
-// run through the gateway at all.
+// Values of UnlistedBetas.
+const (
+	UnlistedBetasForward = "forward"
+	UnlistedBetasRefuse  = "refuse"
+)
+
+// DefaultAnthropicBetas are the flags Claude Code 2.1.150 was observed sending,
+// across print and interactive mode, the session-title request, /init, and
+// installs with different server-side feature flags. context-1m changes the
+// price of a request over 200K input tokens; it is priced through the
+// long-context rates in configs/pricing.yaml.
 var DefaultAnthropicBetas = []string{
 	"claude-code-20250219",
 	"context-1m-2025-08-07",
@@ -57,6 +78,26 @@ var DefaultAnthropicBetas = []string{
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"effort-2025-11-24",
+	"structured-outputs-2025-12-15",
+	"redact-thinking-2026-02-12",
+	"thinking-token-count-2026-05-13",
+	"advanced-tool-use-2025-11-20",
+	"thinking-display-updates-2026-08-18",
+	"advisor-tool-2026-03-01",
+}
+
+// DefaultDeniedBetas are the feature families that move data or execution to
+// the provider: uploaded files, provider-side MCP, code execution, web search
+// and fetch, and skills containers. Their request constructs are refused by
+// the decoder already; refusing the flag too makes the refusal explicit and
+// sealed rather than a decode error.
+var DefaultDeniedBetas = []string{
+	"files-api-*",
+	"mcp-client-*",
+	"code-execution-*",
+	"web-search-*",
+	"web-fetch-*",
+	"skills-*",
 }
 
 // CostConfig controls how the gateway handles pricing.
@@ -197,6 +238,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		AnthropicMessages: AnthropicMessagesConfig{
 			AllowedBetas:       append([]string(nil), DefaultAnthropicBetas...),
+			DeniedBetas:        append([]string(nil), DefaultDeniedBetas...),
+			UnlistedBetas:      UnlistedBetasForward,
 			StreamTotalTimeout: 30 * time.Minute,
 			StreamIdleTimeout:  60 * time.Second,
 		},

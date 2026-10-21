@@ -965,8 +965,12 @@ route pattern (`audit.SourceOf`; `TestRefusalRowsRecordTheEndpoint`). Rows writt
 inconsistent across that date.
 
 Governance refusals are audited: authentication, rate and budget limits, filters, policy,
-the model allowlist, the image gate, pricing, and since 2026-10-20 an `anthropic-beta` flag
-outside the operator allowlist (`feature_denied`; `TestRefusedBetaIsSealedWithoutTheFlag`).
+the model allowlist, the image gate, pricing, and since 2026-10-20 a refused `anthropic-beta`
+flag (`feature_denied`; `TestRefusedBetaIsSealedWithoutTheFlag`). A flag forwarded under
+`unlisted_betas: forward` is not in the sealed record at all: it is visible only in the
+process log and the `aegis_anthropic_beta_unlisted_total` metric, neither of which is
+evidence. An operator who needs every forwarded flag attested should list them in
+`allowed_betas` and set `unlisted_betas: refuse`.
 Compatibility refusals are not: a malformed body, an unknown field or block type, an
 unsupported `anthropic-version` or query parameter, a validation limit, a provider that
 cannot express a construct. Those are rejected before any governance decision is made and

@@ -54,6 +54,10 @@ type Metrics struct {
 	// Requests refused at decode for carrying an unsupported field.
 	UnsupportedFieldTotal *prometheus.CounterVec
 
+	// AnthropicBetaUnlistedTotal counts anthropic-beta flags forwarded
+	// although on no list, by flag. The label is capped; see gateway.betaLabel.
+	AnthropicBetaUnlistedTotal *prometheus.CounterVec
+
 	// Pricing freshness gauge (set once at startup).
 	PricingAgeDays prometheus.Gauge
 
@@ -192,6 +196,11 @@ func NewMetrics() *Metrics {
 			Name: "aegis_unsupported_field_total",
 			Help: "Total requests refused at decode for carrying a request field AEGIS does not support, labelled by field name.",
 		}, []string{"field"}),
+
+		AnthropicBetaUnlistedTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "aegis_anthropic_beta_unlisted_total",
+			Help: "anthropic-beta flags forwarded on /v1/messages although on neither allowed_betas nor denied_betas, by flag.",
+		}, []string{"flag"}),
 
 		PricingAgeDays: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "aegis_pricing_age_days",
