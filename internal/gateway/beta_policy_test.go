@@ -15,14 +15,18 @@
 package gateway
 
 import (
+	"bytes"
 	"net/http"
-
-	"github.com/prometheus/client_golang/prometheus/testutil"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/audit"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/auth"
 	"github.com/aegis-gateway/aegis-ai-gateway/internal/config"
+	"github.com/aegis-gateway/aegis-ai-gateway/internal/types"
 )
 
 func defaultMessagesCfg() config.AnthropicMessagesConfig {
@@ -141,5 +145,63 @@ func TestMessages_UnlistedBetaCounted(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(h.metrics.AnthropicBetaUnlistedTotal.WithLabelValues(betaLabel(flag))); got != before+1 {
 		t.Errorf("counter %v, want %v", got, before+1)
+	}
+}
+
+// An unlisted flag on a request a later gate refuses is never forwarded, so
+// it is not logged as forwarding, not counted, and takes no metric label slot.
+// Before the fix the log and counter ran ahead of the body and every gate.
+func TestMessages_UnlistedBetaNotRecordedWhenRefusedLater(t *testing.T) {
+	const okBody = `{"model":"aegis-claude","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	tests := []struct {
+		name    string
+		flag    string
+		body    string
+		allowed []string
+		want    int
+	}{
+		{"model allowlist refusal", "refused-by-allowlist-2027-03-03", okBody, []string{"aegis-other"}, http.StatusForbidden},
+		{"secret in body", "refused-by-secret-2027-03-04",
+			`{"model":"aegis-claude","max_tokens":1,"messages":[{"role":"user","content":"key AKIAIOSFODNN7EXAMPLE"}]}`, nil, 451},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			f := newFakeAnthropic(t)
+			h := newMessagesHandler(t, f, &messagesAuditSpy{})
+			h.metrics = getTestMetrics()
+			counter := h.metrics.AnthropicBetaUnlistedTotal.WithLabelValues(tt.flag)
+			before := testutil.ToFloat64(counter)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("anthropic-version", "2023-06-01")
+			req.Header.Set("anthropic-beta", tt.flag)
+			req = req.WithContext(auth.ContextWithAuth(req.Context(), &auth.AuthInfo{
+				OrganizationID: "org-test", TeamID: "team-test", KeyID: "key-test",
+				MaxClassification: types.ClassInternal, AllowedModels: tt.allowed,
+			}))
+			w := httptest.NewRecorder()
+			w.Header().Set("X-Request-ID", "req-unlisted-refused")
+			h.Messages(w, req)
+
+			if w.Code != tt.want {
+				t.Fatalf("status %d, want %d: %s", w.Code, tt.want, w.Body)
+			}
+			if f.calls() != 0 {
+				t.Fatal("a refused request reached the provider")
+			}
+			if got := testutil.ToFloat64(counter); got != before {
+				t.Errorf("counter moved to %v from %v for a request never forwarded", got, before)
+			}
+			if strings.Contains(logs.String(), "forwarding an anthropic-beta flag") {
+				t.Errorf("a refused request was logged as forwarding a flag: %s", logs)
+			}
+			betaLabelsMu.Lock()
+			used := betaLabels[tt.flag]
+			betaLabelsMu.Unlock()
+			if used {
+				t.Error("a refused request took a metric label slot")
+			}
+		})
 	}
 }

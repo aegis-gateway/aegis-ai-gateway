@@ -107,16 +107,6 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 		return
 	}
 	betas := decision.Forward
-	for _, b := range decision.Unlisted {
-		// Well-formed by construction (betaFlagPattern), so the name is safe to
-		// log and to use as a capped metric label.
-		slog.Warn("forwarding an anthropic-beta flag that is on no list",
-			"request_id", reqID, "beta", b, "org_id", authInfo.OrganizationID,
-			"hint", "add it to anthropic_messages.allowed_betas or denied_betas")
-		if h.metrics != nil {
-			h.metrics.AnthropicBetaUnlistedTotal.WithLabelValues(betaLabel(b)).Inc()
-		}
-	}
 
 	body, ok := h.readBoundedBody(w, r, reqID)
 	if !ok {
@@ -204,6 +194,11 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 		defer h.contextMonitor.Watch(r.Context(), reqID, native.Name())()
 	}
 
+	// Logged and counted only now that every gate has passed, so a request
+	// refused later is never reported as forwarding a flag and cannot use up
+	// a metric label slot.
+	h.recordUnlistedBetas(reqID, authInfo, decision.Unlisted)
+
 	call := nativeCall{
 		h: h, w: w, r: r, reqID: reqID, authInfo: authInfo, req: &aegisReq,
 		adapter: native, providerKey: providerKey, providerModel: providerModel,
@@ -211,6 +206,21 @@ func (h *Handler) serveMessages(w http.ResponseWriter, r *http.Request, endpoint
 		unscanned: unscanned, receivedAt: receivedAt, stream: msgReq.Stream && !countOnly,
 	}
 	call.run()
+}
+
+// recordUnlistedBetas logs and counts each forwarded flag that is on no list.
+// It runs immediately before dispatch, after every gate.
+func (h *Handler) recordUnlistedBetas(reqID string, authInfo *auth.AuthInfo, unlisted []string) {
+	for _, b := range unlisted {
+		// Well-formed by construction (betaFlagPattern), so the name is safe to
+		// log and to use as a capped metric label.
+		slog.Warn("forwarding an anthropic-beta flag that is on no list",
+			"request_id", reqID, "beta", b, "org_id", authInfo.OrganizationID,
+			"hint", "add it to anthropic_messages.allowed_betas or denied_betas")
+		if h.metrics != nil {
+			h.metrics.AnthropicBetaUnlistedTotal.WithLabelValues(betaLabel(b)).Inc()
+		}
+	}
 }
 
 // refuseBeta answers and seals a refused anthropic-beta flag.
