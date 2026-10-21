@@ -362,7 +362,9 @@ func TestMessages_RefusedBetaValueNotLogged(t *testing.T) {
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unsupported_beta") {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
-	if !strings.Contains(logs.String(), "anthropic-beta not in the allowlist") {
+	// A credential-shaped value is not a well-formed flag, so it is refused as
+	// malformed whatever unlisted_betas says, and logged by length only.
+	if !strings.Contains(logs.String(), "malformed anthropic-beta value") {
 		t.Fatalf("refusal not logged: %s", logs)
 	}
 	if strings.Contains(logs.String(), marker) {

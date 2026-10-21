@@ -70,6 +70,14 @@ const (
 // reads, and audit_events is the no-payload record.
 const ReasonBetaNotAllowed = "anthropic_beta_not_allowed"
 
+// ReasonBetaDenied is the sealed reason for a flag matching
+// anthropic_messages.denied_betas.
+const ReasonBetaDenied = "anthropic_beta_denied"
+
+// ReasonBetaMalformed is the sealed reason for an anthropic-beta value that is
+// not a well-formed flag name. Always refused, whatever the configuration.
+const ReasonBetaMalformed = "anthropic_beta_malformed"
+
 // Event represents a security-relevant audit event.
 type Event struct {
 	RequestID      string

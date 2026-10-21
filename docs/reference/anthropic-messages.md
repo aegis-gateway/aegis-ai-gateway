@@ -79,10 +79,28 @@ sealed 451 `unscanned_parts_not_cleared`
 ## Headers and query
 
 - `anthropic-version` must be `2023-06-01` when present.
-- `anthropic-beta` flags are forwarded only if listed in
-  `anthropic_messages.allowed_betas` in `configs/gateway.yaml`, and any other flag is a
-  400 naming it. The default list is the six flags Claude Code 2.1.150 sends. A newer
-  Claude Code may send a flag that needs adding.
+- `anthropic-beta` flags are decided per flag by `anthropic_messages` in
+  `configs/gateway.yaml` (`internal/gateway/beta_policy.go`):
+  1. A value that is not a well-formed flag (lowercase name, then a `YYYY-MM-DD` or
+     `YYYYMMDD` date) is refused, whatever the configuration.
+  2. A flag matching `denied_betas` is refused. The defaults cover the families that move
+     data or execution to the provider: `files-api-*`, `mcp-client-*`,
+     `code-execution-*`, `web-search-*`, `web-fetch-*`, `skills-*`.
+  3. A flag in `allowed_betas` is forwarded. The defaults are the twelve flags Claude Code
+     2.1.150 was observed sending across print and interactive mode, the session-title
+     request, `/init`, and installs with different server-side feature flags.
+  4. Any other flag follows `unlisted_betas`. `forward`, the default, forwards it, logs it
+     by name and counts it in `aegis_anthropic_beta_unlisted_total{flag}`, with the label
+     capped at 32 names. `refuse` refuses it.
+
+  Refusals are 400 `unsupported_beta` and are sealed as `feature_denied`; the flag is
+  never sealed. Forwarding is the default because Claude Code's flag set varies by
+  release, mode, command and install, and an exact list broke interactive Claude Code on
+  every turn. It is a safe default because a beta mostly switches on request constructs
+  (block types, tool types, fields), and the decoder refuses every construct it does not
+  allowlist whatever flags are set. Which of the forwarded flags change pricing is not
+  something AEGIS can verify; `context-1m` does, and is priced through the long-context
+  rates.
 - `?beta=true`, which the SDKs append, is accepted. Any other query parameter is a 400.
 
 ## Streaming

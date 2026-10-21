@@ -145,7 +145,12 @@ Decode refusals (`unsupported_field`, `unsupported_image_part`) are as in 3.1, r
 
 | Literal string | Code | Trigger | Operator action |
 |---|---|---|---|
-| `anthropic-beta <flag> is not in anthropic_messages.allowed_betas. …` | `unsupported_beta` | The client sent a beta flag not on the list | Review the flag, then add it to `anthropic_messages.allowed_betas` in `configs/gateway.yaml`. A newer Claude Code may send flags the default list lacks. **Audited** as `feature_denied`, `reason = anthropic_beta_not_allowed`; the flag itself is not recorded. The only row in this table that is. |
+| `an anthropic-beta value is not a well-formed flag name …` | `unsupported_beta` | A value that is not a lowercase name followed by a date | Client bug, or a value that is not a beta flag at all. **Audited** as `feature_denied`, `reason = anthropic_beta_malformed`. |
+| `anthropic-beta <flag> matches anthropic_messages.denied_betas. …` | `unsupported_beta` | The flag is in a denied family (files, provider-side MCP, code execution, web search or fetch, skills) | Intended. Remove the entry from `denied_betas` only after reviewing what the feature sends to the provider. **Audited**, `reason = anthropic_beta_denied`. |
+| `anthropic-beta <flag> is not in anthropic_messages.allowed_betas, and unlisted_betas is set to refuse` | `unsupported_beta` | `unlisted_betas: refuse` and the flag is on neither list | Add the flag to `allowed_betas`, or set `unlisted_betas: forward`. **Audited**, `reason = anthropic_beta_not_allowed`. |
+
+The three `unsupported_beta` rows are the only rows in this table that are audited. The
+flag itself is never recorded.
 | `anthropic-version <v> is not supported; AEGIS forwards 2023-06-01` | `unsupported_anthropic_version` | Any version but `2023-06-01` | Client bug or a future API version. |
 | `query parameter <k> is not supported on this endpoint` | `unsupported_query_parameter` | Anything but `?beta=true` | Client bug. |
 | `model <alias> routes to no Anthropic provider. …` | `model_not_anthropic` | No route of the alias, primary or fallback, is an Anthropic-type provider. The type is read from `type` in `configs/providers.yaml`, not from which providers are registered, so a route to an Anthropic provider with no API key is the routing 503, not this refusal (`TestMessages_UnregisteredAnthropicRouteIsOutageNotRefusal`) | Use `/v1/chat/completions` for the alias, or route it to an Anthropic provider. A provider error status on this endpoint is relayed as the provider sent it, not rewritten. |

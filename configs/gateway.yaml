@@ -73,10 +73,19 @@ routing:
 
 # POST /v1/messages (Anthropic Messages API, used by Claude Code).
 anthropic_messages:
-  # anthropic-beta flags forwarded to the provider. A request naming any other
-  # flag is refused with 400 naming it. Betas switch on provider behaviour and
-  # some change pricing, so only listed flags pass. The default is the set
-  # Claude Code 2.1.150 sends; a newer Claude Code may need a line added here.
+  # anthropic-beta flags. Per flag, in order:
+  #   1. not a well-formed flag (lowercase name, then a date): refused, sealed
+  #   2. matches denied_betas: refused, sealed as feature_denied
+  #   3. in allowed_betas: forwarded
+  #   4. otherwise: unlisted_betas decides. "forward" forwards it, logs it by
+  #      name and counts it in aegis_anthropic_beta_unlisted_total; "refuse"
+  #      refuses it, sealed. Any other value means refuse.
+  # Claude Code's flags vary by release, mode, command and install, which is
+  # why the default is forward. The decoder still refuses every request
+  # construct it does not allowlist, whatever flags are set.
+  unlisted_betas: forward
+  # The flags Claude Code 2.1.150 was observed sending. context-1m changes the
+  # price of a request over 200K input tokens (priced via pricing.yaml).
   allowed_betas:
     - claude-code-20250219
     - context-1m-2025-08-07
@@ -84,6 +93,21 @@ anthropic_messages:
     - context-management-2025-06-27
     - prompt-caching-scope-2026-01-05
     - effort-2025-11-24
+    - structured-outputs-2025-12-15
+    - redact-thinking-2026-02-12
+    - thinking-token-count-2026-05-13
+    - advanced-tool-use-2025-11-20
+    - thinking-display-updates-2026-08-18
+    - advisor-tool-2026-03-01
+  # Feature families that move data or execution to the provider. A trailing
+  # * matches by prefix.
+  denied_betas:
+    - files-api-*
+    - mcp-client-*
+    - code-execution-*
+    - web-search-*
+    - web-fetch-*
+    - skills-*
   # One streamed response may run this long. Claude Code turns with extended
   # thinking routinely stream for many minutes. The connection's write
   # deadline is extended to match for these streams only.

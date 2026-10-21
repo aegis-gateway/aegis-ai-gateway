@@ -101,27 +101,34 @@ func TestRefusalRowsRecordTheEndpoint(t *testing.T) {
 }
 
 // A refused beta is a governance refusal and is sealed, with a fixed reason
-// and never the flag, which is caller text no filter read.
+// and never the flag. One case per refusal path: a denied family, and a
+// malformed value carrying caller text.
 func TestRefusedBetaIsSealedWithoutTheFlag(t *testing.T) {
-	f := newFakeAnthropic(t)
-	spy := &sourceSpy{}
-	srv := routedHandler(newMessagesHandler(t, f, spy))
+	cases := []struct{ beta, reason string }{
+		{"files-api-2025-04-14", audit.ReasonBetaDenied},
+		{"SENTINEL-beta-2099-01-01", audit.ReasonBetaMalformed},
+	}
+	for _, c := range cases {
+		f := newFakeAnthropic(t)
+		spy := &sourceSpy{}
+		srv := routedHandler(newMessagesHandler(t, f, spy))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages",
-		bytes.NewBufferString(`{"model":"aegis-claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("anthropic-beta", "SENTINEL-beta-2099-01-01")
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status %d", w.Code)
-	}
-	if len(spy.feature) != 1 || spy.feature[0] != audit.ReasonBetaNotAllowed+" POST /v1/messages" {
-		t.Errorf("sealed %v", spy.feature)
-	}
-	if strings.Contains(strings.Join(spy.feature, ""), "SENTINEL") {
-		t.Error("the refused flag reached the audit record")
-	}
-	if f.calls() != 0 {
-		t.Error("provider called")
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+			bytes.NewBufferString(`{"model":"aegis-claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("anthropic-beta", "claude-code-20250219,"+c.beta)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status %d", c.beta, w.Code)
+		}
+		if len(spy.feature) != 1 || spy.feature[0] != c.reason+" POST /v1/messages" {
+			t.Errorf("%s: sealed %v", c.beta, spy.feature)
+		}
+		if strings.Contains(strings.Join(spy.feature, ""), c.beta) {
+			t.Errorf("%s: the refused flag reached the audit record", c.beta)
+		}
+		if f.calls() != 0 {
+			t.Errorf("%s: provider called", c.beta)
+		}
 	}
 }

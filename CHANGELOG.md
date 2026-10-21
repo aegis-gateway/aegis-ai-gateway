@@ -9,6 +9,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **anthropic-beta policy for `/v1/messages`.** The exact six-flag allowlist refused interactive Claude Code on every turn, because its flag set varies by release, mode, command and install. Each flag is now decided in order: malformed is refused; `denied_betas` (prefix patterns; defaults `files-api-*`, `mcp-client-*`, `code-execution-*`, `web-search-*`, `web-fetch-*`, `skills-*`) is refused; `allowed_betas` (now twelve observed flags) is forwarded; anything else follows the new `unlisted_betas`, default `forward`, which forwards it, logs it and counts it in `aegis_anthropic_beta_unlisted_total`. Every refusal is sealed as `feature_denied`. Set `unlisted_betas: refuse` to restore strict behaviour. (`internal/gateway/beta_policy.go`)
+
 ### Fixed
 - **Refusal rows in `audit_events` now record the endpoint and method.** `filter_block`, `model_denied`, `pricing_denied`, `rate_limit_violation`, `budget_violation` and `redis_failure` left `endpoint` empty, and `auth_failure` recorded `/v1/*`, so a refusal on `/v1/messages` could not be told from one on `/v1/chat/completions`. The value is the matched route pattern, never the caller's spelling of the path (`audit.SourceOf`). No schema change: the column already existed and is in the leaf hash.
 
